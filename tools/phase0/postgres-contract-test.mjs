@@ -1,10 +1,10 @@
 import { PGlite } from '@electric-sql/pglite'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 const workspace = join(import.meta.dirname, '..', '..')
-const migrationPath = join(workspace, 'infra', 'postgres', 'migrations', '0001_phase0_contract.sql')
+const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase0-pglite-${process.pid}-${Date.now()}`)
 
 function assert(condition, message) {
@@ -17,11 +17,14 @@ async function countRows(db, query, parameters = []) {
 }
 
 async function run() {
-  const migration = readFileSync(migrationPath, 'utf8')
+  const migrations = readdirSync(migrationDirectory)
+    .filter((file) => file.endsWith('.sql'))
+    .sort()
+    .map((file) => ({ file, sql: readFileSync(join(migrationDirectory, file), 'utf8') }))
   const db = new PGlite(databasePath)
   try {
-    await db.exec(migration)
-    await db.exec(migration)
+    for (const migration of migrations) await db.exec(migration.sql)
+    for (const migration of migrations) await db.exec(migration.sql)
 
     const tables = await countRows(db, `
       SELECT COUNT(*)::int AS total
@@ -73,7 +76,7 @@ async function run() {
 
     console.log(JSON.stringify({
       scenario: 'phase0-postgres-contract',
-      migration: '0001_phase0_contract.sql',
+      migrations: migrations.map((migration) => migration.file),
       migrationAppliedTwice: true,
       tables,
       tablePartitions,

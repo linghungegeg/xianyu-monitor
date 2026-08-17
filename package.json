@@ -8,12 +8,16 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package:win": "npm run build && electron-builder --win",
+    "check:cloud": "tsc -p tsconfig.cloud.json",
     "test:phase0:contract": "node tools/phase0/postgres-contract-test.mjs",
     "test:phase0:stress": "node tools/phase0/sqlite-synthetic-load.mjs --items=100000 --devices=4 --batch-size=250 --database=temp"
   },
   "dependencies": {
     "@electron-toolkit/utils": "4.0.0",
+    "fastify": "^5.12.0",
+    "jose": "^6.2.9",
     "lucide-react": "0.468.0",
+    "pg": "^8.23.0",
     "playwright-core": "1.62.1",
     "react": "19.2.8",
     "react-dom": "19.2.8"
@@ -22,11 +26,12 @@
     "@electric-sql/pglite": "^0.5.5",
     "@electron-toolkit/tsconfig": "1.0.1",
     "@types/node": "24.10.1",
+    "@types/pg": "^8.15.6",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "43.4.0",
-    "electron-builder": "26.0.12",
+    "electron-builder": "^26.15.3",
     "electron-vite": "5.0.0",
     "typescript": "5.9.3",
     "vite": "7.3.6"
