@@ -1,27 +1,47 @@
 import { app, safeStorage } from 'electron'
-import { createPrivateKey, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
+import { createHash, createPrivateKey, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import type { LauncherStatus } from '../shared/types'
-import { MonitorDatabase } from './database'
+import { MonitorDatabase, type CachedMonitorTask } from './database'
+import {
+  canonicalItemPayload,
+  mergeSearchDetail,
+  matchesSearchRule,
+  parseSearchCards,
+  SearchPageError,
+  type SearchCardSource,
+  type SearchDetailSource,
+  type SearchRule,
+  type SearchSort
+} from './search'
 
 const GOOFISH_HOME = process.env.XIANYU_LOGIN_URL ?? 'https://www.goofish.com/'
+const GOOFISH_SEARCH = process.env.XIANYU_SEARCH_URL ?? 'https://www.goofish.com/search'
 const REQUEST_TIMEOUT_MS = 10_000
+const PAGE_TIMEOUT_MS = 15_000
 const TOKEN_RENEW_WINDOW_MS = 2 * 60_000
-const SCHEDULER_INTERVAL_MS = 60_000
+const SCHEDULER_INTERVAL_MS = positiveEnvironmentNumber('XIANYU_SCHEDULER_INTERVAL_MS', 60_000, 250)
+const TASK_SYNC_INTERVAL_MS = positiveEnvironmentNumber('XIANYU_TASK_SYNC_INTERVAL_MS', 60_000, 250)
 const STATE_REFRESH_TOKEN = 'collector.refresh-token'
 const STATE_PRIVATE_KEY = 'collector.device-private-key'
 const STATE_PUBLIC_KEY = 'collector.device-public-key'
 
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
 type EntitlementResponse = { allowed?: boolean }
+type TaskResponse = { items?: unknown[]; snapshotAt?: string }
 type DeviceKey = { publicKey: string; privateKey: ReturnType<typeof createPrivateKey> }
 
 class CloudRequestError extends Error {
   constructor(readonly status: number, message: string) {
     super(message)
   }
+}
+
+function positiveEnvironmentNumber(name: string, fallback: number, minimum: number): number {
+  const value = Number(process.env[name])
+  return Number.isInteger(value) && value >= minimum ? value : fallback
 }
 
 function apiBase(value: string, name: string): string {
@@ -57,13 +77,48 @@ function tokenSubject(token: string): string {
   throw new Error('云端登录响应无效，请重新登录')
 }
 
+function compact(value: string | null | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function escapedText(value: string): RegExp {
+  return new RegExp(`^\\s*${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`)
+}
+
+function taskLabel(rule: SearchRule): string {
+  return compact(rule.keyword ?? rule.categoryPath?.join('/')).slice(0, 48) || '未命名搜索任务'
+}
+
+function parseTask(value: unknown): CachedMonitorTask {
+  if (!value || typeof value !== 'object') throw new Error('云端任务快照无效')
+  const row = value as Record<string, unknown>
+  const id = typeof row.id === 'string' ? row.id : ''
+  const rule = row.rule && typeof row.rule === 'object' && !Array.isArray(row.rule) ? row.rule as SearchRule : undefined
+  const ruleVersion = typeof row.ruleVersion === 'number' ? row.ruleVersion : NaN
+  const status = row.status === 'active' || row.status === 'paused' ? row.status : undefined
+  const intervalSeconds = typeof row.intervalSeconds === 'number' ? row.intervalSeconds : NaN
+  const nextRunAt = typeof row.nextRunAt === 'string' ? row.nextRunAt : ''
+  const createdAt = typeof row.createdAt === 'string' ? row.createdAt : ''
+  const updatedAt = typeof row.updatedAt === 'string' ? row.updatedAt : ''
+  if (!id || !rule || !Number.isInteger(ruleVersion) || ruleVersion < 1 || !status || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || !nextRunAt || !createdAt || !updatedAt) throw new Error('云端任务快照无效')
+  if (!rule.keyword && !rule.categoryPath?.length) throw new Error('云端任务规则无效')
+  if (!['comprehensive', 'newly_reduced', 'newly_published', 'price_asc', 'price_desc'].includes(rule.sort)) throw new Error('云端任务规则无效')
+  if (!Number.isInteger(rule.pageLimit) || rule.pageLimit < 1 || rule.pageLimit > 10) throw new Error('云端任务规则无效')
+  return { id, rule, ruleVersion, status, intervalSeconds, nextRunAt, createdAt, updatedAt }
+}
+
 export class XianyuMonitor {
   private readonly userApiBase = apiBase(process.env.COLLECTOR_USER_API_URL ?? 'https://user-api.placeholder.invalid', 'User API 地址')
   private readonly collectorApiBase = apiBase(process.env.COLLECTOR_API_URL ?? 'https://collector-api.placeholder.invalid', 'Collector API 地址')
   private context: BrowserContext | undefined
+  private loginPage: Page | undefined
+  private scannerPage: Page | undefined
+  private detailPage: Page | undefined
   private timer: NodeJS.Timeout | undefined
   private accessToken: string | undefined
   private running = false
+  private ticking = false
+  private lastTaskSyncAt = 0
   private state: LauncherStatus = { session: 'signed-out', browser: 'idle', entitled: false, message: '请登录本系统账号并完成设备绑定' }
 
   constructor(private readonly db: MonitorDatabase, private readonly publish: (status: LauncherStatus) => void) {}
@@ -125,9 +180,9 @@ export class XianyuMonitor {
       await this.ensureAuthorized()
       this.running = true
       this.startTimer()
-      await this.flushOutbox()
-      this.db.addLog('success', '采集器已启动')
       this.updateStatus('running', '采集器正在运行', true)
+      await this.tick(true)
+      if (this.running) this.db.addLog('success', '采集器已启动')
     } catch (error) {
       this.stopTimer()
       const message = this.handleRuntimeError(error)
@@ -146,15 +201,13 @@ export class XianyuMonitor {
   async openLogin(): Promise<void> {
     try {
       await this.ensureAuthorized()
-      const page = await this.openPage()
-      await page.goto(GOOFISH_HOME, { waitUntil: 'domcontentloaded' }).catch(() => {
-        throw new Error('无法打开闲鱼登录页，请检查网络后重试')
-      })
+      const page = await this.openLoginPage()
+      await this.goto(page, GOOFISH_HOME, '无法打开闲鱼登录页，请检查网络后重试')
       await page.bringToFront()
       this.db.addLog('info', '已打开本机 Chrome，请完成闲鱼扫码登录')
       this.updateStatus(this.running ? 'running' : 'ready', '请在本机 Chrome 完成闲鱼扫码登录', true)
     } catch (error) {
-      const message = this.handleRuntimeError(error)
+      const message = error instanceof SearchPageError ? this.handleSearchError(error) : this.handleRuntimeError(error)
       throw new Error(message)
     }
   }
@@ -191,17 +244,321 @@ export class XianyuMonitor {
     this.timer = undefined
   }
 
-  private async tick(): Promise<void> {
-    if (!this.running) return
+  private async tick(forceTaskSync = false): Promise<void> {
+    if (!this.running || this.ticking) return
+    this.ticking = true
     try {
       await this.ensureAuthorized()
+      await this.syncTasks(forceTaskSync)
       this.db.enqueueHeartbeat({ id: randomUUID(), observedAt: new Date().toISOString(), appVersion: app.getVersion() })
-      await this.flushOutbox()
+      for (const task of this.db.listDueMonitorTasks()) {
+        if (!this.running) return
+        await this.scanTask(task)
+      }
+      if (this.running) await this.flushOutbox()
     } catch (error) {
       this.stopTimer()
       this.running = false
-      this.handleRuntimeError(error)
+      if (error instanceof SearchPageError) this.handleSearchError(error)
+      else this.handleRuntimeError(error)
+    } finally {
+      this.ticking = false
     }
+  }
+
+  private async syncTasks(force = false): Promise<void> {
+    if (!force && Date.now() - this.lastTaskSyncAt < TASK_SYNC_INTERVAL_MS) return
+    const snapshot = await this.request<TaskResponse>(this.collectorApiBase, '/v1/tasks', { token: this.accessToken })
+    if (!Array.isArray(snapshot.items)) throw new Error('云端任务快照无效')
+    this.db.syncMonitorTasks(snapshot.items.map(parseTask))
+    this.lastTaskSyncAt = Date.now()
+  }
+
+  private async scanTask(task: CachedMonitorTask): Promise<void> {
+    const startedAt = new Date().toISOString()
+    let scannedCount = 0
+    let newItemCount = 0
+    let newVersionCount = 0
+    const label = taskLabel(task.rule)
+    try {
+      await this.ensureAuthorized()
+      const page = await this.openScannerPage()
+      await this.goto(page, this.searchUrl(task.rule), '闲鱼搜索页加载失败，请检查网络后重试')
+      await this.assertSearchPageAvailable(page)
+      await this.applySearchRule(page, task.rule)
+      const seenItems = new Set<string>()
+      const seenPages = new Set<string>()
+
+      for (let pageIndex = 0; pageIndex < task.rule.pageLimit; pageIndex += 1) {
+        if (!this.running) return
+        await this.ensureAuthorized()
+        const cards = await this.readSearchCards(page)
+        const pageKey = `${page.url()}|${cards.map((card) => card.platformItemId).join(',')}`
+        if (seenPages.has(pageKey)) throw new SearchPageError('structure', '闲鱼分页未前进，请检查页面结构后重试')
+        seenPages.add(pageKey)
+        await this.recordObservedCategories(page, task.rule)
+
+        for (const card of cards) {
+          if (!this.running || seenItems.has(card.platformItemId)) continue
+          seenItems.add(card.platformItemId)
+          await this.ensureAuthorized()
+          const item = await this.readItemDetail(card)
+          await this.ensureAuthorized()
+          if (!matchesSearchRule(item, task.rule)) continue
+          const payload = canonicalItemPayload(item)
+          const saved = this.db.saveCollectedItem(task.id, item, createHash('sha256').update(payload).digest('hex'), payload)
+          scannedCount += 1
+          if (saved.isNewItem) newItemCount += 1
+          if (saved.isNewVersion) newVersionCount += 1
+        }
+
+        if (pageIndex + 1 >= task.rule.pageLimit || !this.running) break
+        if (!(await this.nextSearchPage(page))) break
+      }
+
+      if (!this.running) return
+      this.db.markMonitorTaskRun(task.id)
+      this.db.recordMonitorTaskRun({
+        id: randomUUID(), taskId: task.id, ruleVersion: task.ruleVersion, status: 'completed',
+        scannedCount, newItemCount, newVersionCount, startedAt, finishedAt: new Date().toISOString()
+      })
+      this.db.addLog('success', `“${label}”采集完成：${scannedCount} 条，新增 ${newItemCount} 条`)
+      this.updateStatus('running', '采集器正在运行', true)
+    } catch (error) {
+      this.db.recordMonitorTaskRun({
+        id: randomUUID(), taskId: task.id, ruleVersion: task.ruleVersion, status: 'failed',
+        scannedCount, newItemCount, newVersionCount, startedAt, finishedAt: new Date().toISOString()
+      })
+      throw error
+    }
+  }
+
+  private searchUrl(rule: SearchRule): string {
+    const url = new URL(GOOFISH_SEARCH)
+    if (rule.keyword) url.searchParams.set('q', rule.keyword)
+    return url.toString()
+  }
+
+  private async applySearchRule(page: Page, rule: SearchRule): Promise<void> {
+    if (rule.categoryPath?.length) {
+      for (const category of rule.categoryPath) {
+        await this.selectControl(page, 'category', category, `未找到类目“${category}”`)
+        await this.assertSelected(page, 'category', category, `类目“${category}”未生效`)
+      }
+    }
+    await this.selectSort(page, rule.sort)
+    if (rule.minPrice !== undefined) await this.fillPrice(page, 'min', rule.minPrice)
+    if (rule.maxPrice !== undefined) await this.fillPrice(page, 'max', rule.maxPrice)
+    if (rule.region) {
+      await this.selectControl(page, 'region', rule.region, `未找到地区“${rule.region}”`)
+      await this.assertSelected(page, 'region', rule.region, `地区“${rule.region}”未生效`)
+    }
+    for (const [name, value] of Object.entries(rule.filters ?? {})) await this.selectPublicFilter(page, name, value)
+  }
+
+  private async selectSort(page: Page, sort: SearchSort): Promise<void> {
+    const labels: Record<SearchSort, string> = {
+      comprehensive: '综合', newly_reduced: '新降价', newly_published: '新发布', price_asc: '价格从低到高', price_desc: '价格从高到低'
+    }
+    const fixture = page.locator(`[data-xianyu-sort="${sort}"]`).first()
+    if (await fixture.count()) await fixture.click()
+    else await this.selectControl(page, 'sort', labels[sort], `未找到排序“${labels[sort]}”`)
+    await this.assertSelected(page, 'sort', sort, `排序“${labels[sort]}”未生效`, labels[sort])
+  }
+
+  private async fillPrice(page: Page, kind: 'min' | 'max', value: number): Promise<void> {
+    const fixture = page.locator(`[data-xianyu-price="${kind}"]`).first()
+    const fallback = kind === 'min'
+      ? page.locator('input[placeholder*="最低"], input[aria-label*="最低"]').first()
+      : page.locator('input[placeholder*="最高"], input[aria-label*="最高"]').first()
+    const input = await fixture.count() ? fixture : fallback
+    if (!(await input.count())) throw new SearchPageError('structure', `未找到${kind === 'min' ? '最低' : '最高'}价格输入框`)
+    await input.fill(String(value))
+    await input.press('Enter').catch(() => undefined)
+    if (await input.inputValue() !== String(value)) throw new SearchPageError('structure', `${kind === 'min' ? '最低' : '最高'}价格未生效`)
+  }
+
+  private async selectPublicFilter(page: Page, name: string, value: string): Promise<void> {
+    const fixture = page.locator(`[data-xianyu-filter="${name}"][data-xianyu-value="${value}"]`).first()
+    if (await fixture.count()) await fixture.click()
+    else await this.selectControl(page, 'filter', value, `未找到公开筛选“${value}”`)
+    await this.assertSelected(page, 'filter', value, `公开筛选“${value}”未生效`)
+  }
+
+  private async selectControl(page: Page, kind: 'category' | 'sort' | 'region' | 'filter', value: string, missingMessage: string): Promise<void> {
+    const fixture = page.locator(`[data-xianyu-${kind}]`).filter({ hasText: escapedText(value) }).first()
+    const generic = page.locator('button, a, [role="button"], [role="tab"]').filter({ hasText: escapedText(value) }).first()
+    const control = await fixture.count() ? fixture : generic
+    if (!(await control.count())) {
+      const title = compact(await page.title().catch(() => '')).slice(0, 40)
+      throw new SearchPageError('structure', title ? `${missingMessage}（页面：${title}）` : missingMessage)
+    }
+    await control.click()
+    await page.waitForTimeout(120)
+  }
+
+  private async assertSelected(page: Page, kind: 'category' | 'sort' | 'region' | 'filter', expected: string, message: string, textFallback = expected): Promise<void> {
+    const body = page.locator('body')
+    const fixtureValue = await body.getAttribute(`data-xianyu-selected-${kind}`)
+    if (fixtureValue !== null) {
+      if (fixtureValue === expected) return
+      throw new SearchPageError('structure', message)
+    }
+    const selectedText = await page.locator('[aria-selected="true"], [data-selected="true"], .selected, .active').allTextContents()
+    if (selectedText.some((value) => compact(value) === textFallback)) return
+    throw new SearchPageError('structure', message)
+  }
+
+  private async recordObservedCategories(page: Page, rule: SearchRule): Promise<void> {
+    const paths = await page.locator('[data-xianyu-category-path], [data-category-path]').evaluateAll((nodes) => nodes.map((node) => {
+      const raw = node.getAttribute('data-xianyu-category-path') ?? node.getAttribute('data-category-path') ?? ''
+      return raw.split('/').map((part) => part.trim()).filter(Boolean)
+    }).filter((path) => path.length > 0 && path.length <= 3))
+    if (paths.length) {
+      for (const path of paths) this.db.upsertLocalCategories(path)
+      return
+    }
+    if (rule.categoryPath?.length) {
+      const selectedText = await page.locator('[aria-selected="true"], [data-selected="true"], .selected, .active').allTextContents()
+      if (rule.categoryPath.every((part) => selectedText.some((value) => compact(value) === part))) {
+        this.db.upsertLocalCategories(rule.categoryPath)
+        return
+      }
+      throw new SearchPageError('structure', '页面未返回可解析的三级类目状态')
+    }
+  }
+
+  private async readSearchCards(page: Page) {
+    const fixture = page.locator('[data-xianyu-item]')
+    const fallback = page.locator('a[href*="/item?id="], a[href*="/item/"]')
+    const cards = await fixture.count() ? fixture : fallback
+    if (!(await cards.count())) {
+      const initialText = await page.locator('body').innerText().catch(() => '')
+      if (/非法访问|访问受限|操作太频繁|安全验证|扫码|登录/.test(compact(initialText))) this.throwPageState(initialText, '页面未找到商品列表，请检查闲鱼页面结构')
+    }
+    await cards.first().waitFor({ state: 'visible', timeout: PAGE_TIMEOUT_MS }).catch(() => undefined)
+    const sources = await cards.evaluateAll((nodes): SearchCardSource[] => nodes.map((node) => {
+      const root = node.closest('[data-xianyu-item]') ?? node
+      const anchor = root instanceof HTMLAnchorElement ? root : root.querySelector<HTMLAnchorElement>('a[href]')
+      const title = root.querySelector('[data-xianyu-title], h2, h3')?.textContent ?? null
+      const imageUrls = Array.from(root.querySelectorAll('[data-xianyu-image], img')).map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url))
+      const tags = Array.from(root.querySelectorAll('[data-xianyu-tag], [class*="tag"]')).map((tag) => tag.textContent ?? '')
+      return { href: anchor?.href ?? '', text: root.textContent ?? '', title, imageUrls, tags }
+    }))
+    const parsed = parseSearchCards(sources)
+    if (parsed.length) return parsed
+    const text = await page.locator('body').innerText().catch(() => '')
+    this.throwPageState(text, '页面未找到商品列表，请检查闲鱼页面结构')
+  }
+
+  private async assertSearchPageAvailable(page: Page): Promise<void> {
+    const text = await page.locator('body').innerText().catch(() => '')
+    if (/非法访问|访问受限|操作太频繁|安全验证|扫码|登录/.test(compact(text))) this.throwPageState(text, '页面未找到商品列表，请检查闲鱼页面结构')
+  }
+
+  private async readItemDetail(card: ReturnType<typeof parseSearchCards>[number]) {
+    const page = await this.openDetailPage()
+    await this.goto(page, card.url, '闲鱼商品详情加载失败，请检查网络后重试')
+    const detail = page.locator('[data-xianyu-detail]').first()
+    const title = page.locator('[data-xianyu-detail] [data-xianyu-title], h1, [data-xianyu-title]').first()
+    if (!(await detail.count()) && !(await title.count())) {
+      const text = await page.locator('body').innerText().catch(() => '')
+      this.throwPageState(text, '页面未找到商品详情，请检查闲鱼页面结构')
+    }
+    const hasStructuredDetail = (await detail.count()) > 0
+    const source: SearchDetailSource = hasStructuredDetail
+      ? await detail.evaluate((root): SearchDetailSource => ({
+          title: root.querySelector('[data-xianyu-title], h1')?.textContent ?? null,
+          priceText: root.querySelector('[data-xianyu-price]')?.textContent ?? null,
+          region: root.querySelector('[data-xianyu-region]')?.textContent ?? null,
+          publishedText: root.querySelector('[data-xianyu-published]')?.textContent ?? null,
+          wantText: root.querySelector('[data-xianyu-want]')?.textContent ?? null,
+          description: root.querySelector('[data-xianyu-description], [class*="desc"]')?.textContent ?? null,
+          imageUrls: Array.from(root.querySelectorAll('[data-xianyu-image], [class*="image"] img')).map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url)),
+          tags: Array.from(root.querySelectorAll('[data-xianyu-tag], [class*="tag"]')).map((tag) => tag.textContent ?? '')
+        }))
+      : {
+          title: await title.textContent(),
+          priceText: await page.locator('[class*="price"]').first().textContent().catch(() => null),
+          region: await page.locator('[class*="region"], [class*="location"]').first().textContent().catch(() => null),
+          publishedText: await page.locator('[class*="publish"], [class*="time"]').first().textContent().catch(() => null),
+          wantText: await page.locator('[class*="want"]').first().textContent().catch(() => null),
+          description: await page.locator('[class*="desc"]').first().textContent().catch(() => null),
+          imageUrls: await page.locator('[class*="image"] img').evaluateAll((images) => images.map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url))),
+          tags: await page.locator('[class*="tag"]').allTextContents()
+        }
+    return mergeSearchDetail(card, source)
+  }
+
+  private async nextSearchPage(page: Page): Promise<boolean> {
+    const fixture = page.locator('[data-xianyu-next]').first()
+    const role = page.getByRole('button', { name: escapedText('下一页') }).first()
+    const link = page.locator('a[rel="next"]').first()
+    const next = await fixture.count() ? fixture : await role.count() ? role : link
+    if (!(await next.count())) return false
+    const disabled = await next.isDisabled().catch(() => false) || await next.getAttribute('aria-disabled') === 'true'
+    if (disabled) return false
+    await next.click()
+    await page.waitForTimeout(180)
+    return true
+  }
+
+  private throwPageState(text: string, fallback: string): never {
+    const normalized = compact(text).slice(0, 4_000)
+    if (/非法访问|访问受限|操作太频繁|安全验证/.test(normalized)) throw new SearchPageError('access', '闲鱼页面拒绝访问，请在本机 Chrome 检查登录状态后稍后重试')
+    if (/扫码|登录/.test(normalized)) throw new SearchPageError('login', '闲鱼登录状态已失效，请打开 Chrome 重新扫码登录')
+    throw new SearchPageError('structure', fallback)
+  }
+
+  private async goto(page: Page, url: string, failureMessage: string): Promise<void> {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS })
+      await page.waitForTimeout(120)
+    } catch {
+      throw new SearchPageError('network', failureMessage)
+    }
+  }
+
+  private async openLoginPage(): Promise<Page> {
+    if (this.loginPage && !this.loginPage.isClosed()) return this.loginPage
+    this.loginPage = await this.newProfilePage()
+    return this.loginPage
+  }
+
+  private async openScannerPage(): Promise<Page> {
+    if (this.scannerPage && !this.scannerPage.isClosed()) return this.scannerPage
+    this.scannerPage = await this.newProfilePage()
+    return this.scannerPage
+  }
+
+  private async openDetailPage(): Promise<Page> {
+    if (this.detailPage && !this.detailPage.isClosed()) return this.detailPage
+    this.detailPage = await this.newProfilePage()
+    return this.detailPage
+  }
+
+  private async newProfilePage(): Promise<Page> {
+    if (!this.context) {
+      const profileDir = join(app.getPath('userData'), 'xianyu-chrome-profile')
+      mkdirSync(profileDir, { recursive: true })
+      try {
+        this.context = await chromium.launchPersistentContext(profileDir, {
+          channel: 'chrome', headless: false, viewport: { width: 1280, height: 900 }
+        })
+      } catch {
+        this.updateBrowser('error')
+        throw new Error('未找到可用的系统 Google Chrome。请安装官方 Chrome 后重试。')
+      }
+      this.context.on('close', () => {
+        this.context = undefined
+        this.loginPage = undefined
+        this.scannerPage = undefined
+        this.detailPage = undefined
+        this.updateBrowser('idle')
+      })
+      this.updateBrowser('open')
+    }
+    return this.context.newPage()
   }
 
   private async ensureAuthorized(): Promise<void> {
@@ -239,29 +596,6 @@ export class XianyuMonitor {
         return
       }
     }
-  }
-
-  private async openPage(): Promise<Page> {
-    if (!this.context) {
-      const profileDir = join(app.getPath('userData'), 'xianyu-chrome-profile')
-      mkdirSync(profileDir, { recursive: true })
-      try {
-        this.context = await chromium.launchPersistentContext(profileDir, {
-          channel: 'chrome',
-          headless: false,
-          viewport: { width: 1280, height: 900 }
-        })
-      } catch {
-        this.updateBrowser('error')
-        throw new Error('未找到可用的系统 Google Chrome。请安装官方 Chrome 后重试。')
-      }
-      this.context.on('close', () => {
-        this.context = undefined
-        this.updateBrowser('idle')
-      })
-      this.updateBrowser('open')
-    }
-    return this.context.pages()[0] ?? this.context.newPage()
   }
 
   private getOrCreateDeviceKey(): DeviceKey {
@@ -330,6 +664,21 @@ export class XianyuMonitor {
     } finally {
       clearTimeout(timeout)
     }
+  }
+
+  private handleSearchError(error: SearchPageError): string {
+    this.running = false
+    this.stopTimer()
+    const message = error.kind === 'login'
+      ? '闲鱼登录状态已失效，采集已暂停；请打开 Chrome 重新扫码登录'
+      : error.kind === 'access'
+        ? '闲鱼页面拒绝访问，采集已暂停；请在本机 Chrome 检查登录状态后稍后重试'
+        : error.kind === 'network'
+          ? '闲鱼页面网络不可用，采集已暂停；恢复网络后可重新启动'
+          : `闲鱼页面结构异常，采集已暂停；${compact(error.message).slice(0, 120) || '请稍后重试'}`
+    this.db.addLog('error', message)
+    this.updateStatus('paused', message, this.state.entitled)
+    return message
   }
 
   private handleRuntimeError(error: unknown): string {

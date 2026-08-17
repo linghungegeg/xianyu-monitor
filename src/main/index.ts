@@ -123,7 +123,8 @@ app.whenReady().then(() => {
   app.on('activate', showMainWindow)
 })
 
-app.on('before-quit', () => {
-  quitting = true
-  void shutdown()
+app.on('before-quit', (event) => {
+  if (shutdownPromise) return
+  event.preventDefault()
+  requestQuit()
 })

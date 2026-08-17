@@ -2,17 +2,36 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity, Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ClipboardList,
   ExternalLink, FileSearch, Filter, Fish, Gauge, LayoutDashboard, LogOut, Menu, MoreHorizontal, PanelLeft, PanelLeftClose,
-  PackageSearch, Plus, RefreshCw, Search, Settings, ShieldCheck, SlidersHorizontal, Store, X
+  PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SlidersHorizontal, Store, Trash2, X
 } from 'lucide-react'
 import {
   UserApiClient, UserApiError, readUserRuntimeConfig, type UserIdentity, type UserListRequest,
-  type UserListResource, type UserPage
+  type UserListResource, type UserPage, type MonitorTask, type MonitorTaskInput, type MonitorTaskRule,
+  type MonitorTaskSort, type MonitorTaskStatus
 } from './api'
 
 type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai' | 'settings'
 type RowKind = Exclude<PageKey, 'dashboard' | 'settings'>
 type Status = '正常' | '关注' | '已暂停' | '已处理' | '待处理'
 type SortKey = 'updated_at_desc' | 'priority_desc' | 'title_asc'
+type MonitorForm = {
+  keyword: string
+  categoryPath: string
+  sort: MonitorTaskSort
+  minPrice: string
+  maxPrice: string
+  region: string
+  condition: string
+  delivery: string
+  shipping: string
+  guarantee: string
+  newOnly: string
+  includeWords: string
+  excludeWords: string
+  pageLimit: string
+  intervalSeconds: string
+  status: MonitorTaskStatus
+}
 
 type TableRow = {
   id: string
@@ -162,6 +181,141 @@ function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow
   }
 }
 
+const monitorSortOptions: Array<{ value: MonitorTaskSort; label: string }> = [
+  { value: 'comprehensive', label: '综合排序' },
+  { value: 'newly_reduced', label: '最新降价' },
+  { value: 'newly_published', label: '最新发布' },
+  { value: 'price_asc', label: '价格从低到高' },
+  { value: 'price_desc', label: '价格从高到低' }
+]
+
+const demoMonitorTasks: MonitorTask[] = [
+  {
+    id: 'demo-monitor-1',
+    rule: { keyword: 'MacBook Air M2', categoryPath: ['数码', '电脑'], sort: 'newly_reduced', minPrice: 3500, maxPrice: 5500, region: '全国', includeWords: ['16G'], excludeWords: ['维修'], pageLimit: 3 },
+    ruleVersion: 1,
+    intervalSeconds: 900,
+    status: 'active',
+    nextRunAt: '',
+    createdAt: '2026-08-18T09:00:00.000Z',
+    updatedAt: '2026-08-18T09:00:00.000Z'
+  },
+  {
+    id: 'demo-monitor-2',
+    rule: { keyword: '索尼 A7M4', categoryPath: ['数码', '摄影摄像'], sort: 'comprehensive', minPrice: 9000, maxPrice: 14000, region: '上海', filters: { guarantee: '验货宝' }, pageLimit: 2 },
+    ruleVersion: 1,
+    intervalSeconds: 1800,
+    status: 'paused',
+    nextRunAt: '',
+    createdAt: '2026-08-17T09:00:00.000Z',
+    updatedAt: '2026-08-17T09:00:00.000Z'
+  }
+]
+
+function emptyMonitorForm(): MonitorForm {
+  return {
+    keyword: '', categoryPath: '', sort: 'comprehensive', minPrice: '', maxPrice: '', region: '',
+    condition: '', delivery: '', shipping: '', guarantee: '', newOnly: '', includeWords: '', excludeWords: '',
+    pageLimit: '2', intervalSeconds: '900', status: 'active'
+  }
+}
+
+function monitorFormFromTask(task: MonitorTask): MonitorForm {
+  const filters = task.rule.filters ?? {}
+  return {
+    keyword: task.rule.keyword ?? '',
+    categoryPath: task.rule.categoryPath?.join(' / ') ?? '',
+    sort: task.rule.sort,
+    minPrice: task.rule.minPrice === undefined ? '' : String(task.rule.minPrice),
+    maxPrice: task.rule.maxPrice === undefined ? '' : String(task.rule.maxPrice),
+    region: task.rule.region ?? '',
+    condition: filters.condition ?? '',
+    delivery: filters.delivery ?? '',
+    shipping: filters.shipping ?? '',
+    guarantee: filters.guarantee ?? '',
+    newOnly: filters.newOnly ?? '',
+    includeWords: task.rule.includeWords?.join('，') ?? '',
+    excludeWords: task.rule.excludeWords?.join('，') ?? '',
+    pageLimit: String(task.rule.pageLimit),
+    intervalSeconds: String(task.intervalSeconds),
+    status: task.status
+  }
+}
+
+function monitorWords(value: string, field: string): string[] {
+  const words = value.split(/[，,\n]/).map((word) => word.trim()).filter(Boolean)
+  if (words.length > 20) throw new Error(`${field}最多 20 个`)
+  if (words.some((word) => word.length > 48)) throw new Error(`${field}单项不能超过 48 个字符`)
+  if (new Set(words).size !== words.length) throw new Error(`${field}不能重复`)
+  return words
+}
+
+function monitorPositiveInteger(value: string, minimum: number, maximum: number, field: string): number {
+  const number = Number(value)
+  if (!Number.isInteger(number) || number < minimum || number > maximum) throw new Error(`${field}必须在 ${minimum}-${maximum} 之间`)
+  return number
+}
+
+function monitorPrice(value: string, field: string): number | undefined {
+  if (!value.trim()) return undefined
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0 || number > 100000000) throw new Error(`${field}必须是有效价格`)
+  return number
+}
+
+function monitorInputFromForm(form: MonitorForm): MonitorTaskInput {
+  const keyword = form.keyword.trim()
+  const categoryPath = form.categoryPath.split(/[/>]/).map((part) => part.trim()).filter(Boolean)
+  if (!keyword && !categoryPath.length) throw new Error('关键词或类目路径至少填写一项')
+  if (keyword.length > 80) throw new Error('关键词不能超过 80 个字符')
+  if (categoryPath.length > 3) throw new Error('类目路径最多 3 级')
+  if (categoryPath.some((part) => part.length > 80) || new Set(categoryPath).size !== categoryPath.length) throw new Error('类目路径无效')
+  const minPrice = monitorPrice(form.minPrice, '最低价')
+  const maxPrice = monitorPrice(form.maxPrice, '最高价')
+  if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) throw new Error('最低价不能高于最高价')
+  const includeWords = monitorWords(form.includeWords, '包含词')
+  const excludeWords = monitorWords(form.excludeWords, '排除词')
+  if (includeWords.some((word) => excludeWords.includes(word))) throw new Error('包含词与排除词不能重复')
+  const filters = Object.fromEntries(Object.entries({ condition: form.condition, delivery: form.delivery, shipping: form.shipping, guarantee: form.guarantee, newOnly: form.newOnly }).map(([key, value]) => [key, value.trim()]).filter(([, value]) => value)) as Record<string, string>
+  const region = form.region.trim()
+  if (region.length > 64) throw new Error('地区不能超过 64 个字符')
+  const rule: MonitorTaskRule = {
+    ...(keyword ? { keyword } : {}),
+    ...(categoryPath.length ? { categoryPath } : {}),
+    sort: form.sort,
+    ...(minPrice === undefined ? {} : { minPrice }),
+    ...(maxPrice === undefined ? {} : { maxPrice }),
+    ...(region ? { region } : {}),
+    ...(Object.keys(filters).length ? { filters } : {}),
+    ...(includeWords.length ? { includeWords } : {}),
+    ...(excludeWords.length ? { excludeWords } : {}),
+    pageLimit: monitorPositiveInteger(form.pageLimit, 1, 10, '页数上限')
+  }
+  return { rule, intervalSeconds: monitorPositiveInteger(form.intervalSeconds, 60, 86400, '采集间隔'), status: form.status }
+}
+
+function monitorInterval(seconds: number): string {
+  if (seconds % 3600 === 0) return `每 ${seconds / 3600} 小时`
+  if (seconds % 60 === 0) return `每 ${seconds / 60} 分钟`
+  return `每 ${seconds} 秒`
+}
+
+function monitorUpdatedAt(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '最近更新未知' : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function monitorRuleScope(rule: MonitorTaskRule): string {
+  const price = rule.minPrice === undefined && rule.maxPrice === undefined ? '' : `${rule.minPrice ?? 0}-${rule.maxPrice ?? '不限'} 元`
+  return [rule.categoryPath?.join(' / '), price, rule.region].filter(Boolean).join(' · ') || '未设置额外范围'
+}
+
+function monitorRuleFilters(rule: MonitorTaskRule): string {
+  const sort = monitorSortOptions.find((option) => option.value === rule.sort)?.label ?? '综合排序'
+  const words = [...(rule.includeWords ?? []).map((word) => `含 ${word}`), ...(rule.excludeWords ?? []).map((word) => `排 ${word}`)]
+  return [sort, `最多 ${rule.pageLimit} 页`, ...words].join(' · ')
+}
+
 type AuthView = { status: 'checking' | 'signed-out' | 'ready'; user: UserIdentity | null; error: string | null }
 
 function App(): ReactNode {
@@ -211,7 +365,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
   const openTabs = active === 'dashboard' ? [pages[0]] : [pages[0], activePage]
-  const listKind = active === 'dashboard' || active === 'settings' ? null : active
+  const listKind = active === 'dashboard' || active === 'settings' || active === 'monitors' ? null : active
   const listRequest = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort, filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, sort, status])
 
   useEffect(() => {
@@ -237,7 +391,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
     <section className="main-shell"><header className="workspace-header"><div className="header-greeting"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>欢迎使用闲鱼数据台</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /><i>3</i></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span><ChevronDown size={15} /></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header><div className="tabs-bar">{openTabs.map((tab) => <div className={`workspace-tab ${active === tab.key ? 'active' : ''}`} key={tab.key}><button onClick={() => switchPage(tab.key)}>{tab.label}</button>{tab.key !== 'dashboard' && <button className="tab-close" title={`关闭${tab.label}`} onClick={() => switchPage('dashboard')}><X size={13} /></button>}</div>)}</div>
-      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
+      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
     {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} />}
   </div>
 }
@@ -246,6 +400,133 @@ function Dashboard({ mode, onNavigate }: { mode: 'demo' | 'api'; onNavigate: (ke
   if (mode === 'api') return <ApiState title="暂无数据概览" description="数据概览准备完成后将在这里展示。" />
   const stats = [['生效监控', '18', '较昨日 +2', Gauge, 'blue'], ['关注商家', '36', '公开商品变化 14', Store, 'mint'], ['待处理事件', '7', '3 条价格变化', Bell, 'amber'], ['市场机会', '12', '过去 24 小时', FileSearch, 'rose']] as const
   return <><div className="page-heading"><div><p className="eyebrow">数据概览</p><h1>数据总览</h1><p>查看近期监控、市场和分析动态。</p></div><button className="primary" onClick={() => onNavigate('monitors')}><Plus size={16} />新建监控</button></div><section className="stats-grid">{stats.map(([label, value, note, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={20} /></div><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div></article>)}</section><section className="dashboard-grid"><section className="panel wide"><div className="panel-head"><div><h2>重点动态</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('events')}>查看全部 <ChevronRight size={15} /></button></div><div className="feed-list">{['MacBook Air M2 16G 512G 价格下降 6.5%', '海风数码回收店新增 6 个公开商品', '轻薄本价格带的低价供给增加 18%'].map((item, index) => <button className="feed" key={item} onClick={() => onNavigate('events')}><span className={`feed-dot d${index}`} /><div><strong>{item}</strong><small>{index + 1} 小时前</small></div><ChevronRight size={16} /></button>)}</div></section><section className="panel"><div className="panel-head"><div><h2>市场信号</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('discoveries')}>全部</button></div><div className="signal"><div><span>价格下降商品</span><strong>42</strong></div><div><span>新增样本</span><strong>186</strong></div><div><span>商家上新</span><strong>29</strong></div></div></section><section className="panel"><div className="panel-head"><div><h2>最新 AI 解读</h2><p>已更新</p></div><button className="text-button" onClick={() => onNavigate('ai')}>打开</button></div><div className="ai-preview"><Bot size={22} /><div><strong>轻薄本价格带周报</strong><p>低价供给增加，成交热度保持平稳。</p></div></div></section></section></>
+}
+
+function MonitorPage({ api, mode }: { api: UserApiClient; mode: 'demo' | 'api' }): ReactNode {
+  const [tasks, setTasks] = useState<MonitorTask[]>(() => mode === 'demo' ? demoMonitorTasks : [])
+  const [loading, setLoading] = useState(mode === 'api')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [editing, setEditing] = useState<MonitorTask | null>(null)
+  const [form, setForm] = useState<MonitorForm>(emptyMonitorForm)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [workingId, setWorkingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (mode === 'demo') return
+    const controller = new AbortController()
+    let active = true
+    setLoading(true)
+    setLoadError(null)
+    api.listMonitorTasks({ limit: 100, cursor: null, sort: 'updated_at_desc', filters: {} }, controller.signal)
+      .then((page) => { if (active) setTasks(page.items) })
+      .catch((caught) => {
+        if (!active || (caught instanceof DOMException && caught.name === 'AbortError')) return
+        setLoadError(caught instanceof UserApiError ? caught.message : '监控任务加载失败')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false; controller.abort() }
+  }, [api, mode, reloadKey])
+
+  const closeEditor = (force = false) => {
+    if (saving && !force) return
+    setEditorOpen(false)
+    setEditing(null)
+    setFormError(null)
+  }
+
+  const createTask = () => {
+    setEditing(null)
+    setForm(emptyMonitorForm())
+    setFormError(null)
+    setEditorOpen(true)
+  }
+
+  const editTask = (task: MonitorTask) => {
+    setEditing(task)
+    setForm(monitorFormFromTask(task))
+    setFormError(null)
+    setEditorOpen(true)
+  }
+
+  const saveTask = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setFormError(null)
+    let input: MonitorTaskInput
+    try {
+      input = monitorInputFromForm(form)
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : '规则填写无效')
+      return
+    }
+    setSaving(true)
+    try {
+      if (mode === 'demo') {
+        const now = new Date().toISOString()
+        if (editing) {
+          const updated: MonitorTask = { ...editing, rule: input.rule, intervalSeconds: input.intervalSeconds, status: input.status ?? editing.status, ruleVersion: editing.ruleVersion + 1, updatedAt: now }
+          setTasks((current) => current.map((task) => task.id === updated.id ? updated : task))
+        } else {
+          const created: MonitorTask = { id: `demo-monitor-${Date.now()}`, rule: input.rule, intervalSeconds: input.intervalSeconds, status: input.status ?? 'active', ruleVersion: 1, nextRunAt: '', createdAt: now, updatedAt: now }
+          setTasks((current) => [created, ...current])
+        }
+      } else if (editing) {
+        const updated = await api.updateMonitorTask(editing.id, input)
+        setTasks((current) => current.map((task) => task.id === updated.id ? updated : task))
+      } else {
+        const created = await api.createMonitorTask(input)
+        setTasks((current) => [created, ...current])
+      }
+      closeEditor(true)
+    } catch (caught) {
+      setFormError(caught instanceof UserApiError ? caught.message : '保存监控任务失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const changeStatus = async (task: MonitorTask) => {
+    const status: MonitorTaskStatus = task.status === 'active' ? 'paused' : 'active'
+    setActionError(null)
+    setWorkingId(task.id)
+    try {
+      if (mode === 'demo') {
+        const updated = { ...task, status, updatedAt: new Date().toISOString() }
+        setTasks((current) => current.map((entry) => entry.id === task.id ? updated : entry))
+      } else {
+        const updated = await api.updateMonitorTask(task.id, { status })
+        setTasks((current) => current.map((entry) => entry.id === task.id ? updated : entry))
+      }
+    } catch (caught) {
+      setActionError(caught instanceof UserApiError ? caught.message : '更新监控状态失败')
+    } finally {
+      setWorkingId(null)
+    }
+  }
+
+  const deleteTask = async (task: MonitorTask) => {
+    if (!window.confirm(`确定删除监控“${task.rule.keyword ?? task.id}”吗？`)) return
+    setActionError(null)
+    setWorkingId(task.id)
+    try {
+      if (mode !== 'demo') await api.deleteMonitorTask(task.id)
+      setTasks((current) => current.filter((entry) => entry.id !== task.id))
+    } catch (caught) {
+      setActionError(caught instanceof UserApiError ? caught.message : '删除监控任务失败')
+    } finally {
+      setWorkingId(null)
+    }
+  }
+
+  return <><div className="page-heading"><div><p className="eyebrow">规则管理</p><h1>我的监控</h1><p>设置关键词、公开筛选条件和本机采集频率。</p></div><button className="primary" onClick={createTask}><Plus size={16} />新建监控</button></div>{actionError && <div className="monitor-alert" role="alert">{actionError}</div>}<section className="table-panel monitor-table-panel"><div className="table-summary"><span>共 <strong>{tasks.length}</strong> 条监控</span><span>规则仅用于本机采集启动器。</span><button className="icon-button" title="刷新监控任务" onClick={() => setReloadKey((value) => value + 1)} disabled={loading}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></div>{loadError ? <div className="state-box"><Activity size={27} /><strong>监控任务加载失败</strong><p>{loadError}</p><button className="primary small" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载监控任务</strong><p>请稍候。</p></div> : tasks.length === 0 ? <div className="state-box"><Gauge size={27} /><strong>还没有监控任务</strong><p>新建一条规则后，已绑定设备会在下次检查时使用它。</p><button className="primary small" onClick={createTask}><Plus size={15} />新建监控</button></div> : <div className="table-wrap"><table className="monitor-table"><thead><tr><th>监控条件</th><th>范围</th><th>采集频率</th><th>状态</th><th aria-label="操作" /></tr></thead><tbody>{tasks.map((task) => <tr key={task.id}><td><strong>{task.rule.keyword ?? '类目监控'}</strong><small>{monitorRuleFilters(task.rule)}</small></td><td><span>{monitorRuleScope(task.rule)}</span><small>更新于 {monitorUpdatedAt(task.updatedAt)}</small></td><td>{monitorInterval(task.intervalSeconds)}</td><td><span className={`status ${task.status === 'active' ? 'ok' : 'muted'}`}>{task.status === 'active' ? '已启用' : '已暂停'}</span></td><td><div className="monitor-actions"><button className="row-action" title="编辑监控" onClick={() => editTask(task)} disabled={workingId === task.id}><Pencil size={16} /></button><button className="row-action" title={task.status === 'active' ? '暂停采集' : '启用采集'} onClick={() => void changeStatus(task)} disabled={workingId === task.id}>{task.status === 'active' ? <Pause size={16} /> : <Play size={16} />}</button><button className="row-action monitor-delete" title="删除监控" onClick={() => void deleteTask(task)} disabled={workingId === task.id}><Trash2 size={16} /></button></div></td></tr>)}</tbody></table></div>}</section>{editorOpen && <MonitorEditor editing={editing} form={form} saving={saving} error={formError} onChange={(field, value) => setForm((current) => ({ ...current, [field]: value } as MonitorForm))} onClose={closeEditor} onSubmit={(event) => void saveTask(event)} />}</>
+}
+
+function MonitorEditor({ editing, form, saving, error, onChange, onClose, onSubmit }: { editing: MonitorTask | null; form: MonitorForm; saving: boolean; error: string | null; onChange: (field: keyof MonitorForm, value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void }): ReactNode {
+  const setValue = (field: keyof MonitorForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange(field, event.target.value)
+  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭监控编辑器" onClick={onClose} /><section className="monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="monitor-editor-title"><header><div><p className="eyebrow">监控规则</p><h2 id="monitor-editor-title">{editing ? '编辑监控' : '新建监控'}</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>关键词</span><input value={form.keyword} onChange={setValue('keyword')} maxLength={80} required={!form.categoryPath.trim()} placeholder="例如 MacBook Air M2" autoFocus /></label><label className="monitor-field monitor-field-wide"><span>类目路径</span><input value={form.categoryPath} onChange={setValue('categoryPath')} required={!form.keyword.trim()} placeholder="用 / 分隔，最多 3 级，例如 数码 / 电脑 / 笔记本" /></label><label className="monitor-field"><span>排序</span><select value={form.sort} onChange={setValue('sort')}>{monitorSortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="monitor-field"><span>地区</span><input value={form.region} onChange={setValue('region')} maxLength={64} placeholder="例如 全国、杭州" /></label><label className="monitor-field"><span>最低价（元）</span><input type="number" min="0" value={form.minPrice} onChange={setValue('minPrice')} placeholder="不限" /></label><label className="monitor-field"><span>最高价（元）</span><input type="number" min="0" value={form.maxPrice} onChange={setValue('maxPrice')} placeholder="不限" /></label></div><section className="monitor-form-section"><h3>公开筛选</h3><div className="monitor-form-grid"><label className="monitor-field"><span>成色</span><input value={form.condition} onChange={setValue('condition')} maxLength={40} placeholder="例如 全新" /></label><label className="monitor-field"><span>发货方式</span><input value={form.delivery} onChange={setValue('delivery')} maxLength={40} placeholder="例如 同城自提" /></label><label className="monitor-field"><span>配送</span><input value={form.shipping} onChange={setValue('shipping')} maxLength={40} placeholder="例如 包邮" /></label><label className="monitor-field"><span>保障</span><input value={form.guarantee} onChange={setValue('guarantee')} maxLength={40} placeholder="例如 验货宝" /></label><label className="monitor-field"><span>仅看全新</span><select value={form.newOnly} onChange={setValue('newOnly')}><option value="">不限</option><option value="是">是</option><option value="否">否</option></select></label></div></section><section className="monitor-form-section"><h3>匹配与频率</h3><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>包含词</span><input value={form.includeWords} onChange={setValue('includeWords')} placeholder="用逗号分隔，例如 16G，国行" /></label><label className="monitor-field monitor-field-wide"><span>排除词</span><input value={form.excludeWords} onChange={setValue('excludeWords')} placeholder="用逗号分隔，例如 维修，配件" /></label><label className="monitor-field"><span>页数上限</span><input type="number" min="1" max="10" step="1" value={form.pageLimit} onChange={setValue('pageLimit')} /></label><label className="monitor-field"><span>采集间隔（秒）</span><input type="number" min="60" max="86400" step="60" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用采集</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用采集" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div></section>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '保存监控'}</button></footer></form></section></div>
 }
 
 function ApiState({ title, description }: { title: string; description: string }): ReactNode {

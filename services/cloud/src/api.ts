@@ -21,6 +21,20 @@ type ListContext = ParsedListQuery & { snapshot: string; snapshotAt: string; cur
 type ListQuerySpec = { text: string; values: unknown[] }
 type ListPlan = { resource: string; page: (context: ListContext, subjectId: string) => ListQuerySpec; count: (context: ListContext, subjectId: string) => ListQuerySpec }
 type ListPlanBuilder = (context: ListContext, subjectId: string) => ListPlan
+type MonitorTaskStatus = 'active' | 'paused'
+type MonitorTaskRule = {
+  keyword?: string
+  categoryPath?: string[]
+  sort: 'comprehensive' | 'newly_reduced' | 'newly_published' | 'price_asc' | 'price_desc'
+  minPrice?: number
+  maxPrice?: number
+  region?: string
+  filters?: Record<string, string>
+  includeWords?: string[]
+  excludeWords?: string[]
+  pageLimit: number
+}
+type MonitorTaskInput = { rule?: MonitorTaskRule; intervalSeconds?: number; status?: MonitorTaskStatus }
 
 class ListRequestError extends Error {
   code: string
@@ -31,12 +45,131 @@ class ListRequestError extends Error {
   }
 }
 
+class MonitorTaskRequestError extends Error {
+  readonly status: number
+
+  constructor(message: string, status = 400) {
+    super(message)
+    this.status = status
+  }
+}
+
+const monitorTaskSorts = new Set<MonitorTaskRule['sort']>(['comprehensive', 'newly_reduced', 'newly_published', 'price_asc', 'price_desc'])
+const monitorTaskFilterKeys = new Set(['condition', 'delivery', 'shipping', 'guarantee', 'newOnly'])
+const monitorTaskRuleKeys = new Set(['keyword', 'categoryPath', 'sort', 'minPrice', 'maxPrice', 'region', 'filters', 'includeWords', 'excludeWords', 'pageLimit'])
+const monitorTaskInputKeys = new Set(['rule', 'intervalSeconds', 'status'])
+const MAX_ACTIVE_SEARCH_TASKS = 20
+
 function body<T>(value: unknown): T { return value as T }
 function refreshHash(token: string): string { return createHash('sha256').update(token).digest('hex') }
 function bearer(header: string | undefined): string { if (!header?.startsWith('Bearer ')) throw new Error('缺少访问令牌'); return header.slice(7) }
 function fail(reply: { code: (value: number) => { send: (body: unknown) => unknown } }, code: number, message: string) { return reply.code(code).send({ error: message }) }
 function listFail(reply: { code: (value: number) => { send: (body: unknown) => unknown } }, error: ListRequestError) { return reply.code(400).send({ error: { code: error.code, message: error.message } }) }
 function isUniqueViolation(error: unknown): boolean { return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === '23505') }
+
+function monitorTaskRecord(value: unknown, name: string): Record<string, unknown> {
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw new MonitorTaskRequestError(`${name} 必须是对象`)
+  return value as Record<string, unknown>
+}
+
+function monitorTaskString(value: unknown, name: string, maxLength: number): string {
+  if (typeof value !== 'string') throw new MonitorTaskRequestError(`${name} 必须是字符串`)
+  const normalized = value.trim()
+  if (!normalized || normalized.length > maxLength) throw new MonitorTaskRequestError(`${name} 长度无效`)
+  return normalized
+}
+
+function monitorTaskWords(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length > 20) throw new MonitorTaskRequestError(`${name} 必须是最多 20 项的数组`)
+  const words = value.map((entry) => monitorTaskString(entry, name, 48))
+  if (new Set(words).size !== words.length) throw new MonitorTaskRequestError(`${name} 不能包含重复词`)
+  return words
+}
+
+function monitorTaskPrice(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100_000_000) throw new MonitorTaskRequestError(`${name} 必须是有效价格`)
+  return value
+}
+
+function parseMonitorTaskRule(value: unknown): MonitorTaskRule {
+  const source = monitorTaskRecord(value, 'rule')
+  for (const key of Object.keys(source)) if (!monitorTaskRuleKeys.has(key)) throw new MonitorTaskRequestError(`rule 不支持字段 ${key}`)
+
+  const keyword = source.keyword === undefined ? undefined : monitorTaskString(source.keyword, 'keyword', 80)
+  const categoryPath = source.categoryPath === undefined ? undefined : (() => {
+    if (!Array.isArray(source.categoryPath) || source.categoryPath.length < 1 || source.categoryPath.length > 3) throw new MonitorTaskRequestError('categoryPath 必须是 1 到 3 级类目数组')
+    const path = source.categoryPath.map((entry) => monitorTaskString(entry, 'categoryPath', 80))
+    if (new Set(path).size !== path.length) throw new MonitorTaskRequestError('categoryPath 不能包含重复类目')
+    return path
+  })()
+  if (!keyword && !categoryPath) throw new MonitorTaskRequestError('至少需要 keyword 或 categoryPath')
+
+  const sort = source.sort === undefined ? 'comprehensive' : source.sort
+  if (typeof sort !== 'string' || !monitorTaskSorts.has(sort as MonitorTaskRule['sort'])) throw new MonitorTaskRequestError('sort 无效')
+  const minPrice = source.minPrice === undefined ? undefined : monitorTaskPrice(source.minPrice, 'minPrice')
+  const maxPrice = source.maxPrice === undefined ? undefined : monitorTaskPrice(source.maxPrice, 'maxPrice')
+  if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) throw new MonitorTaskRequestError('minPrice 不能大于 maxPrice')
+  const region = source.region === undefined ? undefined : monitorTaskString(source.region, 'region', 64)
+  const filters = source.filters === undefined ? undefined : (() => {
+    const filterSource = monitorTaskRecord(source.filters, 'filters')
+    if (Object.keys(filterSource).length > 5) throw new MonitorTaskRequestError('filters 最多 5 项')
+    const result: Record<string, string> = {}
+    for (const [key, rawValue] of Object.entries(filterSource)) {
+      if (!monitorTaskFilterKeys.has(key)) throw new MonitorTaskRequestError(`filters 不支持字段 ${key}`)
+      result[key] = monitorTaskString(rawValue, `filters.${key}`, 40)
+    }
+    return result
+  })()
+  const includeWords = source.includeWords === undefined ? undefined : monitorTaskWords(source.includeWords, 'includeWords')
+  const excludeWords = source.excludeWords === undefined ? undefined : monitorTaskWords(source.excludeWords, 'excludeWords')
+  if (includeWords && excludeWords && includeWords.some((word) => excludeWords.includes(word))) throw new MonitorTaskRequestError('包含词与排除词不能重复')
+  const pageLimit = source.pageLimit === undefined ? 2 : source.pageLimit
+  if (typeof pageLimit !== 'number' || !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > 10) throw new MonitorTaskRequestError('pageLimit 必须是 1 到 10 的整数')
+
+  return {
+    ...(keyword ? { keyword } : {}),
+    ...(categoryPath ? { categoryPath } : {}),
+    sort: sort as MonitorTaskRule['sort'],
+    ...(minPrice === undefined ? {} : { minPrice }),
+    ...(maxPrice === undefined ? {} : { maxPrice }),
+    ...(region ? { region } : {}),
+    ...(filters && Object.keys(filters).length ? { filters } : {}),
+    ...(includeWords && includeWords.length ? { includeWords } : {}),
+    ...(excludeWords && excludeWords.length ? { excludeWords } : {}),
+    pageLimit
+  }
+}
+
+function parseMonitorTaskInput(value: unknown, creating: boolean): MonitorTaskInput {
+  const source = monitorTaskRecord(value, '请求体')
+  for (const key of Object.keys(source)) if (!monitorTaskInputKeys.has(key)) throw new MonitorTaskRequestError(`不支持字段 ${key}`)
+  if (creating && source.rule === undefined) throw new MonitorTaskRequestError('rule 必填')
+  if (creating && source.intervalSeconds === undefined) throw new MonitorTaskRequestError('intervalSeconds 必填')
+  const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 60 到 86400 的整数')
+  const status = source.status === undefined ? undefined : source.status
+  if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
+  return {
+    ...(source.rule === undefined ? {} : { rule: parseMonitorTaskRule(source.rule) }),
+    ...(intervalSeconds === undefined ? {} : { intervalSeconds }),
+    ...(status === undefined ? {} : { status: status as MonitorTaskStatus })
+  }
+}
+
+function monitorTaskResponse(row: Record<string, unknown>) {
+  const rule = row.rule ?? row.rule_json
+  const parsedRule = typeof rule === 'string' ? JSON.parse(rule) : rule
+  return {
+    id: String(row.id),
+    rule: parseMonitorTaskRule(parsedRule),
+    ruleVersion: Number(row.ruleVersion ?? row.rule_version),
+    status: String(row.status),
+    intervalSeconds: Number(row.intervalSeconds ?? row.interval_seconds),
+    nextRunAt: timestamp(row.nextRunAt ?? row.next_run_at),
+    createdAt: timestamp(row.createdAt ?? row.created_at),
+    updatedAt: timestamp(row.updatedAt ?? row.updated_at)
+  }
+}
 
 function installCors(app: FastifyInstance, allowedOrigins: readonly string[]) {
   const origins = new Set(allowedOrigins)
@@ -49,12 +182,12 @@ function installCors(app: FastifyInstance, allowedOrigins: readonly string[]) {
     }
     if (!origins.has(origin)) return reply.code(403).send({ error: 'Origin 不在允许列表' })
     reply.header('access-control-allow-origin', origin)
-    reply.header('access-control-allow-methods', 'GET, POST, OPTIONS')
+    reply.header('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS')
     reply.header('access-control-allow-headers', 'Authorization, Content-Type')
     reply.header('vary', 'Origin')
     if (request.method === 'OPTIONS') {
       const requestedMethod = request.headers['access-control-request-method']
-      if (requestedMethod && !['GET', 'POST', 'OPTIONS'].includes(String(requestedMethod).toUpperCase())) return reply.code(405).send({ error: 'CORS 方法不允许' })
+      if (requestedMethod && !['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'].includes(String(requestedMethod).toUpperCase())) return reply.code(405).send({ error: 'CORS 方法不允许' })
       const requestedHeaders = String(request.headers['access-control-request-headers'] ?? '').split(',').map((header) => header.trim().toLowerCase()).filter(Boolean)
       if (requestedHeaders.some((header) => !['authorization', 'content-type'].includes(header))) return reply.code(400).send({ error: 'CORS 请求头不允许' })
       return reply.code(204).send()
@@ -265,10 +398,10 @@ const userLogsListConfig: ListConfig = {
 
 const userMonitorsListConfig: ListConfig = {
   resource: 'user.monitors',
-  defaultSort: 'started_at',
-  sortAliases: { started_at: 'started_at', updated_at: 'started_at', updated_at_desc: 'started_at', recent: 'started_at', priority_desc: 'status', title_asc: 'client_run_id', id: 'id' },
-  filterAliases: { taskReference: 'task_reference' },
-  allowedFilters: ['q', 'kind', 'status', 'task_reference']
+  defaultSort: 'updated_at',
+  sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', recent: 'updated_at', priority_desc: 'next_run_at', title_asc: 'keyword', next_run_at: 'next_run_at', id: 'id' },
+  filterAliases: { search: 'q' },
+  allowedFilters: ['q', 'status']
 }
 
 const adminBillingListConfig: ListConfig = {
@@ -430,17 +563,15 @@ const userLogsPlan = tablePlan({
 
 const userMonitorsPlan = tablePlan({
   resource: userMonitorsListConfig.resource,
-  from: 'ops.collection_runs r JOIN identity.collector_clients c ON c.id = r.client_id',
-  select: 'r.id, r.client_id AS "clientId", r.client_run_id AS "clientRunId", r.task_reference AS "taskReference", r.kind, r.status, r.result_counts AS "resultCounts", r.started_at AS "startedAt", r.finished_at AS "finishedAt"',
-  idExpression: 'r.id::text',
-  sortExpressions: { started_at: 'r.started_at', status: 'r.status', client_run_id: 'r.client_run_id', id: 'r.id::text' },
+  from: 'ops.monitor_tasks t',
+  select: 't.id, t.rule_json AS rule, t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"',
+  idExpression: 't.id::text',
+  sortExpressions: { created_at: 't.created_at', updated_at: 't.updated_at', next_run_at: 't.next_run_at', keyword: "COALESCE(t.rule_json->>'keyword', '')", id: 't.id::text' },
   conditions: (context, values, subjectId) => {
     values.push(subjectId)
-    const conditions = ['r.started_at <= $1', 'c.user_id = $2']
-    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`(LOWER(r.client_run_id) LIKE LOWER($${values.length}) OR LOWER(COALESCE(r.task_reference, '')) LIKE LOWER($${values.length}))`) }
-    if (context.filters.kind) { values.push(context.filters.kind); conditions.push(`r.kind = $${values.length}`) }
-    if (context.filters.status) { values.push(context.filters.status); conditions.push(`r.status = $${values.length}`) }
-    if (context.filters.task_reference) { values.push(context.filters.task_reference); conditions.push(`r.task_reference = $${values.length}`) }
+    const conditions = ['t.created_at <= $1', 't.user_id = $2']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`LOWER(t.rule_json::text) LIKE LOWER($${values.length})`) }
+    if (context.filters.status) { values.push(context.filters.status); conditions.push(`t.status = $${values.length}`) }
     return conditions
   }
 })
@@ -666,6 +797,12 @@ async function activeCollector(sql: Sql, clientId: string): Promise<{ user_id: s
   return client
 }
 
+async function collectorEntitlements(sql: Sql, userId: string) {
+  const grants = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [userId])
+  const taskLimit = Math.min(MAX_ACTIVE_SEARCH_TASKS, Math.max(0, ...grants.rows.filter((grant) => String(grant.capability) === 'collector').map((grant) => Number(grant.limit_value))))
+  return { items: grants.rows, allowed: taskLimit > 0, taskLimit }
+}
+
 async function authenticateToken(sql: Sql, domain: TokenDomain, kind: SubjectKind, token: string) {
   const claims = await verifyAccessToken(domain, kind, token)
   const session = (await sql.query('SELECT id, subject_type, subject_id, revoked_at, expires_at FROM identity.auth_refresh_sessions WHERE id = $1', [claims.sessionId])).rows[0] as SessionRow | undefined
@@ -699,6 +836,35 @@ async function revokeCollector(sql: Sql, clientId: string, userId?: string): Pro
   return true
 }
 
+const monitorTaskColumns = `id, rule_json AS rule, rule_version AS "ruleVersion", status, interval_seconds AS "intervalSeconds", next_run_at AS "nextRunAt", created_at AS "createdAt", updated_at AS "updatedAt"`
+
+async function ownedMonitorTask(sql: Sql, userId: string, taskId: string) {
+  return (await sql.query(`SELECT ${monitorTaskColumns} FROM ops.monitor_tasks WHERE id=$1 AND user_id=$2`, [taskId, userId])).rows[0]
+}
+
+async function allocateActiveTaskSlot(sql: Sql, userId: string, excludedTaskId?: string): Promise<number> {
+  const entitlements = await collectorEntitlements(sql, userId)
+  if (!entitlements.allowed) throw new MonitorTaskRequestError('当前账号没有可用采集权益', 403)
+  const values: unknown[] = [userId]
+  const excluded = excludedTaskId ? (() => { values.push(excludedTaskId); return ` AND id <> $${values.length}` })() : ''
+  const active = await sql.query(`SELECT active_slot FROM ops.monitor_tasks WHERE user_id=$1 AND status='active'${excluded}`, values)
+  const occupied = new Set(active.rows.map((task) => Number(task.active_slot)))
+  for (let slot = 1; slot <= entitlements.taskLimit; slot += 1) if (!occupied.has(slot)) return slot
+  throw new MonitorTaskRequestError(`当前采集权益最多启用 ${entitlements.taskLimit} 条搜索任务`, 403)
+}
+
+async function withActiveTaskSlotRetry<T>(sql: Sql, userId: string, excludedTaskId: string | undefined, operation: (activeSlot: number) => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < MAX_ACTIVE_SEARCH_TASKS; attempt += 1) {
+    const activeSlot = await allocateActiveTaskSlot(sql, userId, excludedTaskId)
+    try {
+      return await operation(activeSlot)
+    } catch (error) {
+      if (!isUniqueViolation(error) || attempt === MAX_ACTIVE_SEARCH_TASKS - 1) throw error
+    }
+  }
+  throw new Error('采集任务槽位分配失败')
+}
+
 export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = {}) {
   const app = Fastify({ logger: false })
   installCors(app, options.allowedOrigins ?? [])
@@ -726,6 +892,67 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
     } catch {
       return fail(reply, 401, '未授权')
     }
+  })
+  app.post('/v1/monitors', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = parseMonitorTaskInput(request.body, true)
+      const status = input.status ?? 'active'
+      const insertTask = (activeSlot: number | null) => sql.query(`INSERT INTO ops.monitor_tasks (id,user_id,kind,rule_json,rule_version,status,active_slot,interval_seconds,next_run_at,created_at,updated_at)
+        VALUES ($1,$2,'search',$3::jsonb,1,$4,$5,$6,now(),now(),now())
+        RETURNING ${monitorTaskColumns}`, [randomUUID(), claims.sub, JSON.stringify(input.rule), status, activeSlot, input.intervalSeconds])
+      const task = status === 'active'
+        ? await withActiveTaskSlotRetry(sql, String(claims.sub), undefined, (activeSlot) => insertTask(activeSlot))
+        : await insertTask(null)
+      return monitorTaskResponse(task.rows[0])
+    } catch (error) {
+      if (error instanceof MonitorTaskRequestError) return fail(reply, error.status, error.message)
+      if (isUniqueViolation(error)) return fail(reply, 403, '当前采集权益最多启用搜索任务')
+      throw error
+    }
+  })
+  app.get('/v1/monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const task = taskId ? await ownedMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!task) return fail(reply, 404, '监控任务不存在')
+    return monitorTaskResponse(task)
+  })
+  app.patch('/v1/monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const existing = taskId ? await ownedMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!existing) return fail(reply, 404, '监控任务不存在')
+    try {
+      const input = parseMonitorTaskInput(request.body, false)
+      if (!input.rule && input.intervalSeconds === undefined && input.status === undefined) throw new MonitorTaskRequestError('至少更新一个任务字段')
+      const current = monitorTaskResponse(existing)
+      const status = input.status ?? current.status
+      const updateTask = (activeSlot: number | null) => sql.query(`UPDATE ops.monitor_tasks
+        SET rule_json=$1::jsonb, interval_seconds=$2, status=$3, active_slot=$4, rule_version=rule_version+1, next_run_at=now(), updated_at=now()
+        WHERE id=$5 AND user_id=$6
+        RETURNING ${monitorTaskColumns}`, [JSON.stringify(input.rule ?? current.rule), input.intervalSeconds ?? current.intervalSeconds, status, activeSlot, taskId, claims.sub])
+      const task = status === 'active'
+        ? await withActiveTaskSlotRetry(sql, String(claims.sub), taskId, (activeSlot) => updateTask(activeSlot))
+        : await updateTask(null)
+      if (!task.rows[0]) return fail(reply, 404, '监控任务不存在')
+      return monitorTaskResponse(task.rows[0])
+    } catch (error) {
+      if (error instanceof MonitorTaskRequestError) return fail(reply, error.status, error.message)
+      if (isUniqueViolation(error)) return fail(reply, 403, '当前采集权益最多启用搜索任务')
+      throw error
+    }
+  })
+  app.delete('/v1/monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const deleted = taskId ? await sql.query('DELETE FROM ops.monitor_tasks WHERE id=$1 AND user_id=$2 RETURNING id', [taskId, claims.sub]) : { rows: [] }
+    if (!deleted.rows[0]) return fail(reply, 404, '监控任务不存在')
+    return { deleted: true }
   })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
@@ -823,8 +1050,24 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
     try {
       const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
       const client = await activeCollector(sql, String(claims.sub))
-      const grants = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [client.user_id])
-      return { allowed: grants.rows.some((grant) => Number(grant.limit_value) > 0), items: grants.rows }
+      return await collectorEntitlements(sql, client.user_id)
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
+    }
+  })
+  app.get('/v1/tasks', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      const client = await activeCollector(sql, String(claims.sub))
+      const entitlements = await collectorEntitlements(sql, client.user_id)
+      if (!entitlements.allowed) return fail(reply, 403, '当前账号没有可用采集权益')
+      const snapshotAt = timestamp((await sql.query('SELECT clock_timestamp() AS snapshot')).rows[0]?.snapshot)
+      const tasks = await sql.query(`SELECT id, rule_json AS rule, rule_version AS "ruleVersion", status, interval_seconds AS "intervalSeconds", next_run_at AS "nextRunAt", created_at AS "createdAt", updated_at AS "updatedAt"
+        FROM ops.monitor_tasks
+        WHERE user_id=$1 AND kind='search' AND updated_at <= $2::timestamptz
+          AND (status = 'paused' OR active_slot <= $3)
+        ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END ASC, next_run_at ASC, id ASC`, [client.user_id, snapshotAt, entitlements.taskLimit])
+      return { items: tasks.rows, snapshotAt, taskLimit: entitlements.taskLimit }
     } catch (error) {
       return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
     }

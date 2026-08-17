@@ -32,6 +32,39 @@ export type UserPage<T> = {
   snapshot?: string | null
 }
 
+export type MonitorTaskSort = 'comprehensive' | 'newly_reduced' | 'newly_published' | 'price_asc' | 'price_desc'
+export type MonitorTaskStatus = 'active' | 'paused'
+
+export type MonitorTaskRule = {
+  keyword?: string
+  categoryPath?: string[]
+  sort: MonitorTaskSort
+  minPrice?: number
+  maxPrice?: number
+  region?: string
+  filters?: Record<string, string>
+  includeWords?: string[]
+  excludeWords?: string[]
+  pageLimit: number
+}
+
+export type MonitorTask = {
+  id: string
+  rule: MonitorTaskRule
+  ruleVersion: number
+  intervalSeconds: number
+  status: MonitorTaskStatus
+  nextRunAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type MonitorTaskInput = {
+  rule: MonitorTaskRule
+  intervalSeconds: number
+  status?: MonitorTaskStatus
+}
+
 export class UserApiError extends Error {
   readonly status: number | null
   readonly code: string | null
@@ -89,6 +122,48 @@ function asRecord(value: unknown): Record<string, unknown> {
 function responseMessage(payload: unknown, fallback: string): string {
   const record = asRecord(payload)
   return typeof record.error === 'string' ? record.error : typeof record.message === 'string' ? record.message : fallback
+}
+
+function monitorTaskRule(value: unknown): MonitorTaskRule {
+  const parsed = typeof value === 'string' ? (() => {
+    try { return JSON.parse(value) } catch { return {} }
+  })() : value
+  const record = asRecord(parsed)
+  const categoryPath = Array.isArray(record.categoryPath) ? record.categoryPath.filter((part): part is string => typeof part === 'string') : undefined
+  const includeWords = Array.isArray(record.includeWords) ? record.includeWords.filter((word): word is string => typeof word === 'string') : undefined
+  const excludeWords = Array.isArray(record.excludeWords) ? record.excludeWords.filter((word): word is string => typeof word === 'string') : undefined
+  const filters = Object.fromEntries(Object.entries(asRecord(record.filters)).filter(([, entry]) => typeof entry === 'string')) as Record<string, string>
+  const sort: MonitorTaskSort = record.sort === 'newly_reduced' || record.sort === 'newly_published' || record.sort === 'price_asc' || record.sort === 'price_desc' ? record.sort : 'comprehensive'
+  return {
+    ...(typeof record.keyword === 'string' ? { keyword: record.keyword } : {}),
+    ...(categoryPath?.length ? { categoryPath } : {}),
+    sort,
+    ...(typeof record.minPrice === 'number' ? { minPrice: record.minPrice } : {}),
+    ...(typeof record.maxPrice === 'number' ? { maxPrice: record.maxPrice } : {}),
+    ...(typeof record.region === 'string' ? { region: record.region } : {}),
+    ...(Object.keys(filters).length ? { filters } : {}),
+    ...(includeWords?.length ? { includeWords } : {}),
+    ...(excludeWords?.length ? { excludeWords } : {}),
+    pageLimit: typeof record.pageLimit === 'number' ? record.pageLimit : 1
+  }
+}
+
+function monitorTask(value: unknown): MonitorTask {
+  const envelope = asRecord(value)
+  const record = asRecord(envelope.task ?? envelope.item ?? value)
+  const status: MonitorTaskStatus = record.status === 'paused' ? 'paused' : 'active'
+  const stringValue = (key: string) => typeof record[key] === 'string' ? record[key] as string : ''
+  const numberValue = (key: string, fallback: number) => typeof record[key] === 'number' && Number.isFinite(record[key]) ? record[key] : fallback
+  return {
+    id: stringValue('id'),
+    rule: monitorTaskRule(record.rule ?? record.rule_json),
+    ruleVersion: numberValue('ruleVersion', numberValue('rule_version', 1)),
+    intervalSeconds: numberValue('intervalSeconds', numberValue('interval_seconds', 60)),
+    status,
+    nextRunAt: stringValue('nextRunAt') || stringValue('next_run_at'),
+    createdAt: stringValue('createdAt') || stringValue('created_at'),
+    updatedAt: stringValue('updatedAt') || stringValue('updated_at')
+  }
 }
 
 export class UserApiClient {
@@ -154,6 +229,23 @@ export class UserApiClient {
     const limit = typeof page.limit === 'number' && Number.isFinite(page.limit) ? page.limit : undefined
     const snapshot = typeof page.snapshot === 'string' ? page.snapshot : null
     return { items, limit, total, nextCursor, hasMore, snapshot }
+  }
+
+  async listMonitorTasks(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<MonitorTask>> {
+    const page = await this.list<unknown>('monitors', input, signal)
+    return { ...page, items: page.items.map(monitorTask) }
+  }
+
+  async createMonitorTask(input: MonitorTaskInput): Promise<MonitorTask> {
+    return monitorTask(await this.request<unknown>('/v1/monitors', { method: 'POST', body: JSON.stringify(input) }))
+  }
+
+  async updateMonitorTask(id: string, input: Partial<MonitorTaskInput>): Promise<MonitorTask> {
+    return monitorTask(await this.request<unknown>(`/v1/monitors/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }))
+  }
+
+  async deleteMonitorTask(id: string): Promise<void> {
+    await this.request<unknown>(`/v1/monitors/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
   private setTokens(tokens: UserTokens): void {
