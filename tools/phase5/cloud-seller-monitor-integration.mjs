@@ -216,7 +216,7 @@ async function run() {
     assert(profile.statusCode === 200 && profile.body.includes(firstTask.platformSellerId), '卖家公开资料详情读取失败')
 
     const ingest = await collectorApi.inject({ method: 'POST', url: '/v1/ingest', headers: auth(collectorSession.accessToken), payload: {} })
-    assert(ingest.statusCode === 404, '阶段 5 不应暴露 ingest 路由')
+    assert(ingest.statusCode === 400, '阶段 6 ingest 路由应拒绝缺少 schema 的旧请求')
     const unbound = await collectorApi.inject({ method: 'POST', url: '/v1/devices/unbind', headers: auth(collectorSession.accessToken) })
     assert(unbound.statusCode === 200, '卖家测试设备解绑失败')
     const afterUnbind = await collectorApi.inject({ method: 'GET', url: '/v1/tasks', headers: auth(collectorSession.accessToken) })

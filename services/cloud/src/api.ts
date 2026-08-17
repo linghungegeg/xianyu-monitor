@@ -550,8 +550,8 @@ const adminUploadsListConfig: ListConfig = {
   resource: 'admin.uploads',
   defaultSort: 'received_at',
   sortAliases: { received_at: 'received_at', updated_at: 'received_at', updated_at_desc: 'received_at', recent: 'received_at', status: 'status', title: 'idempotency_key', title_asc: 'idempotency_key', id: 'id' },
-  filterAliases: { clientId: 'client_id' },
-  allowedFilters: ['q', 'status', 'client_id']
+  filterAliases: { clientId: 'client_id', userId: 'user_id', deviceId: 'device_id', batchId: 'batch_id', itemId: 'item_id', sellerId: 'seller_id', eventKey: 'event_key', qualityStatus: 'quality_status', failureReason: 'failure_reason', from: 'from', to: 'to' },
+  allowedFilters: ['q', 'status', 'client_id', 'user_id', 'device_id', 'batch_id', 'item_id', 'seller_id', 'event_key', 'quality_status', 'failure_reason', 'from', 'to']
 }
 
 const adminAiJobsListConfig: ListConfig = {
@@ -771,15 +771,25 @@ const adminQualityPlan = tablePlan({
 
 const adminUploadsPlan = tablePlan({
   resource: adminUploadsListConfig.resource,
-  from: 'ops.ingest_batches b',
-  select: 'b.id, b.client_id AS "clientId", b.idempotency_key AS "idempotencyKey", b.status, b.accepted_count AS "acceptedCount", b.rejected_count AS "rejectedCount", b.received_at AS "receivedAt"',
+  select: 'b.id, b.client_id AS "clientId", c.user_id AS "userId", b.idempotency_key AS "idempotencyKey", b.schema_version AS "schemaVersion", b.batch_sequence AS "batchSequence", b.cursor_start AS "cursorStart", b.cursor_end AS "cursorEnd", b.status, b.accepted_count AS "acceptedCount", b.rejected_count AS "rejectedCount", b.received_count AS "receivedCount", b.deduplicated_count AS "deduplicatedCount", b.inserted_count AS "insertedCount", b.failed_count AS "failedCount", b.retry_count AS "retryCount", b.quality_status AS "qualityStatus", b.quality_result AS "qualityResult", b.last_error AS "lastError", b.received_at AS "receivedAt", b.completed_at AS "completedAt"',
+  from: 'ops.ingest_batches b JOIN identity.collector_clients c ON c.id = b.client_id',
   idExpression: 'b.id::text',
-  sortExpressions: { received_at: 'b.received_at', status: 'b.status', idempotency_key: 'b.idempotency_key', id: 'b.id::text' },
+  sortExpressions: { received_at: 'b.received_at', status: 'b.status', idempotency_key: 'b.idempotency_key', batch_sequence: 'b.batch_sequence', quality_status: 'b.quality_status', id: 'b.id::text' },
   conditions: (context, values) => {
     const conditions = ['b.received_at <= $1']
     if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`LOWER(b.idempotency_key) LIKE LOWER($${values.length})`) }
     if (context.filters.status) { values.push(context.filters.status); conditions.push(`b.status = $${values.length}`) }
     if (context.filters.client_id) { values.push(context.filters.client_id); conditions.push(`b.client_id = $${values.length}`) }
+    if (context.filters.user_id) { values.push(context.filters.user_id); conditions.push(`c.user_id = $${values.length}`) }
+    if (context.filters.device_id) { values.push(context.filters.device_id); conditions.push(`b.client_id = $${values.length}`) }
+    if (context.filters.batch_id) { values.push(context.filters.batch_id); conditions.push(`b.id = $${values.length}`) }
+    if (context.filters.item_id) { values.push(context.filters.item_id); conditions.push(`EXISTS (SELECT 1 FROM ops.ingest_record_dedup d WHERE d.batch_id=b.id AND d.entity_type IN ('item','version','snapshot') AND d.entity_id=$${values.length})`) }
+    if (context.filters.seller_id) { values.push(context.filters.seller_id); conditions.push(`EXISTS (SELECT 1 FROM ops.ingest_record_dedup d WHERE d.batch_id=b.id AND d.entity_type='seller' AND d.entity_id=$${values.length})`) }
+    if (context.filters.event_key) { values.push(context.filters.event_key); conditions.push(`EXISTS (SELECT 1 FROM ops.ingest_record_dedup d WHERE d.batch_id=b.id AND d.entity_type='event' AND (d.idempotency_key=$${values.length} OR d.entity_id=$${values.length}))`) }
+    if (context.filters.quality_status) { values.push(context.filters.quality_status); conditions.push(`b.quality_status = $${values.length}`) }
+    if (context.filters.failure_reason) { values.push(`%${context.filters.failure_reason}%`); conditions.push(`EXISTS (SELECT 1 FROM ops.ingest_rejections r WHERE r.batch_id=b.id AND r.failure_reason ILIKE $${values.length})`) }
+    if (context.filters.from) { values.push(context.filters.from); conditions.push(`b.received_at >= $${values.length}::timestamptz`) }
+    if (context.filters.to) { values.push(context.filters.to); conditions.push(`b.received_at < $${values.length}::timestamptz`) }
     return conditions
   }
 })
@@ -1348,6 +1358,112 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
   return app
 }
 
+const phase6SensitiveKeys = new Set(['cookie', 'cookies', 'token', 'accesstoken', 'refreshtoken', 'authorization', 'profile', 'profilepath', 'chromeprofile', 'loginstate', 'accountstate', 'scanloginstate'])
+
+function phase6ContainsSensitive(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(phase6ContainsSensitive)
+  if (!value || typeof value !== 'object') return false
+  return Object.entries(value as Record<string, unknown>).some(([key, child]) => phase6SensitiveKeys.has(key.toLowerCase()) || phase6ContainsSensitive(child))
+}
+
+function phase6Record(value: unknown, name: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} 必须是对象`)
+  const record = value as Record<string, unknown>
+  if (phase6ContainsSensitive(record)) throw new Error('上传数据包含本机敏感状态')
+  return record
+}
+
+function phase6Text(value: unknown, name: string, max = 512): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${name} 无效`)
+  return value.trim()
+}
+
+function phase6OptionalText(value: unknown, max = 2_048): string | null {
+  if (value === undefined || value === null) return null
+  return phase6Text(value, '字段', max)
+}
+
+function phase6Json(value: unknown): string {
+  if (phase6ContainsSensitive(value)) throw new Error('上传数据包含本机敏感状态')
+  return JSON.stringify(value && typeof value === 'object' ? value : {})
+}
+
+type Phase6IngestRecord = Record<string, unknown> & { type: string; idempotencyKey: string }
+
+function parsePhase6Batch(value: unknown): { schemaVersion: number; deviceId: string; batchId: string; idempotencyKey: string; batchSequence: number; cursorStart: string | null; cursorEnd: string | null; records: Phase6IngestRecord[] } {
+  const source = phase6Record(value, '上传请求')
+  const schemaVersion = source.schemaVersion
+  if (schemaVersion !== 1) throw new Error('schemaVersion 只支持 1')
+  const deviceId = phase6Text(source.deviceId, 'deviceId', 128)
+  const batchId = phase6Text(source.batchId, 'batchId', 128)
+  const idempotencyKey = phase6Text(source.idempotencyKey, 'idempotencyKey', 256)
+  const batchSequence = source.batchSequence
+  if (!Number.isSafeInteger(batchSequence) || Number(batchSequence) < 0) throw new Error('batchSequence 无效')
+  const cursor = source.cursor && typeof source.cursor === 'object' && !Array.isArray(source.cursor) ? source.cursor as Record<string, unknown> : {}
+  const cursorStart = phase6OptionalText(cursor.start, 256)
+  const cursorEnd = phase6OptionalText(cursor.end, 256)
+  if (!Array.isArray(source.records) || source.records.length < 1 || source.records.length > 250) throw new Error('records 必须是 1 到 250 条')
+  const records = source.records.map((entry, index) => {
+    const record = phase6Record(entry, `records[${index}]`)
+    const type = record.type ?? record.kind
+    const key = record.idempotencyKey ?? record.eventKey ?? record.contentHash ?? record.platformItemId ?? record.platformSellerId
+    if (typeof type !== 'string' || !['seller', 'version', 'item', 'snapshot', 'event'].includes(type)) throw new Error(`records[${index}].type 无效`)
+    return { ...record, type, idempotencyKey: phase6Text(key, `records[${index}].idempotencyKey`, 256) }
+  })
+  return { schemaVersion, deviceId, batchId, idempotencyKey, batchSequence: Number(batchSequence), cursorStart, cursorEnd, records }
+}
+
+async function phase6IngestRecord(sql: Sql, record: Phase6IngestRecord, runId: string, batchId: string, recordIndex: number): Promise<'inserted' | 'deduplicated'> {
+  const now = new Date().toISOString()
+  const type = record.type
+  if (type === 'seller') {
+    const platform = phase6Text(record.platform ?? 'goofish', 'platform', 32)
+    const sellerKey = phase6Text(record.platformSellerId, 'platformSellerId', 256)
+    const profile = record.publicProfile && typeof record.publicProfile === 'object' ? record.publicProfile : {}
+    const seller = await sql.query(`INSERT INTO market.seller_profiles (id,platform,platform_seller_id,public_name,region,public_profile,first_seen_at,last_seen_at)
+      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$7) ON CONFLICT (platform,platform_seller_id) DO UPDATE SET public_name=COALESCE(EXCLUDED.public_name,market.seller_profiles.public_name), region=COALESCE(EXCLUDED.region,market.seller_profiles.region), public_profile=EXCLUDED.public_profile, last_seen_at=EXCLUDED.last_seen_at RETURNING id`,
+      [randomUUID(), platform, sellerKey, phase6OptionalText(record.publicName, 256), phase6OptionalText(record.region, 128), phase6Json(profile), now])
+    const sellerId = String(seller.rows[0]?.id)
+    const hash = phase6Text(record.contentHash ?? createHash('sha256').update(phase6Json(profile)).digest('hex'), 'contentHash', 128)
+    const version = await sql.query(`INSERT INTO market.seller_profile_versions (id,seller_id,canonical_payload,content_hash,observed_at)
+      VALUES ($1,$2,$3::jsonb,$4,$5) ON CONFLICT (seller_id,content_hash) DO NOTHING RETURNING id`, [randomUUID(), sellerId, phase6Json(profile), hash, now])
+    await sql.query('INSERT INTO ops.ingest_record_dedup (batch_id,record_index,idempotency_key,entity_type,entity_id,payload_hash,accepted_at,status,inserted,processed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$7) ON CONFLICT (batch_id,record_index) DO NOTHING', [batchId, recordIndex, record.idempotencyKey, 'seller', sellerKey, hash, now, 'accepted', Boolean(version.rows[0])])
+    return version.rows[0] ? 'inserted' : 'deduplicated'
+  }
+  const platform = phase6Text(record.platform ?? 'goofish', 'platform', 32)
+  const itemKey = phase6Text(record.platformItemId, 'platformItemId', 256)
+  let sellerId: string | null = null
+  if (record.platformSellerId) {
+    const seller = await sql.query(`INSERT INTO market.seller_profiles (id,platform,platform_seller_id,public_profile,first_seen_at,last_seen_at) VALUES ($1,$2,$3,'{}'::jsonb,$4,$4) ON CONFLICT (platform,platform_seller_id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at RETURNING id`, [randomUUID(), platform, phase6Text(record.platformSellerId, 'platformSellerId', 256), now])
+    sellerId = String(seller.rows[0]?.id)
+  }
+  const item = await sql.query(`INSERT INTO market.items (id,platform,platform_item_id,seller_id,lifecycle_state,first_seen_at,last_seen_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$6) ON CONFLICT (platform,platform_item_id) DO UPDATE SET seller_id=COALESCE(EXCLUDED.seller_id,market.items.seller_id), lifecycle_state=EXCLUDED.lifecycle_state, last_seen_at=EXCLUDED.last_seen_at RETURNING id`, [randomUUID(), platform, itemKey, sellerId, record.state ?? 'unknown', now])
+  const itemId = String(item.rows[0]?.id)
+  if (sellerId) await sql.query(`INSERT INTO market.seller_item_relations (seller_id,item_id,first_seen_at,last_seen_at,state) VALUES ($1,$2,$3,$3,$4) ON CONFLICT (seller_id,item_id) DO UPDATE SET last_seen_at=EXCLUDED.last_seen_at,state=EXCLUDED.state`, [sellerId, itemId, now, record.state ?? 'unknown'])
+  if (type === 'item' || type === 'version') {
+    const payload = record.payload && typeof record.payload === 'object' ? record.payload : record
+    const hash = phase6Text(record.contentHash ?? createHash('sha256').update(phase6Json(payload)).digest('hex'), 'contentHash', 128)
+    const version = await sql.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) ON CONFLICT (item_id,content_hash) DO NOTHING RETURNING id`, [randomUUID(), itemId, phase6OptionalText(record.title, 512), record.price ?? null, phase6OptionalText(record.region, 128), phase6OptionalText(record.conditionText, 128), record.wantCount ?? null, phase6Json(payload), hash, record.observedAt ?? now])
+    return version.rows[0] ? 'inserted' : 'deduplicated'
+  }
+  if (type === 'snapshot') {
+    const payload = record.payload && typeof record.payload === 'object' ? record.payload : record
+    const hash = phase6Text(record.payloadHash ?? createHash('sha256').update(phase6Json(payload)).digest('hex'), 'payloadHash', 128)
+    await sql.query(`INSERT INTO market.observations (id,collected_at,received_at,collection_run_id,item_id,platform_item_id,platform_seller_id,payload_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [randomUUID(), record.observedAt ?? now, now, runId, itemId, itemKey, record.platformSellerId ?? null, hash])
+    return 'inserted'
+  }
+  const eventKey = phase6Text(record.eventKey ?? record.idempotencyKey, 'eventKey', 256)
+  const existing = await sql.query('SELECT event_id FROM market.item_event_dedup WHERE event_key=$1', [eventKey])
+  if (existing.rows[0]) return 'deduplicated'
+  const occurredAt = record.occurredAt ?? now
+  const eventId = randomUUID()
+  await sql.query('INSERT INTO market.item_event_dedup (event_key,event_id,occurred_at) VALUES ($1,$2,$3)', [eventKey, eventId, occurredAt])
+  await sql.query(`INSERT INTO market.item_events (id,occurred_at,detected_at,item_id,seller_id,event_type,event_key) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [eventId, occurredAt, now, itemId, sellerId, phase6Text(record.eventType, 'eventType', 64), eventKey])
+  return 'inserted'
+}
+
 export function createCollectorApi(sql: Sql, domains: Domains) {
   const app = Fastify({ logger: false })
   app.get('/health', async () => ({ service: 'collector-api', ok: true }))
@@ -1425,6 +1541,76 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
     } catch (error) {
       return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
     }
+  })
+  app.post('/v1/ingest', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
+    try { claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization) } catch (error) { return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足') }
+    try {
+      const client = await activeCollector(sql, String(claims.sub))
+      const input = parsePhase6Batch(request.body)
+      if (input.deviceId !== String(claims.sub)) throw new Error('deviceId 与授权设备不匹配')
+      const payloadHash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+      const existing = (await sql.query('SELECT id,status,accepted_count,rejected_count,received_count,deduplicated_count,inserted_count,failed_count,retry_count,cursor_end FROM ops.ingest_batches WHERE client_id=$1 AND idempotency_key=$2', [claims.sub, input.idempotencyKey])).rows[0] as Record<string, unknown> | undefined
+      if (existing) {
+        const retry = await sql.query('UPDATE ops.ingest_batches SET retry_count=retry_count+1 WHERE id=$1 RETURNING retry_count', [existing.id])
+        return { schemaVersion: 1, batchId: String(existing.id), status: existing.status, acceptedCount: Number(existing.accepted_count ?? 0), rejectedCount: Number(existing.rejected_count ?? 0), receivedCount: Number(existing.received_count ?? 0), deduplicatedCount: Number(existing.deduplicated_count ?? 0), insertedCount: Number(existing.inserted_count ?? 0), failedCount: Number(existing.failed_count ?? 0), retryCount: Number(retry.rows[0]?.retry_count ?? 0), cursor: { end: existing.cursor_end ?? input.cursorEnd }, duplicate: true }
+      }
+      const batchId = input.batchId
+      const runId = randomUUID()
+      await sql.query(`INSERT INTO ops.ingest_batches (id,client_id,idempotency_key,payload_hash,status,schema_version,device_id,batch_sequence,cursor_start,cursor_end,received_count,received_at)
+        VALUES ($1,$2,$3,$4,'processing',$5,$2,$6,$7,$8,$9,now())`, [batchId, claims.sub, input.idempotencyKey, payloadHash, input.schemaVersion, input.batchSequence, input.cursorStart, input.cursorEnd, input.records.length])
+      await sql.query(`INSERT INTO ops.collection_runs (id,client_id,client_run_id,task_reference,kind,status,started_at,result_counts) VALUES ($1,$2,$3,$4,'detail','started',now(),'{}'::jsonb) ON CONFLICT (client_id,client_run_id) DO NOTHING`, [runId, claims.sub, `ingest-${batchId}`, batchId])
+      let insertedCount = 0; let deduplicatedCount = 0; let failedCount = 0
+      for (const [index, record] of input.records.entries()) {
+        try {
+          const recordHash = createHash('sha256').update(phase6Json(record)).digest('hex')
+          const entityClaim = await sql.query(`INSERT INTO ops.ingest_entity_dedup (idempotency_key,entity_type,payload_hash,first_batch_id,accepted_at)
+            VALUES ($1,$2,$3,$4,now()) ON CONFLICT (idempotency_key) DO NOTHING RETURNING idempotency_key`, [record.idempotencyKey, record.type, recordHash, batchId])
+          if (!entityClaim.rows[0]) {
+            deduplicatedCount += 1
+            await sql.query(`INSERT INTO ops.ingest_record_dedup (batch_id,record_index,idempotency_key,entity_type,entity_id,payload_hash,accepted_at,status,inserted,processed_at)
+              VALUES ($1,$2,$3,$4,$5,$6,now(),'accepted',false,now()) ON CONFLICT (batch_id,record_index) DO NOTHING`, [batchId, index, record.idempotencyKey, record.type, String(record.type === 'event' ? (record.eventKey ?? record.idempotencyKey) : (record.platformItemId ?? record.platformSellerId ?? '')), recordHash])
+            continue
+          }
+          const result = await phase6IngestRecord(sql, record, runId, batchId, index)
+          await sql.query(`INSERT INTO ops.ingest_record_dedup (batch_id,record_index,idempotency_key,entity_type,entity_id,payload_hash,accepted_at,status,inserted,processed_at)
+            VALUES ($1,$2,$3,$4,$5,$6,now(),'accepted',$7,now()) ON CONFLICT (batch_id,record_index) DO NOTHING`, [batchId, index, record.idempotencyKey, record.type, String(record.type === 'event' ? (record.eventKey ?? record.idempotencyKey) : (record.platformItemId ?? record.platformSellerId ?? '')), recordHash, result === 'inserted'])
+          if (result === 'inserted') insertedCount += 1
+          else deduplicatedCount += 1
+        } catch (error) {
+          failedCount += 1
+          await sql.query('DELETE FROM ops.ingest_entity_dedup WHERE first_batch_id=$1 AND idempotency_key=$2', [batchId, record.idempotencyKey])
+          const reason = error instanceof Error ? error.message.slice(0, 256) : '记录处理失败'
+          await sql.query(`INSERT INTO ops.ingest_rejections (id,batch_id,record_index,idempotency_key,entity_type,failure_reason,safe_details,created_at) VALUES ($1,$2,$3,$4,$5,$6,'{}'::jsonb,now()) ON CONFLICT (batch_id,record_index) DO NOTHING`, [randomUUID(), batchId, index, record.idempotencyKey, record.type, reason])
+        }
+      }
+      const acceptedCount = insertedCount + deduplicatedCount
+      const qualityStatus = failedCount ? (acceptedCount ? 'warning' : 'failed') : 'passed'
+      await sql.query(`UPDATE ops.ingest_batches SET status='completed',accepted_count=$2,rejected_count=$3,received_count=$4,deduplicated_count=$5,inserted_count=$6,failed_count=$3,quality_status=$7,quality_result=$8::jsonb,completed_at=now()
+        WHERE id=$1`, [batchId, acceptedCount, failedCount, input.records.length, deduplicatedCount, insertedCount, qualityStatus, JSON.stringify({ schemaVersion: 1, deviceId: String(claims.sub), clientUserId: client.user_id, recordTypes: input.records.reduce<Record<string, number>>((counts, record) => { counts[record.type] = (counts[record.type] ?? 0) + 1; return counts }, {}) })])
+      await sql.query(`UPDATE ops.collection_runs SET status='completed',finished_at=now(),result_counts=$2::jsonb WHERE id=$1`, [runId, JSON.stringify({ received: input.records.length, inserted: insertedCount, deduplicated: deduplicatedCount, failed: failedCount })])
+      return { schemaVersion: 1, batchId, status: 'completed', acceptedCount, rejectedCount: failedCount, receivedCount: input.records.length, deduplicatedCount, insertedCount, failedCount, retryCount: 0, cursor: { start: input.cursorStart, end: input.cursorEnd }, qualityStatus }
+    } catch (error) {
+      return fail(reply, 400, error instanceof Error ? error.message : '上传批次无效')
+    }
+  })
+  app.post('/v1/ingest/media', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      const input = phase6Record(request.body, '媒体请求')
+      const batchId = phase6Text(input.batchId, 'batchId', 128)
+      const batch = (await sql.query('SELECT id FROM ops.ingest_batches WHERE id=$1 AND client_id=$2', [batchId, claims.sub])).rows[0]
+      if (!batch) return fail(reply, 404, '批次不存在')
+      const sha256 = phase6Text(input.sha256, 'sha256', 128)
+      const objectKey = phase6Text(input.objectKey ?? `public/${sha256}`, 'objectKey', 512)
+      const mimeType = phase6Text(input.mimeType, 'mimeType', 128)
+      const byteSize = input.byteSize
+      if (!Number.isSafeInteger(byteSize) || Number(byteSize) < 0) throw new Error('byteSize 无效')
+      const media = await sql.query(`INSERT INTO market.media_objects (id,object_key,mime_type,byte_size,sha256,visibility,created_at) VALUES ($1,$2,$3,$4,$5,'market_public',now()) ON CONFLICT (sha256) DO UPDATE SET object_key=EXCLUDED.object_key RETURNING id,object_key`, [randomUUID(), objectKey, mimeType, byteSize, sha256])
+      const mediaId = String(media.rows[0]?.id)
+      await sql.query(`INSERT INTO ops.ingest_media_uploads (id,batch_id,media_id,object_key,mime_type,byte_size,sha256,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',now()) ON CONFLICT (batch_id,sha256) DO UPDATE SET status='deduplicated'`, [randomUUID(), batchId, mediaId, objectKey, mimeType, byteSize, sha256])
+      return { accepted: true, mediaId, objectKey, storage: 'metadata-only' }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '媒体请求无效') }
   })
   app.post('/v1/devices/unbind', async (request, reply) => {
     try {

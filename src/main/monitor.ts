@@ -30,9 +30,11 @@ const TOKEN_RENEW_WINDOW_MS = 2 * 60_000
 const SCHEDULER_INTERVAL_MS = positiveEnvironmentNumber('XIANYU_SCHEDULER_INTERVAL_MS', 60_000, 250)
 const TASK_SYNC_INTERVAL_MS = positiveEnvironmentNumber('XIANYU_TASK_SYNC_INTERVAL_MS', 60_000, 250)
 const SELLER_PAGE_LIMIT = positiveEnvironmentNumber('XIANYU_SELLER_PAGE_LIMIT', 4, 1)
+const PHASE6_UPLOAD_ENABLED = process.env.XIANYU_PHASE6_UPLOAD_ENABLED !== 'false'
 const STATE_REFRESH_TOKEN = 'collector.refresh-token'
 const STATE_PRIVATE_KEY = 'collector.device-private-key'
 const STATE_PUBLIC_KEY = 'collector.device-public-key'
+const STATE_CLIENT_ID = 'collector.client-id'
 const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com']
 
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
@@ -315,6 +317,8 @@ export class XianyuMonitor {
         if (!this.running) return
         await this.scanTask(task)
       }
+      const clientId = PHASE6_UPLOAD_ENABLED ? this.db.getState(STATE_CLIENT_ID) : null
+      if (clientId) this.db.enqueueMarketBatch(clientId)
       if (this.running) await this.flushOutbox()
     } catch (error) {
       this.stopTimer()
@@ -851,7 +855,8 @@ export class XianyuMonitor {
   private async flushOutbox(): Promise<void> {
     for (const entry of this.db.listDueOutbox()) {
       try {
-        await this.request(this.collectorApiBase, '/v1/heartbeat', { method: 'POST', token: this.accessToken, body: entry.payload })
+        const path = entry.kind === 'market_batch' ? '/v1/ingest' : '/v1/heartbeat'
+        await this.request(this.collectorApiBase, path, { method: 'POST', token: this.accessToken, body: entry.payload })
         this.db.completeOutbox(entry.id)
       } catch (error) {
         this.db.deferOutbox(entry.id, entry.attempts + 1)
@@ -877,12 +882,13 @@ export class XianyuMonitor {
   private storeCollectorSession(session: TokenResponse): void {
     if (!session.accessToken || !session.refreshToken) throw new Error('云端未返回采集器授权')
     this.accessToken = session.accessToken
+    if (session.clientId) this.db.setState(STATE_CLIENT_ID, session.clientId)
     this.writeSecret(STATE_REFRESH_TOKEN, session.refreshToken)
   }
 
   private clearSession(): void {
     this.accessToken = undefined
-    this.db.deleteState(STATE_REFRESH_TOKEN)
+    this.db.deleteState(STATE_REFRESH_TOKEN, STATE_CLIENT_ID)
   }
 
   private requireEncryption(): void {

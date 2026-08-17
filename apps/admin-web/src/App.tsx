@@ -86,6 +86,18 @@ function demoPage(resource: AdminResource, request: CursorListQuery): CursorPage
   }
 }
 
+function normalizeAdminRows(resource: AdminResource, page: CursorPage<Record<string, unknown>>): CursorPage<Row> {
+  if (resource !== 'uploads') return page as CursorPage<Row>
+  return {
+    ...page,
+    items: page.items.map((item) => {
+      const status = String(item.qualityStatus ?? item.status ?? 'pending')
+      const rowStatus: RowStatus = status === 'passed' || status === 'completed' ? '正常' : status === 'failed' || status === 'rejected' ? '待处理' : '关注'
+      return { id: String(item.id), title: String(item.id), detail: `设备 ${String(item.clientId ?? '')} · 用户 ${String(item.userId ?? '')}`, metric: `接收 ${String(item.receivedCount ?? 0)}，新增 ${String(item.insertedCount ?? 0)}，去重 ${String(item.deduplicatedCount ?? 0)}，失败 ${String(item.failedCount ?? 0)}`, updatedAt: String(item.completedAt ?? item.receivedAt ?? ''), status: rowStatus, tag: '批次' }
+    })
+  }
+}
+
 export default function App(): ReactNode {
   const [ready, setReady] = useState(adminWebConfig.demoMode)
   const [identity, setIdentity] = useState<AdminIdentity | null>(null)
@@ -186,7 +198,7 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
     setLoading(true)
     setFailure(null)
     setPage(null)
-    const load = adminWebConfig.demoMode ? Promise.resolve(demoPage(resource, request)) : adminApi.list<Row>(resource, request)
+    const load = adminWebConfig.demoMode ? Promise.resolve(demoPage(resource, request)) : adminApi.list<Record<string, unknown>>(resource, request).then((result) => normalizeAdminRows(resource, result))
     void load.then((result) => {
       if (!cancelled) setPage(result)
     }).catch((cause: unknown) => {

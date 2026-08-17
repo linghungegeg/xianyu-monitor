@@ -214,6 +214,7 @@ async function launchDesktop(userApiUrl, collectorApiUrl) {
       XIANYU_SEARCH_URL: `${userApiUrl}/search`,
       XIANYU_PROFILE_ALLOWED_HOSTS: new URL(userApiUrl).hostname,
       XIANYU_MONITOR_USER_DATA: userDataPath,
+      XIANYU_PHASE6_UPLOAD_ENABLED: 'false',
       XIANYU_SCHEDULER_INTERVAL_MS: '250',
       XIANYU_TASK_SYNC_INTERVAL_MS: '250',
       XIANYU_SELLER_PAGE_LIMIT: '4'

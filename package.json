@@ -18,7 +18,10 @@
     "test:phase5:cloud": "node --experimental-strip-types tools/phase5/cloud-seller-monitor-integration.mjs",
     "test:phase3:desktop": "npm run build && node --experimental-strip-types tools/phase3/electron-runtime-smoke.mjs",
     "test:phase4:desktop": "npm run build && node --experimental-strip-types tools/phase4/electron-collector-runtime.mjs",
-    "test:phase5:desktop": "npm run build && node --experimental-strip-types tools/phase5/electron-seller-runtime.mjs"
+    "test:phase5:desktop": "npm run build && node --experimental-strip-types tools/phase5/electron-seller-runtime.mjs",
+    "test:phase6:cloud": "node --experimental-strip-types tools/phase6/cloud-silent-ingest-integration.mjs",
+    "test:phase6:desktop": "npm run build && node --experimental-strip-types tools/phase6/electron-silent-upload-runtime.mjs",
+    "test:phase6:admin": "npm --prefix apps/admin-web run build && npm run test:phase6:cloud"
   },
   "dependencies": {
     "@electron-toolkit/utils": "4.0.0",
