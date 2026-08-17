@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
-  Activity, Bot, Boxes, ChevronLeft, ChevronRight, Database, FileCheck2, Gauge, LogOut,
-  Menu, MoreHorizontal, PackageSearch, RefreshCw, Search, ShieldCheck, Users, Wallet, X
+  Activity, Bot, Boxes, ChevronDown, ChevronLeft, ChevronRight, Database, FileCheck2, Fish, Gauge, LogOut,
+  Menu, MoreHorizontal, PackageSearch, PanelLeft, PanelLeftClose, RefreshCw, Search, ShieldCheck, Users, Wallet, X
 } from 'lucide-react'
 import {
   AdminApiError, adminApi, adminWebConfig, type AdminIdentity, type AdminResource,
@@ -13,16 +13,16 @@ type RowStatus = '正常' | '关注' | '待处理'
 type Row = { id: string; title: string; detail: string; metric: string; updatedAt: string; status: RowStatus; tag: string }
 type SortKey = 'updated_at' | 'status' | 'title'
 
-const pages: Array<{ key: Page; label: string; icon: typeof Gauge; group?: string }> = [
+const pages: Array<{ key: Page; label: string; icon: typeof Gauge }> = [
   { key: 'overview', label: '运营概览', icon: Gauge },
-  { key: 'users', label: '用户与设备', icon: Users, group: '运营' },
-  { key: 'billing', label: '套餐、订单与用量', icon: Wallet, group: '运营' },
-  { key: 'market', label: '市场商品与卖家', icon: PackageSearch, group: '数据' },
-  { key: 'quality', label: '类目与数据质量', icon: FileCheck2, group: '数据' },
-  { key: 'uploads', label: '上传批次与事件', icon: Boxes, group: '数据' },
-  { key: 'ai', label: 'AI 配置与任务', icon: Bot, group: '系统' },
-  { key: 'capacity', label: '队列、存储与容量', icon: Database, group: '系统' },
-  { key: 'audit', label: '审计与系统设置', icon: ShieldCheck, group: '系统' }
+  { key: 'users', label: '用户与设备', icon: Users },
+  { key: 'billing', label: '订单与用量', icon: Wallet },
+  { key: 'market', label: '市场商品', icon: PackageSearch },
+  { key: 'quality', label: '数据质量', icon: FileCheck2 },
+  { key: 'uploads', label: '上传记录', icon: Boxes },
+  { key: 'ai', label: 'AI 任务', icon: Bot },
+  { key: 'capacity', label: '运行容量', icon: Database },
+  { key: 'audit', label: '审计设置', icon: ShieldCheck }
 ]
 
 const copy: Record<AdminResource, { title: string; description: string; columns: [string, string, string, string] }> = {
@@ -104,8 +104,8 @@ export default function App(): ReactNode {
     return () => { cancelled = true }
   }, [])
 
-  if (!ready) return <AuthFrame title="正在验证管理员会话" detail="仅检查独立 Admin API，会话不会转交给用户域。" />
-  if (!identity) return <LoginPage error={bootstrapError} onAuthenticated={setIdentity} onEnterDemo={() => setIdentity({ id: 'demo-admin', role: 'demo' })} />
+  if (!ready) return <AuthFrame title="正在检查登录状态" detail="请稍候。" />
+  if (!identity) return <LoginPage error={bootstrapError} onAuthenticated={setIdentity} onEnterDemo={() => setIdentity({ id: 'demo-admin', role: '平台运营' })} />
   return <Workbench identity={identity} onLogout={() => { adminApi.logout(); setIdentity(null); setBootstrapError(null) }} />
 }
 
@@ -129,8 +129,8 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
     }
   }
 
-  return <AuthFrame title="闲鱼数据台" detail={adminWebConfig.demoMode ? '本地演示模式：不会请求 Admin API，也不需要管理员凭据。' : '使用独立 Admin 账号登录；普通用户账号无法进入此工作台。'}>
-    {adminWebConfig.demoMode ? <button className="primary auth-submit" onClick={onEnterDemo}><Gauge size={16} />进入本地演示</button> : <form className="auth-form" onSubmit={submit}>
+  return <AuthFrame title="闲鱼数据台" detail={adminWebConfig.demoMode ? '数据预览已准备完成。' : '请输入管理账号登录。'}>
+    {adminWebConfig.demoMode ? <button className="primary auth-submit" onClick={onEnterDemo}><Gauge size={16} />进入工作台</button> : <form className="auth-form" onSubmit={submit}>
       <label>管理员邮箱<input autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required type="email" /></label>
       <label>管理员密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required type="password" /></label>
       {message && <p className="auth-error" role="alert">{message}</p>}
@@ -140,7 +140,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
 }
 
 function AuthFrame({ title, detail, children }: { title: string; detail: string; children?: ReactNode }): ReactNode {
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-mark"><ShieldCheck size={24} /></div><i>ADMIN ONLY</i><h1>{title}</h1><p>{detail}</p>{children}</section></main>
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-mark"><ShieldCheck size={24} /></div><h1>{title}</h1><p>{detail}</p>{children}</section></main>
 }
 
 function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: () => void }): ReactNode {
@@ -158,9 +158,9 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
   const [failure, setFailure] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [refreshVersion, setRefreshVersion] = useState(0)
-  const [demoFailure, setDemoFailure] = useState(false)
   const [drawer, setDrawer] = useState<Row | null>(null)
   const current = pages.find((item) => item.key === active)!
+  const openTabs = active === 'overview' ? [pages[0]] : [pages[0], current]
   const resource = active === 'overview' ? null : active
   const cursor = cursorHistory[cursorIndex]
 
@@ -186,9 +186,7 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
     setLoading(true)
     setFailure(null)
     setPage(null)
-    const load = adminWebConfig.demoMode
-      ? demoFailure ? Promise.reject(new Error('本地演示请求被中断')) : Promise.resolve(demoPage(resource, request))
-      : adminApi.list<Row>(resource, request)
+    const load = adminWebConfig.demoMode ? Promise.resolve(demoPage(resource, request)) : adminApi.list<Row>(resource, request)
     void load.then((result) => {
       if (!cancelled) setPage(result)
     }).catch((cause: unknown) => {
@@ -203,7 +201,7 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
       if (!cancelled) setLoading(false)
     })
     return () => { cancelled = true }
-  }, [cursor, demoFailure, limit, query, refreshVersion, resetCursor, resource, sort, status])
+  }, [cursor, limit, query, refreshVersion, resetCursor, resource, sort, status])
 
   const switchPage = (next: Page) => {
     setActive(next)
@@ -220,7 +218,6 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
     resetCursor()
   }
   const refresh = () => {
-    setDemoFailure(false)
     setNotice(null)
     setRefreshVersion((value) => value + 1)
   }
@@ -232,27 +229,27 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
 
   return <div className={`app ${collapsed ? 'collapsed' : ''}`}>
     <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
-      <div className="brand"><span>管</span>{!collapsed && <strong>闲鱼数据台</strong>}</div>
-      <nav>{pages.map((item, index) => <div key={item.key}>{item.group && item.group !== pages[index - 1]?.group && !collapsed && <p>{item.group}</p>}<button className={active === item.key ? 'active' : ''} onClick={() => switchPage(item.key)} title={collapsed ? item.label : undefined}><item.icon size={18} /><span>{item.label}</span></button></div>)}</nav>
-      <div className="side-foot"><button onClick={() => setCollapsed(!collapsed)} title="收起导航"><Menu size={18} /><span>{collapsed ? '展开导航' : '收起导航'}</span></button><div className="admin-avatar"><b>管</b>{!collapsed && <div><strong>{identity.role ?? '平台运营'}</strong><small>{adminWebConfig.demoMode ? '演示管理员' : `Admin · ${identity.id.slice(0, 8)}`}</small></div>}<button className="logout" onClick={onLogout} title="退出管理员会话"><LogOut size={16} /></button></div></div>
+      <div className="brand"><span><Fish size={18} /></span>{!collapsed && <strong>闲鱼数据台</strong>}</div>
+      <nav>{!collapsed && <p className="nav-caption">管理</p>}{pages.map((item) => <button key={item.key} className={active === item.key ? 'active' : ''} onClick={() => switchPage(item.key)} title={collapsed ? item.label : undefined}><item.icon size={18} /><span>{item.label}</span></button>)}</nav>
+      <div className="side-foot"><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开导航' : '收起导航'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMobileOpen(false)} />}
-    <section className="main"><header><button className="mobile-menu" title="打开导航" onClick={() => setMobileOpen(true)}><Menu size={18} /></button><div className="crumb"><span>Admin 工作台</span><ChevronRight size={14} /><strong>{current.label}</strong></div><div className="right"><span>{adminWebConfig.demoMode ? '本地演示数据' : '独立 Admin API'}</span><Activity size={18} /><button title="审计中心" className="icon" onClick={() => switchPage('audit')}><ShieldCheck size={18} /></button></div></header><main className="content">{active === 'overview' ? <Overview onNavigate={switchPage} /> : <List view={copy[resource!]} page={page} cursorIndex={cursorIndex} query={query} status={status} sort={sort} limit={limit} loading={loading} failure={failure} notice={notice} demoMode={adminWebConfig.demoMode} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value))} onLimit={(value) => changeFilter(() => setLimit(value))} onPrev={() => setCursorIndex((index) => Math.max(0, index - 1))} onNext={moveNext} onRefresh={refresh} onFailure={() => { setDemoFailure(true); setRefreshVersion((value) => value + 1) }} onOpen={setDrawer} />}</main></section>
-    {drawer && <Drawer row={drawer} demoMode={adminWebConfig.demoMode} onClose={() => setDrawer(null)} />}
+    <section className="main"><header className="workspace-header"><div className="header-greeting"><button className="mobile-menu" title="打开导航" onClick={() => setMobileOpen(true)}><Menu size={18} /></button><span>欢迎使用闲鱼数据台</span></div><div className="header-tools"><div className="header-profile"><span className="header-avatar">管</span><span>{identity.role ?? '平台运营'}</span><ChevronDown size={15} /></div><button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button></div></header><div className="tabs-bar">{openTabs.map((tab) => <div className={`workspace-tab ${active === tab.key ? 'active' : ''}`} key={tab.key}><button onClick={() => switchPage(tab.key)}>{tab.label}</button>{tab.key !== 'overview' && <button className="tab-close" title={`关闭${tab.label}`} onClick={() => switchPage('overview')}><X size={13} /></button>}</div>)}</div><main className="content">{active === 'overview' ? <Overview onNavigate={switchPage} /> : <List view={copy[resource!]} page={page} cursorIndex={cursorIndex} query={query} status={status} sort={sort} limit={limit} loading={loading} failure={failure} notice={notice} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value))} onLimit={(value) => changeFilter(() => setLimit(value))} onPrev={() => setCursorIndex((index) => Math.max(0, index - 1))} onNext={moveNext} onRefresh={refresh} onOpen={setDrawer} />}</main></section>
+    {drawer && <Drawer row={drawer} onClose={() => setDrawer(null)} />}
   </div>
 }
 
 function Overview({ onNavigate }: { onNavigate: (page: Page) => void }): ReactNode {
   const stats = [['活跃用户', '1,024', '过去 24 小时 +86', Users, 'blue'], ['在线采集器', '1,746', '设备健康 98.6%', Activity, 'mint'], ['待处理批次', '21', '失败重试 3', Boxes, 'amber'], ['AI 任务队列', '87', '平均等待 1.8 分钟', Bot, 'rose']] as const
-  return <><div className="heading"><div><i>OPERATIONS</i><h1>运营概览</h1><p>用户、市场数据与基础设施的运营总览。</p></div><button className="primary" onClick={() => onNavigate('users')}><Users size={16} />用户与设备</button></div><section className="stats">{stats.map(([label, value, note, Icon, tone]) => <article key={label}><div className={tone}><Icon size={20} /></div><section><span>{label}</span><strong>{value}</strong><small>{note}</small></section></article>)}</section><section className="grid"><article className="panel wide"><div className="panel-head"><div><h2>运营待办</h2><p>需要人工处理的当前事项</p></div><button onClick={() => onNavigate('audit')}>查看审计 <ChevronRight size={15} /></button></div>{['3 个上传批次等待复核', '1 条设备解绑申请待处理', 'AI 竞品分析队列等待超过 2 分钟'].map((item, index) => <button className="feed" key={item} onClick={() => onNavigate(index === 0 ? 'uploads' : index === 1 ? 'users' : 'ai')}><b className={`dot d${index}`} /><div><strong>{item}</strong><small>今天 {10 + index}:2{index} · 系统运营</small></div><ChevronRight size={16} /></button>)}</article><article className="panel"><div className="panel-head"><div><h2>数据质量</h2><p>公开市场实体</p></div><button onClick={() => onNavigate('quality')}>详情</button></div><div className="numbers"><div><span>字段完整度</span><strong>98.6%</strong></div><div><span>去重命中率</span><strong>93.4%</strong></div><div><span>异常样本</span><strong>12</strong></div></div></article><article className="panel"><div className="panel-head"><div><h2>容量水位</h2><p>阶段 0 容量合同</p></div><button onClick={() => onNavigate('capacity')}>查看</button></div><div className="numbers"><div><span>事件队列</span><strong>4.2%</strong></div><div><span>对象存储</span><strong>18.7%</strong></div><div><span>数据库写入</span><strong>55/s</strong></div></div></article></section></>
+  return <><div className="heading"><div><i>运营概览</i><h1>运营概览</h1><p>用户、市场数据与基础设施的运营总览。</p></div><button className="primary" onClick={() => onNavigate('users')}><Users size={16} />用户与设备</button></div><section className="stats">{stats.map(([label, value, note, Icon, tone]) => <article key={label}><div className={tone}><Icon size={20} /></div><section><span>{label}</span><strong>{value}</strong><small>{note}</small></section></article>)}</section><section className="grid"><article className="panel wide"><div className="panel-head"><div><h2>运营待办</h2><p>需要人工处理的当前事项</p></div><button onClick={() => onNavigate('audit')}>查看审计 <ChevronRight size={15} /></button></div>{['3 个上传批次等待复核', '1 条设备解绑申请待处理', 'AI 竞品分析队列等待超过 2 分钟'].map((item, index) => <button className="feed" key={item} onClick={() => onNavigate(index === 0 ? 'uploads' : index === 1 ? 'users' : 'ai')}><b className={`dot d${index}`} /><div><strong>{item}</strong><small>今天 {10 + index}:2{index} · 系统运营</small></div><ChevronRight size={16} /></button>)}</article><article className="panel"><div className="panel-head"><div><h2>数据质量</h2><p>公开市场实体</p></div><button onClick={() => onNavigate('quality')}>详情</button></div><div className="numbers"><div><span>字段完整度</span><strong>98.6%</strong></div><div><span>去重命中率</span><strong>93.4%</strong></div><div><span>异常样本</span><strong>12</strong></div></div></article><article className="panel"><div className="panel-head"><div><h2>容量水位</h2><p>当前运行情况</p></div><button onClick={() => onNavigate('capacity')}>查看</button></div><div className="numbers"><div><span>事件队列</span><strong>4.2%</strong></div><div><span>对象存储</span><strong>18.7%</strong></div><div><span>数据库写入</span><strong>55/s</strong></div></div></article></section></>
 }
 
-function List(props: { view: { title: string; description: string; columns: [string, string, string, string] }; page: CursorPage<Row> | null; cursorIndex: number; query: string; status: string; sort: SortKey; limit: 20 | 50 | 100; loading: boolean; failure: string | null; notice: string | null; demoMode: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: SortKey) => void; onLimit: (value: 20 | 50 | 100) => void; onPrev: () => void; onNext: () => void; onRefresh: () => void; onFailure: () => void; onOpen: (row: Row) => void }): ReactNode {
+function List(props: { view: { title: string; description: string; columns: [string, string, string, string] }; page: CursorPage<Row> | null; cursorIndex: number; query: string; status: string; sort: SortKey; limit: 20 | 50 | 100; loading: boolean; failure: string | null; notice: string | null; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: SortKey) => void; onLimit: (value: 20 | 50 | 100) => void; onPrev: () => void; onNext: () => void; onRefresh: () => void; onOpen: (row: Row) => void }): ReactNode {
   const { view, page, cursorIndex, query, status, sort, limit, loading, failure, notice } = props
   const rows = page?.items ?? []
-  return <><div className="heading"><div><i>ADMIN</i><h1>{view.title}</h1><p>{view.description}</p></div><button className="primary" onClick={props.onRefresh}><RefreshCw className={loading ? 'spin' : ''} size={16} />刷新列表</button></div><section className="filters"><label><Search size={16} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索当前范围" /></label><select aria-label="状态" value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>关注</option><option>待处理</option></select><select aria-label="排序" value={sort} onChange={(event) => props.onSort(event.target.value as SortKey)}><option value="updated_at">最近更新</option><option value="status">状态优先</option><option value="title">名称</option></select><span /><button className="icon" title="刷新当前页" onClick={props.onRefresh}><RefreshCw className={loading ? 'spin' : ''} size={17} /></button></section><section className="table-panel"><div className="summary"><strong>{page?.page.total ?? 0}</strong><span> 条符合当前筛选的记录 · {props.demoMode ? '本地夹具模拟 cursor 合同' : '仅请求当前 cursor 窗口'}</span>{props.demoMode && <button onClick={props.onFailure}>演示失败态</button>}</div>{notice && <p className="table-notice" role="status">{notice}</p>}{failure ? <State title="列表加载失败" text={failure} onRetry={props.onRefresh} /> : loading && !page ? <State title="正在加载当前窗口" text="筛选、排序和 cursor 保持不变。" /> : rows.length === 0 ? <State title="没有匹配的数据" text="调整筛选条件后重试。" /> : <div className="table-wrap"><table><thead><tr>{view.columns.map((column) => <th key={column}>{column}</th>)}<th aria-label="详情" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><em>{row.tag}</em><strong>{row.title}</strong><small>{row.detail}</small></td><td>{row.metric}</td><td>{row.updatedAt}</td><td><b className={row.status === '正常' ? 'ok' : row.status === '关注' ? 'watch' : 'pending'}>{row.status}</b></td><td><button className="row-icon" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={18} /></button></td></tr>)}</tbody></table></div>}<Pager page={page} cursorIndex={cursorIndex} limit={limit} loading={loading} onPrev={props.onPrev} onNext={props.onNext} onLimit={props.onLimit} /></section></>
+  return <><div className="heading"><div><i>运营数据</i><h1>{view.title}</h1><p>{view.description}</p></div><button className="primary" onClick={props.onRefresh}><RefreshCw className={loading ? 'spin' : ''} size={16} />刷新列表</button></div><section className="filters"><label><Search size={16} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索当前范围" /></label><select aria-label="状态" value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option>正常</option><option>关注</option><option>待处理</option></select><select aria-label="排序" value={sort} onChange={(event) => props.onSort(event.target.value as SortKey)}><option value="updated_at">最近更新</option><option value="status">状态优先</option><option value="title">名称</option></select><span /><button className="icon" title="刷新当前页" onClick={props.onRefresh}><RefreshCw className={loading ? 'spin' : ''} size={17} /></button></section><section className="table-panel"><div className="summary"><strong>{page?.page.total ?? 0}</strong><span> 条符合当前筛选的记录</span></div>{notice && <p className="table-notice" role="status">{notice}</p>}{failure ? <State title="列表加载失败" text={failure} onRetry={props.onRefresh} /> : loading && !page ? <State title="正在加载数据" text="请稍候。" /> : rows.length === 0 ? <State title="没有匹配的数据" text="调整筛选条件后重试。" /> : <div className="table-wrap"><table><thead><tr>{view.columns.map((column) => <th key={column}>{column}</th>)}<th aria-label="详情" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><em>{row.tag}</em><strong>{row.title}</strong><small>{row.detail}</small></td><td>{row.metric}</td><td>{row.updatedAt}</td><td><b className={row.status === '正常' ? 'ok' : row.status === '关注' ? 'watch' : 'pending'}>{row.status}</b></td><td><button className="row-icon" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={18} /></button></td></tr>)}</tbody></table></div>}<Pager page={page} cursorIndex={cursorIndex} limit={limit} loading={loading} onPrev={props.onPrev} onNext={props.onNext} onLimit={props.onLimit} /></section></>
 }
 
 function State({ title, text, onRetry }: { title: string; text: string; onRetry?: () => void }): ReactNode { return <div className="state"><Activity size={27} /><strong>{title}</strong><p>{text}</p>{onRetry && <button className="primary small" onClick={onRetry}><RefreshCw size={15} />重试</button>}</div> }
-function Pager({ page, cursorIndex, limit, loading, onPrev, onNext, onLimit }: { page: CursorPage<Row> | null; cursorIndex: number; limit: 20 | 50 | 100; loading: boolean; onPrev: () => void; onNext: () => void; onLimit: (value: 20 | 50 | 100) => void }): ReactNode { const total = page?.page.total ?? 0; return <footer className="pager"><span>{total === 0 ? '无记录' : `第 ${cursorIndex + 1} 个游标窗口 · 共 ${total} 条`}</span><select aria-label="每页条数" value={limit} onChange={(event) => onLimit(Number(event.target.value) as 20 | 50 | 100)}><option value={20}>20 / 页</option><option value={50}>50 / 页</option><option value={100}>100 / 页</option></select><button disabled={cursorIndex === 0 || loading} onClick={onPrev} title="上一页"><ChevronLeft size={17} /></button><button disabled={!page?.page.hasMore || loading} onClick={onNext} title="下一页"><ChevronRight size={17} /></button></footer> }
-function Drawer({ row, demoMode, onClose }: { row: Row; demoMode: boolean; onClose: () => void }): ReactNode { return <><button className="drawer-cover" aria-label="关闭详情" onClick={onClose} /><aside className="drawer"><header><div><i>DETAIL</i><h2>运营详情</h2></div><button className="icon" title="关闭" onClick={onClose}><X size={19} /></button></header><main><em>{row.tag}</em><h3>{row.title}</h3><p>{row.detail}</p><dl><div><dt>当前信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd>{row.status}</dd></div></dl><section><ShieldCheck size={18} /><span>{demoMode ? '演示模式仅展示本地夹具字段，不会请求或保存管理员凭据。' : '完整详情通过独立 Admin API 按需读取，不随增长列表全量传输。'}</span></section></main><footer><button onClick={onClose}>关闭</button></footer></aside></> }
+function Pager({ page, cursorIndex, limit, loading, onPrev, onNext, onLimit }: { page: CursorPage<Row> | null; cursorIndex: number; limit: 20 | 50 | 100; loading: boolean; onPrev: () => void; onNext: () => void; onLimit: (value: 20 | 50 | 100) => void }): ReactNode { const total = page?.page.total ?? 0; return <footer className="pager"><span>{total === 0 ? '无记录' : `第 ${cursorIndex + 1} 页 · 共 ${total} 条`}</span><select aria-label="每页条数" value={limit} onChange={(event) => onLimit(Number(event.target.value) as 20 | 50 | 100)}><option value={20}>20 / 页</option><option value={50}>50 / 页</option><option value={100}>100 / 页</option></select><button disabled={cursorIndex === 0 || loading} onClick={onPrev} title="上一页"><ChevronLeft size={17} /></button><button disabled={!page?.page.hasMore || loading} onClick={onNext} title="下一页"><ChevronRight size={17} /></button></footer> }
+function Drawer({ row, onClose }: { row: Row; onClose: () => void }): ReactNode { return <><button className="drawer-cover" aria-label="关闭详情" onClick={onClose} /><aside className="drawer"><header><div><i>详情</i><h2>运营详情</h2></div><button className="icon" title="关闭" onClick={onClose}><X size={19} /></button></header><main><em>{row.tag}</em><h3>{row.title}</h3><p>{row.detail}</p><dl><div><dt>当前信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd>{row.status}</dd></div></dl><section><ShieldCheck size={18} /><span>仅展示当前权限可见的数据。</span></section></main><footer><button onClick={onClose}>关闭</button></footer></aside></> }
