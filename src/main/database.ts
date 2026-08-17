@@ -2,19 +2,22 @@ import { DatabaseSync } from 'node:sqlite'
 import { app } from 'electron'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import type { MonitorTask, NewTask, ScanLog, SearchItem } from '../shared/types'
+import type { LauncherLog, OutboxEntry } from '../shared/types'
 
-type TaskRow = {
-  id: string
-  keyword: string
-  min_price: number | null
-  max_price: number | null
-  region: string | null
-  interval_minutes: number
-  enabled: number
-  last_scanned_at: string | null
+type LogRow = {
+  id: number
+  level: LauncherLog['level']
+  message: string
   created_at: string
-  updated_at: string
+}
+
+type OutboxRow = {
+  id: string
+  kind: OutboxEntry['kind']
+  payload: string
+  attempts: number
+  next_attempt_at: string
+  created_at: string
 }
 
 export class MonitorDatabase {
@@ -23,135 +26,93 @@ export class MonitorDatabase {
   constructor() {
     const dataDir = join(app.getPath('userData'), 'monitor-data')
     mkdirSync(dataDir, { recursive: true })
-    this.db = new DatabaseSync(join(dataDir, 'monitor.db'))
+    this.db = new DatabaseSync(join(dataDir, 'launcher.db'))
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY,
-        keyword TEXT NOT NULL,
-        min_price REAL,
-        max_price REAL,
-        region TEXT,
-        interval_minutes INTEGER NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        last_scanned_at TEXT,
-        created_at TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS launcher_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS items (
-        task_id TEXT NOT NULL,
-        item_id TEXT NOT NULL,
-        title TEXT NOT NULL,
-        price REAL,
-        region TEXT,
-        published_text TEXT,
-        want_count INTEGER,
-        url TEXT NOT NULL,
-        first_seen_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL,
-        PRIMARY KEY (task_id, item_id)
-      );
-      CREATE TABLE IF NOT EXISTS scan_logs (
+      CREATE TABLE IF NOT EXISTS launcher_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        task_id TEXT,
-        level TEXT NOT NULL,
+        level TEXT NOT NULL CHECK (level IN ('info', 'success', 'error')),
         message TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS outbox (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('heartbeat')),
+        payload TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox (next_attempt_at, created_at, id);
     `)
   }
 
-  listTasks(): MonitorTask[] {
-    const rows = this.db.prepare('SELECT * FROM tasks ORDER BY created_at DESC').all() as TaskRow[]
-    return rows.map(this.toTask)
+  getState(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM launcher_state WHERE key = ?').get(key) as { value?: string } | undefined
+    return row?.value ?? null
   }
 
-  saveTask(input: NewTask): MonitorTask {
+  setState(key: string, value: string): void {
     const now = new Date().toISOString()
-    const task: MonitorTask = {
-      ...input,
-      id: crypto.randomUUID(),
-      lastScannedAt: null,
-      createdAt: now,
-      updatedAt: now
-    }
     this.db.prepare(`
-      INSERT INTO tasks (id, keyword, min_price, max_price, region, interval_minutes, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(task.id, task.keyword, task.minPrice, task.maxPrice, task.region, task.intervalMinutes, Number(task.enabled), now, now)
-    return task
+      INSERT INTO launcher_state (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(key, value, now)
   }
 
-  setTaskEnabled(id: string, enabled: boolean): void {
-    this.db.prepare('UPDATE tasks SET enabled = ?, updated_at = ? WHERE id = ?')
-      .run(Number(enabled), new Date().toISOString(), id)
+  deleteState(...keys: string[]): void {
+    const statement = this.db.prepare('DELETE FROM launcher_state WHERE key = ?')
+    for (const key of keys) statement.run(key)
   }
 
-  deleteTask(id: string): void {
-    this.db.prepare('DELETE FROM items WHERE task_id = ?').run(id)
-    this.db.prepare('DELETE FROM scan_logs WHERE task_id = ?').run(id)
-    this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  addLog(level: LauncherLog['level'], message: string): void {
+    this.db.prepare('INSERT INTO launcher_logs (level, message, created_at) VALUES (?, ?, ?)')
+      .run(level, message, new Date().toISOString())
   }
 
-  markTaskScanned(id: string): void {
-    this.db.prepare('UPDATE tasks SET last_scanned_at = ? WHERE id = ?').run(new Date().toISOString(), id)
+  listLogs(): LauncherLog[] {
+    const rows = this.db.prepare('SELECT id, level, message, created_at FROM launcher_logs ORDER BY id DESC LIMIT 60').all() as LogRow[]
+    return rows.map((row) => ({ id: row.id, level: row.level, message: row.message, createdAt: row.created_at }))
   }
 
-  upsertItem(item: Omit<SearchItem, 'firstSeenAt' | 'lastSeenAt' | 'isNew'>): boolean {
-    const exists = this.db.prepare('SELECT 1 FROM items WHERE task_id = ? AND item_id = ?').get(item.taskId, item.itemId)
+  enqueueHeartbeat(payload: { id: string; observedAt: string; appVersion: string }): void {
     const now = new Date().toISOString()
-    if (exists) {
-      this.db.prepare(`
-        UPDATE items SET title = ?, price = ?, region = ?, published_text = ?, want_count = ?, url = ?, last_seen_at = ?
-        WHERE task_id = ? AND item_id = ?
-      `).run(item.title, item.price, item.region, item.publishedText, item.wantCount, item.url, now, item.taskId, item.itemId)
-      return false
-    }
     this.db.prepare(`
-      INSERT INTO items (task_id, item_id, title, price, region, published_text, want_count, url, first_seen_at, last_seen_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(item.taskId, item.itemId, item.title, item.price, item.region, item.publishedText, item.wantCount, item.url, now, now)
-    return true
+      INSERT INTO outbox (id, kind, payload, attempts, next_attempt_at, created_at)
+      VALUES (?, 'heartbeat', ?, 0, ?, ?)
+    `).run(payload.id, JSON.stringify(payload), now, now)
   }
 
-  listItems(taskId?: string): SearchItem[] {
-    const query = taskId
-      ? 'SELECT * FROM items WHERE task_id = ? ORDER BY first_seen_at DESC LIMIT 200'
-      : 'SELECT * FROM items ORDER BY first_seen_at DESC LIMIT 200'
-    const rows = (taskId ? this.db.prepare(query).all(taskId) : this.db.prepare(query).all()) as Array<Record<string, unknown>>
+  listDueOutbox(now = new Date().toISOString()): OutboxEntry[] {
+    const rows = this.db.prepare(`
+      SELECT id, kind, payload, attempts, next_attempt_at, created_at
+      FROM outbox WHERE next_attempt_at <= ? ORDER BY created_at ASC, id ASC LIMIT 50
+    `).all(now) as OutboxRow[]
     return rows.map((row) => ({
-      itemId: String(row.item_id),
-      taskId: String(row.task_id),
-      title: String(row.title),
-      price: row.price === null ? null : Number(row.price),
-      region: row.region === null ? null : String(row.region),
-      publishedText: row.published_text === null ? null : String(row.published_text),
-      wantCount: row.want_count === null ? null : Number(row.want_count),
-      url: String(row.url),
-      firstSeenAt: String(row.first_seen_at),
-      lastSeenAt: String(row.last_seen_at),
-      isNew: false
+      id: row.id,
+      kind: row.kind,
+      payload: JSON.parse(row.payload) as Record<string, string>,
+      attempts: row.attempts,
+      nextAttemptAt: row.next_attempt_at,
+      createdAt: row.created_at
     }))
   }
 
-  addLog(level: ScanLog['level'], message: string, taskId: string | null = null): void {
-    this.db.prepare('INSERT INTO scan_logs (task_id, level, message, created_at) VALUES (?, ?, ?, ?)')
-      .run(taskId, level, message, new Date().toISOString())
+  completeOutbox(id: string): void {
+    this.db.prepare('DELETE FROM outbox WHERE id = ?').run(id)
   }
 
-  listLogs(): ScanLog[] {
-    return this.db.prepare('SELECT * FROM scan_logs ORDER BY id DESC LIMIT 80').all() as ScanLog[]
+  deferOutbox(id: string, attempts: number): void {
+    const delayMs = Math.min(60 * 60_000, Math.max(5_000, 2 ** Math.min(attempts, 8) * 1_000))
+    this.db.prepare('UPDATE outbox SET attempts = ?, next_attempt_at = ? WHERE id = ?')
+      .run(attempts, new Date(Date.now() + delayMs).toISOString(), id)
   }
 
-  private toTask = (row: TaskRow): MonitorTask => ({
-    id: row.id,
-    keyword: row.keyword,
-    minPrice: row.min_price,
-    maxPrice: row.max_price,
-    region: row.region,
-    intervalMinutes: row.interval_minutes,
-    enabled: Boolean(row.enabled),
-    lastScannedAt: row.last_scanned_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  })
+  close(): void {
+    this.db.close()
+  }
 }

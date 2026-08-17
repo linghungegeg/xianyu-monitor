@@ -82,8 +82,8 @@ async function run() {
     const otherClientId = userId(701)
     const ownRunId = marketId(700)
     const otherRunId = marketId(701)
-    await db.query(`INSERT INTO identity.collector_clients (id,user_id,device_public_key_fingerprint,device_name,platform,app_version,status,last_seen_at,created_at)
-      VALUES ($1,$2,$3,'reader-device','windows','phase2','active',$4,$4),($5,$6,$7,'other-device','windows','phase2','active',$4,$4)`, [ownClientId, readerId, 'reader-fingerprint', baseTime, otherClientId, userId(1), 'other-fingerprint'])
+    await db.query(`INSERT INTO identity.collector_clients (id,user_id,device_public_key_fingerprint,active_slot,device_name,platform,app_version,status,last_seen_at,created_at)
+      VALUES ($1,$2,$3,1,'reader-device','windows','phase2','active',$4,$4),($5,$6,$7,1,'other-device','windows','phase2','active',$4,$4)`, [ownClientId, readerId, 'reader-fingerprint', baseTime, otherClientId, userId(1), 'other-fingerprint'])
     await db.query(`INSERT INTO ops.collection_runs (id,client_id,client_run_id,task_reference,kind,status,started_at,finished_at,result_counts)
       VALUES ($1,$2,'reader-run','reader monitor','search','completed',$3,$3,'{}'),($4,$5,'other-run','other monitor','search','completed',$3,$3,'{}')`, [ownRunId, ownClientId, baseTime, otherRunId, otherClientId])
     for (let index = 1; index <= 22; index += 1) {
@@ -133,6 +133,11 @@ async function run() {
     assert(refreshedMe.statusCode === 200, `Admin refresh 后身份失败：${refreshedMe.statusCode}`)
     const replayedAdminRefresh = await adminApi.inject({ method: 'POST', url: '/v1/auth/refresh', payload: { refreshToken: adminRefreshToken } })
     assert(replayedAdminRefresh.statusCode === 401, 'Admin refresh token 重放未拒绝')
+    const revokedDescendantRefresh = await adminApi.inject({ method: 'POST', url: '/v1/auth/refresh', payload: { refreshToken: json(refreshedAdmin).refreshToken } })
+    assert(revokedDescendantRefresh.statusCode === 401, 'Admin refresh token 重放后后代令牌未撤销')
+    const reauthenticatedAdmin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin@example.test', password: 'phase2-test-password-123' } })
+    assert(reauthenticatedAdmin.statusCode === 200, `Admin 重登失败：${reauthenticatedAdmin.statusCode} ${reauthenticatedAdmin.body}`)
+    adminToken = json(reauthenticatedAdmin).accessToken
 
     const firstUserPage = await userApi.inject({ method: 'GET', url: '/v1/market/items?limit=20&sort=last_seen_at&order=desc', headers: auth(userToken) })
     assert(firstUserPage.statusCode === 200, `User 首页失败：${firstUserPage.statusCode} ${firstUserPage.body}`)

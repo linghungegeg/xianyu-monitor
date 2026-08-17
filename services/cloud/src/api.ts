@@ -36,6 +36,7 @@ function refreshHash(token: string): string { return createHash('sha256').update
 function bearer(header: string | undefined): string { if (!header?.startsWith('Bearer ')) throw new Error('缺少访问令牌'); return header.slice(7) }
 function fail(reply: { code: (value: number) => { send: (body: unknown) => unknown } }, code: number, message: string) { return reply.code(code).send({ error: message }) }
 function listFail(reply: { code: (value: number) => { send: (body: unknown) => unknown } }, error: ListRequestError) { return reply.code(400).send({ error: { code: error.code, message: error.message } }) }
+function isUniqueViolation(error: unknown): boolean { return Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === '23505') }
 
 function installCors(app: FastifyInstance, allowedOrigins: readonly string[]) {
   const origins = new Set(allowedOrigins)
@@ -628,17 +629,48 @@ async function listAdminUsers(sql: Sql, context: ListContext, secret: string) {
   return listResponse(context, rows.rows, total, secret, adminUsersListConfig.resource)
 }
 
-async function issue(sql: Sql, domain: TokenDomain, kind: SubjectKind, subjectId: string, clientId?: string) {
-  const sessionId = randomUUID(); const familyId = randomUUID(); const refresh = createRefreshToken()
+async function issue(sql: Sql, domain: TokenDomain, kind: SubjectKind, subjectId: string, clientId?: string, familyId: string = randomUUID(), rotatedFromId?: string) {
+  const sessionId = randomUUID(); const refresh = createRefreshToken()
   await sql.query(`INSERT INTO identity.auth_refresh_sessions (id, subject_type, subject_id, token_hash, family_id, expires_at, created_at)
     VALUES ($1,$2,$3,$4,$5,now() + interval '30 days',now())`, [sessionId, kind, subjectId, refresh.hash, familyId])
+  if (rotatedFromId) await sql.query('UPDATE identity.auth_refresh_sessions SET rotated_from_id = $1 WHERE id = $2', [rotatedFromId, sessionId])
   return { accessToken: await signAccessToken(domain, kind, subjectId, sessionId, clientId), refreshToken: refresh.token }
+}
+
+async function rotateRefresh(sql: Sql, domain: TokenDomain, kind: SubjectKind, session: SessionRow, clientId?: string) {
+  const sessionId = randomUUID(); const refresh = createRefreshToken()
+  const rotated = await sql.query(`WITH old_session AS (
+      UPDATE identity.auth_refresh_sessions
+      SET revoked_at = now(), last_used_at = now()
+      WHERE id = $1 AND revoked_at IS NULL
+      RETURNING COALESCE(family_id, id) AS family_id
+    )
+    INSERT INTO identity.auth_refresh_sessions (id, subject_type, subject_id, token_hash, family_id, rotated_from_id, expires_at, created_at)
+    SELECT $2,$3,$4,$5,old_session.family_id,$1,now() + interval '30 days',now()
+    FROM old_session
+    RETURNING id`, [session.id, sessionId, kind, session.subject_id, refresh.hash])
+  if (!rotated.rows[0]) {
+    const familyId = session.family_id ?? session.id
+    await sql.query('UPDATE identity.auth_refresh_sessions SET replay_detected_at = now(), revoked_at = now() WHERE (family_id = $1 OR id = $1) AND revoked_at IS NULL', [familyId])
+    throw new Error('刷新令牌重放')
+  }
+  return { accessToken: await signAccessToken(domain, kind, session.subject_id, sessionId, clientId), refreshToken: refresh.token }
+}
+
+async function activeCollector(sql: Sql, clientId: string): Promise<{ user_id: string }> {
+  const client = (await sql.query(`SELECT c.user_id
+    FROM identity.collector_clients c
+    JOIN identity.users u ON u.id = c.user_id
+    WHERE c.id = $1 AND c.status = 'active' AND u.status = 'active'`, [clientId])).rows[0] as { user_id: string } | undefined
+  if (!client) throw new Error('设备已撤销或账号已禁用')
+  return client
 }
 
 async function authenticateToken(sql: Sql, domain: TokenDomain, kind: SubjectKind, token: string) {
   const claims = await verifyAccessToken(domain, kind, token)
   const session = (await sql.query('SELECT id, subject_type, subject_id, revoked_at, expires_at FROM identity.auth_refresh_sessions WHERE id = $1', [claims.sessionId])).rows[0] as SessionRow | undefined
   if (!session || session.subject_type !== kind || session.subject_id !== claims.sub || session.revoked_at || new Date(String(session.expires_at)) <= new Date()) throw new Error('会话已失效')
+  if (kind === 'collector') await activeCollector(sql, String(claims.sub))
   return claims
 }
 
@@ -650,11 +682,21 @@ async function refresh(sql: Sql, domain: TokenDomain, kind: SubjectKind, refresh
   const session = result.rows[0] as SessionRow | undefined
   if (!session || new Date(session.expires_at) <= new Date()) throw new Error('刷新令牌无效')
   if (session.revoked_at) {
-    await sql.query('UPDATE identity.auth_refresh_sessions SET replay_detected_at = now(), revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL', [session.family_id])
+    const familyId = session.family_id ?? session.id
+    await sql.query('UPDATE identity.auth_refresh_sessions SET replay_detected_at = now(), revoked_at = now() WHERE (family_id = $1 OR id = $1) AND revoked_at IS NULL', [familyId])
     throw new Error('刷新令牌重放')
   }
-  await sql.query('UPDATE identity.auth_refresh_sessions SET revoked_at = now(), last_used_at = now() WHERE id = $1', [session.id])
-  return issue(sql, domain, kind, session.subject_id, clientId)
+  if (kind === 'collector') await activeCollector(sql, session.subject_id)
+  return rotateRefresh(sql, domain, kind, session, clientId ?? (kind === 'collector' ? session.subject_id : undefined))
+}
+
+async function revokeCollector(sql: Sql, clientId: string, userId?: string): Promise<boolean> {
+  const updated = userId
+    ? await sql.query("UPDATE identity.collector_clients SET status = 'revoked', active_slot = NULL, revoked_at = now() WHERE id = $1 AND user_id = $2 AND status = 'active' RETURNING id", [clientId, userId])
+    : await sql.query("UPDATE identity.collector_clients SET status = 'revoked', active_slot = NULL, revoked_at = now() WHERE id = $1 AND status = 'active' RETURNING id", [clientId])
+  if (!updated.rows[0]) return false
+  await sql.query("UPDATE identity.auth_refresh_sessions SET revoked_at = now() WHERE subject_type = 'collector' AND subject_id = $1 AND revoked_at IS NULL", [clientId])
+  return true
 }
 
 export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = {}) {
@@ -675,6 +717,16 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   app.post('/v1/auth/refresh', async (request, reply) => { try { return await refresh(sql, domains.user, 'user', body<{ refreshToken: string }>(request.body).refreshToken) } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') } })
   app.get('/v1/me', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); return { id: claims.sub } } catch { return fail(reply, 401, '未授权') } })
   app.get('/v1/me/entitlements', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); const rows = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [claims.sub]); return { items: rows.rows } } catch { return fail(reply, 401, '未授权') } })
+  app.post('/v1/collector-devices/:clientId/revoke', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization)
+      const clientId = String((request.params as { clientId?: string }).clientId ?? '')
+      if (!clientId || !(await revokeCollector(sql, clientId, String(claims.sub)))) return fail(reply, 404, '设备不存在或已解绑')
+      return { revoked: true }
+    } catch {
+      return fail(reply, 401, '未授权')
+    }
+  })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/sellers', '/v1/market/sellers'], sql, domains.user, 'user', userSellersListConfig, userSellersPlan, 401, '未授权')
@@ -725,16 +777,77 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
   const app = Fastify({ logger: false })
   app.get('/health', async () => ({ service: 'collector-api', ok: true }))
   app.post('/v1/devices/bind', async (request, reply) => {
-    const input = body<{ userToken?: string; publicKey?: string; proof?: string; deviceName?: string }>(request.body)
+    const input = body<{ publicKey?: string; proof?: string; deviceName?: string }>(request.body)
     try {
-      const user = await authenticateToken(sql, domains.user, 'user', input.userToken ?? ''); const key = Buffer.from(input.publicKey ?? '', 'base64'); const proof = Buffer.from(input.proof ?? '', 'base64')
+      const user = await authenticate(sql, domains.user, 'user', request.headers.authorization); const key = Buffer.from(input.publicKey ?? '', 'base64'); const proof = Buffer.from(input.proof ?? '', 'base64')
       if (!key.length || !verify(null, Buffer.from(user.sub ?? ''), { key, format: 'der', type: 'spki' }, proof)) return fail(reply, 401, '设备签名无效')
-      const fingerprint = createHash('sha256').update(key).digest('hex'); const active = await sql.query("SELECT COUNT(*)::int AS total FROM identity.collector_clients WHERE user_id=$1 AND status='active'", [user.sub])
-      if (Number(active.rows[0]?.total) >= 2) return fail(reply, 403, '设备数量已达上限')
-      const id = randomUUID(); await sql.query("INSERT INTO identity.collector_clients (id,user_id,device_public_key_fingerprint,device_public_key,key_algorithm,device_name,platform,app_version,status,created_at) VALUES ($1,$2,$3,$4,'ed25519',$5,'windows','phase1','active',now())", [id, user.sub, fingerprint, input.publicKey, input.deviceName ?? 'Collector'])
-      return issue(sql, domains.collector, 'collector', id, id)
-    } catch { return fail(reply, 401, '设备绑定失败') }
+      const fingerprint = createHash('sha256').update(key).digest('hex')
+      const existing = (await sql.query('SELECT id,status FROM identity.collector_clients WHERE user_id=$1 AND device_public_key_fingerprint=$2', [user.sub, fingerprint])).rows[0] as { id: string; status: string } | undefined
+      if (existing?.status === 'active') return { clientId: existing.id, ...(await issue(sql, domains.collector, 'collector', existing.id, existing.id)) }
+      if (existing?.status === 'blocked') return fail(reply, 403, '设备已被封禁')
+      if (existing?.status === 'revoked') {
+        const rebound = await sql.query(`WITH available_slot AS (
+            SELECT CASE
+              WHEN NOT EXISTS (SELECT 1 FROM identity.collector_clients WHERE user_id = $1 AND status = 'active' AND active_slot = 1) THEN 1::smallint
+              WHEN NOT EXISTS (SELECT 1 FROM identity.collector_clients WHERE user_id = $1 AND status = 'active' AND active_slot = 2) THEN 2::smallint
+            END AS active_slot
+          )
+          UPDATE identity.collector_clients
+          SET status='active', active_slot=available_slot.active_slot, revoked_at=NULL, device_name=$2, platform='windows', app_version='phase3', last_seen_at=now()
+          FROM available_slot
+          WHERE id=$3 AND status='revoked' AND available_slot.active_slot IS NOT NULL
+          RETURNING id`, [user.sub, input.deviceName ?? 'Collector', existing.id])
+        if (!rebound.rows[0]) return fail(reply, 403, '设备数量已达上限')
+        return { clientId: existing.id, ...(await issue(sql, domains.collector, 'collector', existing.id, existing.id)) }
+      }
+      const id = randomUUID()
+      const bound = await sql.query(`WITH available_slot AS (
+          SELECT CASE
+            WHEN NOT EXISTS (SELECT 1 FROM identity.collector_clients WHERE user_id = $1 AND status = 'active' AND active_slot = 1) THEN 1::smallint
+            WHEN NOT EXISTS (SELECT 1 FROM identity.collector_clients WHERE user_id = $1 AND status = 'active' AND active_slot = 2) THEN 2::smallint
+          END AS active_slot
+        )
+        INSERT INTO identity.collector_clients (id,user_id,device_public_key_fingerprint,active_slot,device_name,platform,app_version,status,last_seen_at,created_at)
+        SELECT $2,$1,$3,available_slot.active_slot,$4,'windows','phase3','active',now(),now()
+        FROM available_slot
+        WHERE available_slot.active_slot IS NOT NULL
+        RETURNING id`, [user.sub, id, fingerprint, input.deviceName ?? 'Collector'])
+      if (!bound.rows[0]) return fail(reply, 403, '设备数量已达上限')
+      return { clientId: id, ...(await issue(sql, domains.collector, 'collector', id, id)) }
+    } catch (error) { return fail(reply, isUniqueViolation(error) ? 403 : 401, isUniqueViolation(error) ? '设备数量已达上限' : '设备绑定失败') }
   })
-  app.get('/v1/entitlements', async (request, reply) => { try { const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization); const client = await sql.query("SELECT user_id FROM identity.collector_clients WHERE id=$1 AND status='active'", [claims.sub]); if (!client.rows[0]) return fail(reply, 403, '设备已撤销'); const grants = await sql.query('SELECT capability,limit_value FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [client.rows[0].user_id]); return { items: grants.rows } } catch { return fail(reply, 403, '采集器权限不足') } })
+  app.post('/v1/auth/refresh', async (request, reply) => {
+    try { return await refresh(sql, domains.collector, 'collector', body<{ refreshToken?: string }>(request.body).refreshToken ?? '') } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') }
+  })
+  app.get('/v1/entitlements', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      const client = await activeCollector(sql, String(claims.sub))
+      const grants = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [client.user_id])
+      return { allowed: grants.rows.some((grant) => Number(grant.limit_value) > 0), items: grants.rows }
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
+    }
+  })
+  app.post('/v1/devices/unbind', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      await revokeCollector(sql, String(claims.sub))
+      return { revoked: true }
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '设备解绑失败')
+    }
+  })
+  app.post('/v1/heartbeat', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      const input = body<{ id?: string }>(request.body)
+      if (!input.id || input.id.length > 128) return fail(reply, 400, '心跳请求无效')
+      await sql.query('UPDATE identity.collector_clients SET last_seen_at=now() WHERE id=$1', [claims.sub])
+      return { accepted: true }
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
+    }
+  })
   return app
 }

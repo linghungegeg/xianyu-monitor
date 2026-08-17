@@ -1,28 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { MonitorStatus, NewTask } from '../shared/types'
+import type { LauncherStatus } from '../shared/types'
 
 const api = {
-  tasks: {
-    list: () => ipcRenderer.invoke('tasks:list'),
-    create: (task: NewTask) => ipcRenderer.invoke('tasks:create', task),
-    toggle: (id: string, enabled: boolean) => ipcRenderer.invoke('tasks:toggle', id, enabled),
-    delete: (id: string) => ipcRenderer.invoke('tasks:delete', id)
-  },
-  items: {
-    list: (taskId?: string) => ipcRenderer.invoke('items:list', taskId)
-  },
-  logs: {
-    list: () => ipcRenderer.invoke('logs:list')
-  },
-  monitor: {
-    status: () => ipcRenderer.invoke('monitor:status'),
-    login: () => ipcRenderer.invoke('monitor:login'),
-    scan: (taskId: string) => ipcRenderer.invoke('monitor:scan', taskId),
-    openItem: (url: string) => ipcRenderer.invoke('monitor:open-item', url),
-    onStatus: (listener: (status: MonitorStatus) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, status: MonitorStatus): void => listener(status)
-      ipcRenderer.on('monitor:status', handler)
-      return () => ipcRenderer.removeListener('monitor:status', handler)
+  launcher: {
+    status: () => ipcRenderer.invoke('launcher:status'),
+    login: (email: string, password: string) => ipcRenderer.invoke('launcher:login', email, password),
+    start: () => ipcRenderer.invoke('launcher:start'),
+    pause: () => ipcRenderer.invoke('launcher:pause'),
+    openChrome: () => ipcRenderer.invoke('launcher:open-chrome'),
+    unbind: () => ipcRenderer.invoke('launcher:unbind'),
+    logs: () => ipcRenderer.invoke('launcher:logs'),
+    onStatus: (listener: (status: LauncherStatus) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: LauncherStatus): void => listener(status)
+      ipcRenderer.on('launcher:status', handler)
+      return () => ipcRenderer.removeListener('launcher:status', handler)
     }
   }
 }
