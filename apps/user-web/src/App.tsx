@@ -7,7 +7,8 @@ import {
 import {
   UserApiClient, UserApiError, readUserRuntimeConfig, type UserIdentity, type UserListRequest,
   type UserListResource, type UserPage, type MonitorTask, type MonitorTaskInput, type MonitorTaskRule,
-  type MonitorTaskSort, type MonitorTaskStatus
+  type MonitorTaskSort, type MonitorTaskStatus, type SellerEvent, type SellerItem, type SellerItemState,
+  type SellerMonitor, type SellerMonitorInput, type SellerMonitorProfile, type SellerMonitorStatus, type SellerProfile
 } from './api'
 
 type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai' | 'settings'
@@ -33,6 +34,17 @@ type MonitorForm = {
   status: MonitorTaskStatus
 }
 
+type SellerMonitorForm = {
+  target: string
+  intervalSeconds: string
+  status: SellerMonitorStatus
+}
+
+type SellerTarget = {
+  sellerId?: string
+  platformSellerId: string
+}
+
 type TableRow = {
   id: string
   title: string
@@ -41,6 +53,7 @@ type TableRow = {
   updatedAt: string
   status: Status
   tag: string
+  sellerTarget?: SellerTarget
 }
 
 const runtime = readUserRuntimeConfig()
@@ -95,9 +108,9 @@ const bases: Record<RowKind, Omit<TableRow, 'id' | 'updatedAt'>[]> = {
     { title: '北城潮玩仓', subtitle: '北京 · 775 个公开商品 · 95% 好评', metric: '上新 12 件，调价 0 件', status: '正常', tag: '潮玩' }
   ],
   pool: [
-    { title: 'MacBook Air 13 M2 16G 512G', subtitle: '杭州 · 个人闲置 · 2 小时前', metric: '¥4,280 · 26 人想要', status: '关注', tag: '笔记本' },
-    { title: 'Sony A7M4 全画幅微单机身', subtitle: '上海 · 验货宝 · 38 分钟前', metric: '¥12,480 · 8 人想要', status: '正常', tag: '相机' },
-    { title: 'Switch OLED 白色国行', subtitle: '广州 · 包邮 · 1 小时前', metric: '¥1,365 · 17 人想要', status: '正常', tag: '游戏机' }
+    { title: 'MacBook Air 13 M2 16G 512G', subtitle: '杭州 · 个人闲置 · 2 小时前', metric: '¥4,280 · 26 人想要', status: '关注', tag: '笔记本', sellerTarget: { platformSellerId: 'demo-macbook-seller' } },
+    { title: 'Sony A7M4 全画幅微单机身', subtitle: '上海 · 验货宝 · 38 分钟前', metric: '¥12,480 · 8 人想要', status: '正常', tag: '相机', sellerTarget: { platformSellerId: 'demo-camera-seller' } },
+    { title: 'Switch OLED 白色国行', subtitle: '广州 · 包邮 · 1 小时前', metric: '¥1,365 · 17 人想要', status: '正常', tag: '游戏机', sellerTarget: { platformSellerId: 'demo-switch-seller' } }
   ],
   discoveries: [
     { title: '轻薄本周末价格带下移', subtitle: '笔记本电脑 · 全国 · 近 24 小时', metric: 'P50 下降 4.8%，样本 186', status: '待处理', tag: '价格' },
@@ -170,6 +183,8 @@ function normalizeStatus(value: string): Status {
 function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
   const id = recordValue(record, ['id', 'key'], `${kind}-${index + 1}`)
+  const platformSellerId = recordValue(record, ['platformSellerId', 'platform_seller_id'], '')
+  const sellerId = recordValue(record, ['sellerId', 'seller_id'], '')
   return {
     id,
     title: recordValue(record, ['title', 'name', 'subject'], id),
@@ -177,7 +192,8 @@ function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow
     metric: recordValue(record, ['metric', 'summary', 'value', 'detail'], '暂无摘要'),
     updatedAt: recordValue(record, ['updatedAt', 'updated_at', 'occurredAt', 'occurred_at'], '最近更新未知'),
     status: normalizeStatus(recordValue(record, ['status', 'state'], '正常')),
-    tag: recordValue(record, ['tag', 'type', 'eventType', 'event_type'], kind)
+    tag: recordValue(record, ['tag', 'type', 'eventType', 'event_type'], kind),
+    ...(kind === 'pool' && platformSellerId ? { sellerTarget: { platformSellerId, ...(sellerId ? { sellerId } : {}) } } : {})
   }
 }
 
@@ -212,12 +228,49 @@ const demoMonitorTasks: MonitorTask[] = [
   }
 ]
 
+const demoSellerMonitors: SellerMonitor[] = [
+  {
+    id: 'demo-seller-monitor-1', sellerId: 'demo-seller-1', platform: 'goofish', platformSellerId: 'haifeng-digital', profileUrl: 'https://www.goofish.com/user/haifeng-digital', publicName: '海风数码回收店', region: '杭州', ruleVersion: 1, intervalSeconds: 900, status: 'active', nextRunAt: '', createdAt: '2026-08-18T09:00:00.000Z', updatedAt: '2026-08-18T09:00:00.000Z'
+  },
+  {
+    id: 'demo-seller-monitor-2', sellerId: 'demo-seller-2', platform: 'goofish', platformSellerId: 'chen-camera', profileUrl: 'https://www.goofish.com/user/chen-camera', publicName: '小陈的相机柜', region: '上海', ruleVersion: 1, intervalSeconds: 1800, status: 'paused', nextRunAt: '', createdAt: '2026-08-17T09:00:00.000Z', updatedAt: '2026-08-17T09:00:00.000Z'
+  }
+]
+
+const demoSellerProfiles: Record<string, SellerProfile> = {
+  'demo-seller-1': { id: 'demo-seller-1', platform: 'goofish', platformSellerId: 'haifeng-digital', publicName: '海风数码回收店', region: '杭州', firstSeenAt: '2026-08-01T09:00:00.000Z', lastSeenAt: '2026-08-18T09:00:00.000Z' },
+  'demo-seller-2': { id: 'demo-seller-2', platform: 'goofish', platformSellerId: 'chen-camera', publicName: '小陈的相机柜', region: '上海', firstSeenAt: '2026-08-02T09:00:00.000Z', lastSeenAt: '2026-08-17T09:00:00.000Z' }
+}
+
+const demoSellerItems: Record<string, SellerItem[]> = {
+  'demo-seller-1': [
+    { id: 'demo-item-501', platform: 'goofish', platformItemId: '501', state: 'active', firstSeenAt: '2026-08-10T09:00:00.000Z', lastSeenAt: '2026-08-18T09:00:00.000Z' },
+    { id: 'demo-item-502', platform: 'goofish', platformItemId: '502', state: 'sold', firstSeenAt: '2026-08-09T09:00:00.000Z', lastSeenAt: '2026-08-17T08:00:00.000Z' },
+    { id: 'demo-item-503', platform: 'goofish', platformItemId: '503', state: 'offline', firstSeenAt: '2026-08-08T09:00:00.000Z', lastSeenAt: '2026-08-16T08:00:00.000Z' }
+  ],
+  'demo-seller-2': [
+    { id: 'demo-item-601', platform: 'goofish', platformItemId: '601', state: 'active', firstSeenAt: '2026-08-11T09:00:00.000Z', lastSeenAt: '2026-08-18T08:00:00.000Z' }
+  ]
+}
+
+const demoSellerEvents: Record<string, SellerEvent[]> = {
+  'demo-seller-1': [
+    { id: 'demo-event-1', itemId: 'demo-item-501', sellerId: 'demo-seller-1', eventType: 'price_changed', eventKey: 'demo-price-1', occurredAt: '2026-08-18T08:00:00.000Z', detectedAt: '2026-08-18T08:05:00.000Z' },
+    { id: 'demo-event-2', itemId: 'demo-item-502', sellerId: 'demo-seller-1', eventType: 'state_changed', eventKey: 'demo-state-1', occurredAt: '2026-08-17T08:00:00.000Z', detectedAt: '2026-08-17T08:05:00.000Z' }
+  ],
+  'demo-seller-2': []
+}
+
 function emptyMonitorForm(): MonitorForm {
   return {
     keyword: '', categoryPath: '', sort: 'comprehensive', minPrice: '', maxPrice: '', region: '',
     condition: '', delivery: '', shipping: '', guarantee: '', newOnly: '', includeWords: '', excludeWords: '',
     pageLimit: '2', intervalSeconds: '900', status: 'active'
   }
+}
+
+function emptySellerMonitorForm(): SellerMonitorForm {
+  return { target: '', intervalSeconds: '900', status: 'active' }
 }
 
 function monitorFormFromTask(task: MonitorTask): MonitorForm {
@@ -294,6 +347,20 @@ function monitorInputFromForm(form: MonitorForm): MonitorTaskInput {
   return { rule, intervalSeconds: monitorPositiveInteger(form.intervalSeconds, 60, 86400, '采集间隔'), status: form.status }
 }
 
+function sellerMonitorInputFromForm(form: SellerMonitorForm): SellerMonitorInput {
+  const target = form.target.trim()
+  if (!target) throw new Error('请输入公开卖家主页或卖家 ID')
+  const intervalSeconds = monitorPositiveInteger(form.intervalSeconds, 60, 86_400, '采集间隔')
+  try {
+    const url = new URL(target)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error()
+    return { profileUrl: url.toString(), intervalSeconds, status: form.status }
+  } catch {
+    if (!/^[A-Za-z0-9._-]{1,128}$/.test(target)) throw new Error('公开卖家主页或卖家 ID 无效')
+    return { platformSellerId: target, intervalSeconds, status: form.status }
+  }
+}
+
 function monitorInterval(seconds: number): string {
   if (seconds % 3600 === 0) return `每 ${seconds / 3600} 小时`
   if (seconds % 60 === 0) return `每 ${seconds / 60} 分钟`
@@ -303,6 +370,45 @@ function monitorInterval(seconds: number): string {
 function monitorUpdatedAt(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? '最近更新未知' : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function sellerItemStateLabel(state: SellerItemState): string {
+  if (state === 'active') return '在售'
+  if (state === 'sold') return '已售'
+  if (state === 'offline') return '已下架'
+  return '未知'
+}
+
+function sellerEventLabel(eventType: string): string {
+  const labels: Record<string, string> = {
+    new_listing: '上新',
+    price_changed: '价格变化',
+    state_changed: '状态变化',
+    item_sold: '已售',
+    item_offline: '下架',
+    item_relisted: '重新上架',
+    content_changed: '内容变化',
+    seller_updated: '卖家资料变化'
+  }
+  return labels[eventType] ?? (eventType || '未知事件')
+}
+
+function sellerItemSummary(item: SellerItem): string {
+  return [
+    item.platformItemId,
+    item.price ? `¥${item.price}` : '',
+    item.region,
+    item.conditionText,
+    item.wantCount === undefined ? '' : `${item.wantCount} 人想要`
+  ].filter(Boolean).join(' · ')
+}
+
+function sellerDetailPage<T>(items: T[], cursor: string | null, pageSize: number, prefix: string): UserPage<T> {
+  const match = cursor ? new RegExp(`^${prefix}:(\\d+)$`).exec(cursor) : null
+  const offset = match ? Number(match[1]) : 0
+  const pageItems = items.slice(offset, offset + pageSize)
+  const nextOffset = offset + pageItems.length
+  return { items: pageItems, total: items.length, nextCursor: nextOffset < items.length ? `${prefix}:${nextOffset}` : null, hasMore: nextOffset < items.length }
 }
 
 function monitorRuleScope(rule: MonitorTaskRule): string {
@@ -352,6 +458,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const [menuOpen, setMenuOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [drawer, setDrawer] = useState<TableRow | null>(null)
+  const [sellerTarget, setSellerTarget] = useState<SellerTarget | null>(null)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('')
   const [sort, setSort] = useState<SortKey>('updated_at_desc')
@@ -365,7 +472,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
   const openTabs = active === 'dashboard' ? [pages[0]] : [pages[0], activePage]
-  const listKind = active === 'dashboard' || active === 'settings' || active === 'monitors' ? null : active
+  const listKind = active === 'dashboard' || active === 'settings' || active === 'monitors' || active === 'sellers' ? null : active
   const listRequest = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort, filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, sort, status])
 
   useEffect(() => {
@@ -378,6 +485,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   }, [api, listKind, listRequest, reloadKey])
 
   const switchPage = (next: PageKey) => { setActive(next); setCursor(null); setCursorHistory([]); setQuery(''); setStatus(''); setSort('updated_at_desc'); setDrawer(null); setMenuOpen(false) }
+  const openSellerFromItem = (target: SellerTarget) => { setSellerTarget(target); switchPage('sellers') }
   const changeFilter = (callback: () => void) => { callback(); setCursor(null); setCursorHistory([]) }
   const nextPage = () => { if (!page.nextCursor) return; setCursorHistory((history) => [...history, cursor]); setCursor(page.nextCursor) }
   const previousPage = () => { if (!cursorHistory.length) return; setCursor(cursorHistory[cursorHistory.length - 1] ?? null); setCursorHistory(cursorHistory.slice(0, -1)) }
@@ -391,8 +499,8 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
     <section className="main-shell"><header className="workspace-header"><div className="header-greeting"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>欢迎使用闲鱼数据台</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /><i>3</i></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span><ChevronDown size={15} /></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header><div className="tabs-bar">{openTabs.map((tab) => <div className={`workspace-tab ${active === tab.key ? 'active' : ''}`} key={tab.key}><button onClick={() => switchPage(tab.key)}>{tab.label}</button>{tab.key !== 'dashboard' && <button className="tab-close" title={`关闭${tab.label}`} onClick={() => switchPage('dashboard')}><X size={13} /></button>}</div>)}</div>
-      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
-    {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} />}
+      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
+    {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />}
   </div>
 }
 
@@ -529,6 +637,375 @@ function MonitorEditor({ editing, form, saving, error, onChange, onClose, onSubm
   return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭监控编辑器" onClick={onClose} /><section className="monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="monitor-editor-title"><header><div><p className="eyebrow">监控规则</p><h2 id="monitor-editor-title">{editing ? '编辑监控' : '新建监控'}</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>关键词</span><input value={form.keyword} onChange={setValue('keyword')} maxLength={80} required={!form.categoryPath.trim()} placeholder="例如 MacBook Air M2" autoFocus /></label><label className="monitor-field monitor-field-wide"><span>类目路径</span><input value={form.categoryPath} onChange={setValue('categoryPath')} required={!form.keyword.trim()} placeholder="用 / 分隔，最多 3 级，例如 数码 / 电脑 / 笔记本" /></label><label className="monitor-field"><span>排序</span><select value={form.sort} onChange={setValue('sort')}>{monitorSortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="monitor-field"><span>地区</span><input value={form.region} onChange={setValue('region')} maxLength={64} placeholder="例如 全国、杭州" /></label><label className="monitor-field"><span>最低价（元）</span><input type="number" min="0" value={form.minPrice} onChange={setValue('minPrice')} placeholder="不限" /></label><label className="monitor-field"><span>最高价（元）</span><input type="number" min="0" value={form.maxPrice} onChange={setValue('maxPrice')} placeholder="不限" /></label></div><section className="monitor-form-section"><h3>公开筛选</h3><div className="monitor-form-grid"><label className="monitor-field"><span>成色</span><input value={form.condition} onChange={setValue('condition')} maxLength={40} placeholder="例如 全新" /></label><label className="monitor-field"><span>发货方式</span><input value={form.delivery} onChange={setValue('delivery')} maxLength={40} placeholder="例如 同城自提" /></label><label className="monitor-field"><span>配送</span><input value={form.shipping} onChange={setValue('shipping')} maxLength={40} placeholder="例如 包邮" /></label><label className="monitor-field"><span>保障</span><input value={form.guarantee} onChange={setValue('guarantee')} maxLength={40} placeholder="例如 验货宝" /></label><label className="monitor-field"><span>仅看全新</span><select value={form.newOnly} onChange={setValue('newOnly')}><option value="">不限</option><option value="是">是</option><option value="否">否</option></select></label></div></section><section className="monitor-form-section"><h3>匹配与频率</h3><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>包含词</span><input value={form.includeWords} onChange={setValue('includeWords')} placeholder="用逗号分隔，例如 16G，国行" /></label><label className="monitor-field monitor-field-wide"><span>排除词</span><input value={form.excludeWords} onChange={setValue('excludeWords')} placeholder="用逗号分隔，例如 维修，配件" /></label><label className="monitor-field"><span>页数上限</span><input type="number" min="1" max="10" step="1" value={form.pageLimit} onChange={setValue('pageLimit')} /></label><label className="monitor-field"><span>采集间隔（秒）</span><input type="number" min="60" max="86400" step="60" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用采集</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用采集" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div></section>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '保存监控'}</button></footer></form></section></div>
 }
 
+function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }: { api: UserApiClient; mode: 'demo' | 'api'; initialTarget?: SellerTarget | null; onInitialTargetConsumed?: () => void }): ReactNode {
+  const [page, setPage] = useState<UserPage<SellerMonitor>>({ items: [], total: 0, nextCursor: null, hasMore: false })
+  const [demoTasks, setDemoTasks] = useState<SellerMonitor[]>(demoSellerMonitors)
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState('')
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [pageSize, setPageSize] = useState(20)
+  const [loading, setLoading] = useState(mode === 'api')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [form, setForm] = useState<SellerMonitorForm>(emptySellerMonitorForm)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [workingId, setWorkingId] = useState<string | null>(null)
+  const [detailTask, setDetailTask] = useState<SellerMonitor | null>(null)
+  const request = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort: 'updated_at_desc', filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, status])
+
+  useEffect(() => {
+    if (mode === 'demo') {
+      const normalizedQuery = query.trim().toLocaleLowerCase('zh-CN')
+      const filtered = demoTasks.filter((task) => (!normalizedQuery || `${task.publicName ?? ''} ${task.platformSellerId} ${task.profileUrl}`.toLocaleLowerCase('zh-CN').includes(normalizedQuery)) && (!status || task.status === status))
+      const offsetMatch = /^demo:(\d+)$/.exec(cursor ?? '')
+      const offset = offsetMatch ? Number(offsetMatch[1]) : 0
+      const items = filtered.slice(offset, offset + pageSize)
+      const nextOffset = offset + items.length
+      setPage({ items, total: filtered.length, nextCursor: nextOffset < filtered.length ? `demo:${nextOffset}` : null, hasMore: nextOffset < filtered.length })
+      setLoadError(null)
+      setLoading(false)
+      return
+    }
+
+    const controller = new AbortController()
+    let active = true
+    setLoading(true)
+    setLoadError(null)
+    api.listSellerMonitors(request, controller.signal)
+      .then((result) => { if (active) setPage(result) })
+      .catch((caught) => {
+        if (!active || (caught instanceof DOMException && caught.name === 'AbortError')) return
+        setLoadError(caught instanceof UserApiError ? caught.message : '竞品商家加载失败')
+      })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false; controller.abort() }
+  }, [api, cursor, demoTasks, mode, pageSize, query, reloadKey, request, status])
+
+  const resetToFirstPage = () => {
+    setCursor(null)
+    setCursorHistory([])
+  }
+  const closeEditor = (force = false) => {
+    if (saving && !force) return
+    setEditorOpen(false)
+    setFormError(null)
+  }
+  const openEditor = (target = '') => {
+    setForm({ ...emptySellerMonitorForm(), target })
+    setFormError(null)
+    setEditorOpen(true)
+  }
+  useEffect(() => {
+    if (!initialTarget?.platformSellerId) return
+    openEditor(initialTarget.platformSellerId)
+    onInitialTargetConsumed?.()
+  }, [initialTarget, onInitialTargetConsumed])
+  const saveTask = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setFormError(null)
+    let input: SellerMonitorInput
+    try {
+      input = sellerMonitorInputFromForm(form)
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : '卖家信息无效')
+      return
+    }
+    setSaving(true)
+    try {
+      if (mode === 'demo') {
+        const now = new Date().toISOString()
+        const platformSellerId = input.platformSellerId ?? `demo-seller-${Date.now()}`
+        const profileUrl = input.profileUrl ?? `https://www.goofish.com/user/${encodeURIComponent(platformSellerId)}`
+        setDemoTasks((current) => [{ id: `demo-seller-monitor-${Date.now()}`, sellerId: `demo-seller-${Date.now()}`, platform: 'goofish', platformSellerId, profileUrl, ruleVersion: 1, intervalSeconds: input.intervalSeconds, status: input.status ?? 'active', nextRunAt: '', createdAt: now, updatedAt: now }, ...current])
+      } else {
+        await api.createSellerMonitor(input)
+      }
+      resetToFirstPage()
+      setReloadKey((value) => value + 1)
+      closeEditor(true)
+    } catch (caught) {
+      setFormError(caught instanceof UserApiError ? caught.message : '添加竞品商家失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+  const changeStatus = async (task: SellerMonitor) => {
+    const nextStatus: SellerMonitorStatus = task.status === 'active' ? 'paused' : 'active'
+    setActionError(null)
+    setWorkingId(task.id)
+    try {
+      if (mode === 'demo') {
+        setDemoTasks((current) => current.map((entry) => entry.id === task.id ? { ...entry, status: nextStatus, updatedAt: new Date().toISOString() } : entry))
+      } else {
+        const updated = await api.updateSellerMonitor(task.id, { status: nextStatus })
+        setPage((current) => ({ ...current, items: current.items.map((entry) => entry.id === updated.id ? updated : entry) }))
+      }
+    } catch (caught) {
+      setActionError(caught instanceof UserApiError ? caught.message : '更新竞品商家状态失败')
+    } finally {
+      setWorkingId(null)
+    }
+  }
+  const deleteTask = async (task: SellerMonitor) => {
+    const label = task.publicName ?? task.platformSellerId ?? task.id
+    if (!window.confirm(`确定删除竞品商家“${label}”吗？`)) return
+    setActionError(null)
+    setWorkingId(task.id)
+    try {
+      if (mode === 'demo') setDemoTasks((current) => current.filter((entry) => entry.id !== task.id))
+      else await api.deleteSellerMonitor(task.id)
+      if (detailTask?.id === task.id) setDetailTask(null)
+      resetToFirstPage()
+      setReloadKey((value) => value + 1)
+    } catch (caught) {
+      setActionError(caught instanceof UserApiError ? caught.message : '删除竞品商家失败')
+    } finally {
+      setWorkingId(null)
+    }
+  }
+  const previousPage = () => {
+    if (!cursorHistory.length) return
+    setCursor(cursorHistory[cursorHistory.length - 1] ?? null)
+    setCursorHistory(cursorHistory.slice(0, -1))
+  }
+  const nextPage = () => {
+    if (!page.nextCursor) return
+    setCursorHistory((history) => [...history, cursor])
+    setCursor(page.nextCursor)
+  }
+
+  return <><div className="page-heading"><div><p className="eyebrow">竞品监控</p><h1>竞品商家</h1><p>管理公开卖家监控任务。</p></div><button className="primary" onClick={() => openEditor()}><Plus size={16} />添加商家</button></div>{actionError && <div className="monitor-alert" role="alert">{actionError}</div>}<section className="table-panel monitor-table-panel seller-monitor-table-panel"><div className="table-summary"><span>共 <strong>{page.total}</strong> 个商家</span><button className="icon-button" title="刷新竞品商家" onClick={() => setReloadKey((value) => value + 1)} disabled={loading}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></div><div className="filter-bar seller-monitor-filter"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); resetToFirstPage() }} placeholder="搜索卖家" /></label><label><span>状态</span><select value={status} onChange={(event) => { setStatus(event.target.value); resetToFirstPage() }}><option value="">全部状态</option><option value="active">已启用</option><option value="paused">已暂停</option></select></label></div>{loadError ? <div className="state-box"><Activity size={27} /><strong>竞品商家加载失败</strong><p>{loadError}</p><button className="primary small" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载竞品商家</strong><p>请稍候。</p></div> : page.items.length === 0 ? <div className="state-box"><Store size={27} /><strong>还没有竞品商家</strong><p>添加公开卖家主页后即可开始监控。</p><button className="primary small" onClick={() => openEditor()}><Plus size={15} />添加商家</button></div> : <div className="table-wrap"><table className="monitor-table seller-monitor-table"><thead><tr><th>商家</th><th>采集频率</th><th>最近更新</th><th>状态</th><th aria-label="操作" /></tr></thead><tbody>{page.items.map((task) => <tr key={task.id}><td><strong>{task.publicName ?? task.platformSellerId}</strong><small>{task.profileUrl || task.platformSellerId}</small></td><td>{monitorInterval(task.intervalSeconds)}</td><td><span className="time">{monitorUpdatedAt(task.updatedAt)}</span></td><td><span className={`status ${task.status === 'active' ? 'ok' : 'muted'}`}>{task.status === 'active' ? '已启用' : '已暂停'}</span></td><td><div className="monitor-actions"><button className="row-action" title="查看商家详情" onClick={() => setDetailTask(task)}><MoreHorizontal size={17} /></button><button className="row-action" title={task.status === 'active' ? '暂停监控' : '启用监控'} onClick={() => void changeStatus(task)} disabled={workingId === task.id}>{task.status === 'active' ? <Pause size={16} /> : <Play size={16} />}</button><button className="row-action monitor-delete" title="删除商家" onClick={() => void deleteTask(task)} disabled={workingId === task.id}><Trash2 size={16} /></button></div></td></tr>)}</tbody></table></div>}<CursorPagination total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onPrev={previousPage} onNext={nextPage} onPageSize={(value) => { setPageSize(value); resetToFirstPage() }} /></section>{editorOpen && <SellerMonitorEditor form={form} saving={saving} error={formError} onChange={(field, value) => setForm((current) => ({ ...current, [field]: value }))} onClose={closeEditor} onSubmit={(event) => void saveTask(event)} />}{detailTask && <SellerMonitorDetail api={api} mode={mode} task={detailTask} onClose={() => setDetailTask(null)} />}</>
+}
+
+function SellerMonitorEditor({ form, saving, error, onChange, onClose, onSubmit }: { form: SellerMonitorForm; saving: boolean; error: string | null; onChange: (field: keyof SellerMonitorForm, value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void }): ReactNode {
+  const setValue = (field: keyof SellerMonitorForm) => (event: React.ChangeEvent<HTMLInputElement>) => onChange(field, event.target.value)
+  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭竞品商家编辑器" onClick={onClose} /><section className="monitor-dialog seller-monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="seller-monitor-editor-title"><header><div><p className="eyebrow">竞品商家</p><h2 id="seller-monitor-editor-title">添加商家</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>公开卖家主页或卖家 ID</span><input value={form.target} onChange={setValue('target')} maxLength={2048} placeholder="粘贴公开主页" autoFocus required /></label><label className="monitor-field"><span>采集间隔（秒）</span><input type="number" min="60" max="86400" step="60" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用监控</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用监控" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '添加商家'}</button></footer></form></section></div>
+}
+
+type SellerDetailTab = 'items' | 'events'
+
+function SellerMonitorDetail({ api, mode, task, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; task: SellerMonitor; onClose: () => void }): ReactNode {
+  const fallbackSeller = demoSellerProfiles[task.sellerId] ?? {
+    id: task.sellerId,
+    platform: 'goofish' as const,
+    platformSellerId: task.platformSellerId,
+    ...(task.publicName ? { publicName: task.publicName } : {}),
+    ...(task.region ? { region: task.region } : {}),
+    firstSeenAt: task.createdAt,
+    lastSeenAt: task.updatedAt
+  }
+  const [profile, setProfile] = useState<SellerMonitorProfile>({ task, seller: fallbackSeller })
+  const [profileLoading, setProfileLoading] = useState(mode === 'api')
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [tab, setTab] = useState<SellerDetailTab>('items')
+  const [itemsPage, setItemsPage] = useState<UserPage<SellerItem>>({ items: [], total: 0, nextCursor: null, hasMore: false })
+  const [eventsPage, setEventsPage] = useState<UserPage<SellerEvent>>({ items: [], total: 0, nextCursor: null, hasMore: false })
+  const [itemsLoading, setItemsLoading] = useState(mode === 'api')
+  const [eventsLoading, setEventsLoading] = useState(false)
+  const [itemsError, setItemsError] = useState<string | null>(null)
+  const [eventsError, setEventsError] = useState<string | null>(null)
+  const [itemQuery, setItemQuery] = useState('')
+  const [itemState, setItemState] = useState<SellerItemState | ''>('')
+  const [itemCursor, setItemCursor] = useState<string | null>(null)
+  const [itemHistory, setItemHistory] = useState<Array<string | null>>([])
+  const [itemPageSize, setItemPageSize] = useState(20)
+  const [eventType, setEventType] = useState('')
+  const [eventItemId, setEventItemId] = useState('')
+  const [eventCursor, setEventCursor] = useState<string | null>(null)
+  const [eventHistory, setEventHistory] = useState<Array<string | null>>([])
+  const [eventPageSize, setEventPageSize] = useState(20)
+  const [selectedItem, setSelectedItem] = useState<SellerItem | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  const itemRequest = useMemo<UserListRequest>(() => ({
+    limit: itemPageSize,
+    cursor: itemCursor,
+    sort: 'last_seen_at',
+    filters: {
+      ...(itemQuery.trim() ? { q: itemQuery.trim() } : {}),
+      ...(itemState ? { state: itemState } : {})
+    }
+  }), [itemCursor, itemPageSize, itemQuery, itemState])
+  const eventRequest = useMemo<UserListRequest>(() => ({
+    limit: eventPageSize,
+    cursor: eventCursor,
+    sort: 'occurred_at',
+    filters: {
+      ...(eventType ? { eventType } : {}),
+      ...(eventItemId.trim() ? { itemId: eventItemId.trim() } : {})
+    }
+  }), [eventCursor, eventItemId, eventPageSize, eventType])
+
+  useEffect(() => {
+    const seller = demoSellerProfiles[task.sellerId] ?? fallbackSeller
+    setProfile({ task, seller })
+    setProfileError(null)
+    setProfileLoading(mode === 'api')
+    setTab('items')
+    setItemCursor(null)
+    setItemHistory([])
+    setEventCursor(null)
+    setEventHistory([])
+    setSelectedItem(null)
+    if (mode === 'demo') return
+    const controller = new AbortController()
+    let active = true
+    api.getSellerMonitorProfile(task.id, controller.signal)
+      .then((result) => { if (active) setProfile(result) })
+      .catch((caught) => {
+        if (!active || (caught instanceof DOMException && caught.name === 'AbortError')) return
+        setProfileError(caught instanceof UserApiError ? caught.message : '卖家公开资料加载失败')
+      })
+      .finally(() => { if (active) setProfileLoading(false) })
+    return () => { active = false; controller.abort() }
+  }, [api, mode, task])
+
+  useEffect(() => {
+    if (tab !== 'items') return
+    if (mode === 'demo') {
+      const query = itemQuery.trim().toLocaleLowerCase('zh-CN')
+      const all = demoSellerItems[task.sellerId] ?? []
+      const filtered = all.filter((item) => (!query || `${item.platformItemId} ${item.id}`.toLocaleLowerCase('zh-CN').includes(query)) && (!itemState || item.state === itemState))
+      setItemsPage(sellerDetailPage(filtered, itemCursor, itemPageSize, 'demo-items'))
+      setItemsError(null)
+      setItemsLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    let active = true
+    setItemsLoading(true)
+    setItemsError(null)
+    api.listSellerMonitorItems(task.id, itemRequest, controller.signal)
+      .then((result) => { if (active) setItemsPage(result) })
+      .catch((caught) => {
+        if (!active || (caught instanceof DOMException && caught.name === 'AbortError')) return
+        setItemsError(caught instanceof UserApiError ? caught.message : '卖家商品加载失败')
+      })
+      .finally(() => { if (active) setItemsLoading(false) })
+    return () => { active = false; controller.abort() }
+  }, [api, itemCursor, itemPageSize, itemQuery, itemRequest, itemState, mode, reloadKey, tab, task])
+
+  useEffect(() => {
+    if (tab !== 'events') return
+    if (mode === 'demo') {
+      const all = demoSellerEvents[task.sellerId] ?? []
+      const filtered = all.filter((event) => (!eventType || event.eventType === eventType) && (!eventItemId.trim() || event.itemId.includes(eventItemId.trim())))
+      setEventsPage(sellerDetailPage(filtered, eventCursor, eventPageSize, 'demo-events'))
+      setEventsError(null)
+      setEventsLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    let active = true
+    setEventsLoading(true)
+    setEventsError(null)
+    api.listSellerMonitorEvents(task.id, eventRequest, controller.signal)
+      .then((result) => { if (active) setEventsPage(result) })
+      .catch((caught) => {
+        if (!active || (caught instanceof DOMException && caught.name === 'AbortError')) return
+        setEventsError(caught instanceof UserApiError ? caught.message : '卖家事件加载失败')
+      })
+      .finally(() => { if (active) setEventsLoading(false) })
+    return () => { active = false; controller.abort() }
+  }, [api, eventCursor, eventItemId, eventPageSize, eventRequest, eventType, mode, reloadKey, tab, task])
+
+  const resetItems = () => { setItemCursor(null); setItemHistory([]) }
+  const resetEvents = () => { setEventCursor(null); setEventHistory([]) }
+  const nextItems = () => {
+    if (!itemsPage.nextCursor) return
+    setItemHistory((history) => [...history, itemCursor])
+    setItemCursor(itemsPage.nextCursor)
+  }
+  const previousItems = () => {
+    if (!itemHistory.length) return
+    setItemCursor(itemHistory[itemHistory.length - 1] ?? null)
+    setItemHistory(itemHistory.slice(0, -1))
+  }
+  const nextEvents = () => {
+    if (!eventsPage.nextCursor) return
+    setEventHistory((history) => [...history, eventCursor])
+    setEventCursor(eventsPage.nextCursor)
+  }
+  const previousEvents = () => {
+    if (!eventHistory.length) return
+    setEventCursor(eventHistory[eventHistory.length - 1] ?? null)
+    setEventHistory(eventHistory.slice(0, -1))
+  }
+  const seller = profile.seller
+  const sellerName = seller.publicName ?? task.publicName ?? task.platformSellerId
+
+  return <>
+    <button className="drawer-backdrop" aria-label="关闭卖家详情" onClick={onClose} />
+    <aside className="drawer seller-detail-drawer">
+      <header>
+        <div><span className="eyebrow">竞品商家</span><h2>{sellerName}</h2></div>
+        <button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button>
+      </header>
+      <div className="drawer-body seller-detail-body">
+        <section className="seller-profile-card">
+          <div><strong>{sellerName}</strong><span>{seller.region ?? task.region ?? '地区未知'} · {seller.platformSellerId}</span></div>
+          <span className={`status ${task.status === 'active' ? 'ok' : 'muted'}`}>{task.status === 'active' ? '已启用' : '已暂停'}</span>
+          <dl>
+            <div><dt>首次观测</dt><dd>{monitorUpdatedAt(seller.firstSeenAt)}</dd></div>
+            <div><dt>最近观测</dt><dd>{monitorUpdatedAt(seller.lastSeenAt)}</dd></div>
+            <div><dt>采集频率</dt><dd>{monitorInterval(task.intervalSeconds)}</dd></div>
+          </dl>
+          {task.profileUrl && <a className="seller-profile-link" href={task.profileUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} />打开公开主页</a>}
+        </section>
+        {profileLoading && <div className="seller-detail-state"><RefreshCw className="spin" size={19} />正在加载公开资料</div>}
+        {profileError && <div className="monitor-alert" role="alert">{profileError}</div>}
+        <div className="seller-detail-tabs" role="tablist">
+          <button className={tab === 'items' ? 'active' : ''} role="tab" aria-selected={tab === 'items'} onClick={() => setTab('items')}>商品 <strong>{itemsPage.total}</strong></button>
+          <button className={tab === 'events' ? 'active' : ''} role="tab" aria-selected={tab === 'events'} onClick={() => setTab('events')}>事件 <strong>{eventsPage.total}</strong></button>
+          <button className="icon-button" title="刷新详情" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={16} /></button>
+        </div>
+        {tab === 'items' ? <section className="seller-detail-section">
+          <div className="seller-detail-filter">
+            <label className="search-field"><Search size={16} /><input value={itemQuery} onChange={(event) => { setItemQuery(event.target.value); resetItems() }} placeholder="搜索商品 ID" /></label>
+            <label><span>状态</span><select value={itemState} onChange={(event) => { setItemState(event.target.value as SellerItemState | ''); resetItems() }}><option value="">全部</option><option value="active">在售</option><option value="sold">已售</option><option value="offline">已下架</option><option value="unknown">未知</option></select></label>
+          </div>
+          {itemsError ? <div className="seller-detail-state"><Activity size={20} /><strong>商品加载失败</strong><p>{itemsError}</p></div>
+            : itemsLoading ? <div className="seller-detail-state"><RefreshCw className="spin" size={20} />正在加载商品</div>
+              : itemsPage.items.length === 0 ? <div className="seller-detail-state"><PackageSearch size={20} /><strong>暂无商品</strong></div>
+                : <div className="seller-item-list">{itemsPage.items.map((item) => <div className="seller-item-row" key={item.id}>
+                  <div><strong>{(item.title ?? item.platformItemId) || item.id}</strong><small>{sellerItemSummary(item) || item.id}</small></div>
+                  <span className={`status ${item.state === 'active' ? 'ok' : item.state === 'sold' ? 'watch' : 'muted'}`}>{sellerItemStateLabel(item.state)}</span>
+                  <small>{monitorUpdatedAt(item.lastSeenAt)}</small>
+                  <button className="row-action" title="查看商品详情" onClick={() => setSelectedItem(item)}><MoreHorizontal size={16} /></button>
+                </div>)}</div>}
+          {selectedItem && <section className="seller-item-detail"><header><strong>商品详情</strong><button className="icon-button" title="关闭商品详情" onClick={() => setSelectedItem(null)}><X size={15} /></button></header><dl>
+            <div><dt>平台商品 ID</dt><dd>{selectedItem.platformItemId || selectedItem.id}</dd></div>
+            {selectedItem.title && <div><dt>标题</dt><dd>{selectedItem.title}</dd></div>}
+            {selectedItem.price && <div><dt>价格</dt><dd>¥{selectedItem.price}</dd></div>}
+            {selectedItem.region && <div><dt>地区</dt><dd>{selectedItem.region}</dd></div>}
+            {selectedItem.conditionText && <div><dt>成色</dt><dd>{selectedItem.conditionText}</dd></div>}
+            {selectedItem.wantCount !== undefined && <div><dt>想要数</dt><dd>{selectedItem.wantCount}</dd></div>}
+            <div><dt>状态</dt><dd>{sellerItemStateLabel(selectedItem.state)}</dd></div>
+            <div><dt>首次观测</dt><dd>{monitorUpdatedAt(selectedItem.firstSeenAt)}</dd></div>
+            <div><dt>最近观测</dt><dd>{monitorUpdatedAt(selectedItem.lastSeenAt)}</dd></div>
+          </dl></section>}
+          <CursorPagination total={itemsPage.total} pageIndex={itemHistory.length + 1} pageSize={itemPageSize} canGoBack={itemHistory.length > 0} canGoForward={itemsPage.hasMore && Boolean(itemsPage.nextCursor)} onPrev={previousItems} onNext={nextItems} onPageSize={(value) => { setItemPageSize(value); resetItems() }} />
+        </section> : <section className="seller-detail-section">
+          <div className="seller-detail-filter">
+            <label><span>事件类型</span><select value={eventType} onChange={(event) => { setEventType(event.target.value); resetEvents() }}><option value="">全部事件</option><option value="new_listing">上新</option><option value="price_changed">价格变化</option><option value="state_changed">状态变化</option><option value="content_changed">内容变化</option></select></label>
+            <label className="search-field"><Search size={16} /><input value={eventItemId} onChange={(event) => { setEventItemId(event.target.value); resetEvents() }} placeholder="商品 ID" /></label>
+          </div>
+          {eventsError ? <div className="seller-detail-state"><Activity size={20} /><strong>事件加载失败</strong><p>{eventsError}</p></div>
+            : eventsLoading ? <div className="seller-detail-state"><RefreshCw className="spin" size={20} />正在加载事件</div>
+              : eventsPage.items.length === 0 ? <div className="seller-detail-state"><Activity size={20} /><strong>暂无事件</strong></div>
+                : <ol className="seller-event-timeline">{eventsPage.items.map((event) => <li key={event.id}><span className="seller-event-dot" /><div><strong>{sellerEventLabel(event.eventType)}</strong><small>商品 {event.itemId || '未知'}</small><p>{monitorUpdatedAt(event.occurredAt)} · 检测于 {monitorUpdatedAt(event.detectedAt)}</p></div></li>)}</ol>}
+          <CursorPagination total={eventsPage.total} pageIndex={eventHistory.length + 1} pageSize={eventPageSize} canGoBack={eventHistory.length > 0} canGoForward={eventsPage.hasMore && Boolean(eventsPage.nextCursor)} onPrev={previousEvents} onNext={nextEvents} onPageSize={(value) => { setEventPageSize(value); resetEvents() }} />
+        </section>}
+      </div>
+      <footer><button className="secondary" onClick={onClose}>关闭</button></footer>
+    </aside>
+  </>
+}
+
 function ApiState({ title, description }: { title: string; description: string }): ReactNode {
   return <div className="state-box api-state"><Activity size={27} /><strong>{title}</strong><p>{description}</p></div>
 }
@@ -544,8 +1021,8 @@ function CursorPagination({ total, pageIndex, pageSize, canGoBack, canGoForward,
   return <div className="pagination"><span>{start}-{end} / {total}</span><select aria-label="每页条数" value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}><option value={20}>20 / 页</option><option value={50}>50 / 页</option><option value={100}>100 / 页</option></select><button disabled={!canGoBack} onClick={onPrev} title="上一页"><ChevronLeft size={17} /></button><button disabled={!canGoForward} onClick={onNext} title="下一页"><ChevronRight size={17} /></button></div>
 }
 
-function DetailDrawer({ row, onClose }: { row: TableRow; onClose: () => void }): ReactNode {
-  return <><button className="drawer-backdrop" aria-label="关闭详情" onClick={onClose} /><aside className="drawer"><header><div><span className="eyebrow">详情</span><h2>数据详情</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="drawer-body"><span className="row-tag">{row.tag}</span><h3>{row.title}</h3><p>{row.subtitle}</p><dl><div><dt>最新信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div></dl><div className="drawer-note"><ShieldCheck size={18} /><span>仅展示当前账户可见的数据。</span></div></div><footer><button className="secondary" onClick={onClose}>关闭</button><button className="primary small"><ExternalLink size={15} />查看关联对象</button></footer></aside></>
+function DetailDrawer({ row, onClose, onAddSeller }: { row: TableRow; onClose: () => void; onAddSeller: (target: SellerTarget) => void }): ReactNode {
+  return <><button className="drawer-backdrop" aria-label="关闭详情" onClick={onClose} /><aside className="drawer"><header><div><span className="eyebrow">详情</span><h2>数据详情</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="drawer-body"><span className="row-tag">{row.tag}</span><h3>{row.title}</h3><p>{row.subtitle}</p><dl><div><dt>最新信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div></dl><div className="drawer-note"><ShieldCheck size={18} /><span>仅展示当前账户可见的数据。</span></div></div><footer><button className="secondary" onClick={onClose}>关闭</button>{row.sellerTarget ? <button className="primary small" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />添加卖家监控</button> : <button className="primary small"><ExternalLink size={15} />查看关联对象</button>}</footer></aside></>
 }
 
 function SettingsPage(): ReactNode {

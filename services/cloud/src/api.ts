@@ -6,7 +6,7 @@ import { createRefreshToken, hashPassword, signAccessToken, verifyAccessToken, v
 
 export type Sql = { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }
 export type Domains = Record<SubjectKind, TokenDomain>
-export type ApiOptions = { allowedOrigins?: readonly string[] }
+export type ApiOptions = { allowedOrigins?: readonly string[]; sellerProfileHosts?: readonly string[] }
 
 type UserRow = { id: string; email_normalized: string; password_hash: string; status: string }
 type SessionRow = { id: string; subject_type: SubjectKind; subject_id: string; family_id: string | null; revoked_at: string | null; expires_at: string }
@@ -35,6 +35,14 @@ type MonitorTaskRule = {
   pageLimit: number
 }
 type MonitorTaskInput = { rule?: MonitorTaskRule; intervalSeconds?: number; status?: MonitorTaskStatus }
+type SellerMonitorTaskStatus = 'active' | 'paused'
+type SellerMonitorTaskInput = {
+  platform?: 'goofish'
+  platformSellerId?: string
+  profileUrl?: string
+  intervalSeconds?: number
+  status?: SellerMonitorTaskStatus
+}
 
 class ListRequestError extends Error {
   code: string
@@ -59,6 +67,9 @@ const monitorTaskFilterKeys = new Set(['condition', 'delivery', 'shipping', 'gua
 const monitorTaskRuleKeys = new Set(['keyword', 'categoryPath', 'sort', 'minPrice', 'maxPrice', 'region', 'filters', 'includeWords', 'excludeWords', 'pageLimit'])
 const monitorTaskInputKeys = new Set(['rule', 'intervalSeconds', 'status'])
 const MAX_ACTIVE_SEARCH_TASKS = 20
+const MAX_ACTIVE_SELLER_TASKS = 5
+const sellerMonitorTaskInputKeys = new Set(['platform', 'platformSellerId', 'profileUrl', 'intervalSeconds', 'status'])
+const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com'] as const
 
 function body<T>(value: unknown): T { return value as T }
 function refreshHash(token: string): string { return createHash('sha256').update(token).digest('hex') }
@@ -156,6 +167,86 @@ function parseMonitorTaskInput(value: unknown, creating: boolean): MonitorTaskIn
   }
 }
 
+function sellerProfileHostMatches(hostname: string, pattern: string): boolean {
+  const normalized = pattern.trim().toLowerCase().replace(/\.$/, '')
+  if (!normalized) return false
+  if (normalized.startsWith('*.')) {
+    const base = normalized.slice(2)
+    return hostname === base || hostname.endsWith(`.${base}`)
+  }
+  return hostname === normalized
+}
+
+function sellerMonitorTaskProfileUrl(value: unknown, allowedHosts: readonly string[]): string {
+  const raw = monitorTaskString(value, 'profileUrl', 2_048)
+  let url: URL
+  try { url = new URL(raw) } catch { throw new MonitorTaskRequestError('profileUrl 必须是有效公开主页地址') }
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+  const isDefaultHost = hostname === 'goofish.com' || hostname.endsWith('.goofish.com')
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !allowedHosts.some((pattern) => sellerProfileHostMatches(hostname, pattern)) || (isDefaultHost && (url.protocol !== 'https:' || url.port))) {
+    throw new MonitorTaskRequestError('profileUrl 必须是允许的闲鱼公开主页地址')
+  }
+  return url.toString()
+}
+
+function sellerIdFromProfileUrl(profileUrl: string): string | undefined {
+  const url = new URL(profileUrl)
+  for (const key of ['userId', 'sellerId', 'seller_id', 'userid', 'id']) {
+    const candidate = url.searchParams.get(key)?.trim()
+    if (candidate && /^[A-Za-z0-9._-]+$/.test(candidate)) return candidate
+  }
+  const pathCandidate = /(?:user|seller|profile|personal)[\/_-]([A-Za-z0-9._-]+)/i.exec(url.pathname)?.[1]
+  return pathCandidate
+}
+
+function sanitizeSellerProfileUrl(profileUrl: string, sellerId: string | undefined): string {
+  const url = new URL(profileUrl)
+  const sellerIdKeys = ['userId', 'sellerId', 'seller_id', 'userid', 'id']
+  const key = sellerIdKeys.find((candidate) => url.searchParams.get(candidate)?.trim() === sellerId)
+  url.search = ''
+  if (key && sellerId) url.searchParams.set(key, sellerId)
+  url.hash = ''
+  return url.toString()
+}
+
+function canonicalSellerProfileUrl(platform: string, platformSellerId: string): string {
+  if (platform === 'goofish') return `https://www.goofish.com/personal?userId=${encodeURIComponent(platformSellerId)}`
+  throw new MonitorTaskRequestError('platform 只允许 goofish')
+}
+
+function parseSellerMonitorTaskInput(value: unknown, creating: boolean, allowedHosts: readonly string[]): SellerMonitorTaskInput {
+  const source = monitorTaskRecord(value, '请求体')
+  for (const key of Object.keys(source)) if (!sellerMonitorTaskInputKeys.has(key)) throw new MonitorTaskRequestError(`不支持字段 ${key}`)
+  if (creating && source.platformSellerId === undefined && source.profileUrl === undefined) throw new MonitorTaskRequestError('platformSellerId 或 profileUrl 至少填写一个')
+  if (creating && source.intervalSeconds === undefined) throw new MonitorTaskRequestError('intervalSeconds 必填')
+  if (!creating && (source.platform !== undefined || source.platformSellerId !== undefined)) throw new MonitorTaskRequestError('卖家目标创建后不可修改')
+
+  const platform = source.platform === undefined ? undefined : source.platform
+  if (platform !== undefined && platform !== 'goofish') throw new MonitorTaskRequestError('platform 只允许 goofish')
+  const explicitSellerId = source.platformSellerId === undefined ? undefined : monitorTaskString(source.platformSellerId, 'platformSellerId', 128)
+  if (explicitSellerId !== undefined && !/^[A-Za-z0-9._-]+$/.test(explicitSellerId)) throw new MonitorTaskRequestError('platformSellerId 格式无效')
+  const suppliedProfileUrl = source.profileUrl === undefined ? undefined : sellerMonitorTaskProfileUrl(source.profileUrl, allowedHosts)
+  const profileSellerId = suppliedProfileUrl ? sellerIdFromProfileUrl(suppliedProfileUrl) : undefined
+  if (explicitSellerId && profileSellerId && explicitSellerId !== profileSellerId) throw new MonitorTaskRequestError('platformSellerId 与 profileUrl 不匹配')
+  const platformSellerId = explicitSellerId ?? profileSellerId
+  if (creating && !platformSellerId) throw new MonitorTaskRequestError('profileUrl 未包含可识别的卖家 ID，请补充 platformSellerId')
+  const profileUrl = suppliedProfileUrl
+    ? sanitizeSellerProfileUrl(suppliedProfileUrl, profileSellerId)
+    : (platformSellerId ? canonicalSellerProfileUrl(platform ?? 'goofish', platformSellerId) : undefined)
+  const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 60 到 86400 的整数')
+  const status = source.status === undefined ? undefined : source.status
+  if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
+
+  return {
+    ...(platform === undefined ? {} : { platform: 'goofish' as const }),
+    ...(platformSellerId === undefined ? {} : { platformSellerId }),
+    ...(profileUrl === undefined ? {} : { profileUrl }),
+    ...(intervalSeconds === undefined ? {} : { intervalSeconds }),
+    ...(status === undefined ? {} : { status: status as SellerMonitorTaskStatus })
+  }
+}
+
 function monitorTaskResponse(row: Record<string, unknown>) {
   const rule = row.rule ?? row.rule_json
   const parsedRule = typeof rule === 'string' ? JSON.parse(rule) : rule
@@ -163,7 +254,24 @@ function monitorTaskResponse(row: Record<string, unknown>) {
     id: String(row.id),
     rule: parseMonitorTaskRule(parsedRule),
     ruleVersion: Number(row.ruleVersion ?? row.rule_version),
-    status: String(row.status),
+    status: String(row.status) as MonitorTaskStatus,
+    intervalSeconds: Number(row.intervalSeconds ?? row.interval_seconds),
+    nextRunAt: timestamp(row.nextRunAt ?? row.next_run_at),
+    createdAt: timestamp(row.createdAt ?? row.created_at),
+    updatedAt: timestamp(row.updatedAt ?? row.updated_at)
+  }
+}
+
+function sellerMonitorTaskResponse(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    kind: 'seller' as const,
+    sellerId: String(row.sellerId ?? row.seller_id),
+    platform: String(row.platform),
+    platformSellerId: String(row.platformSellerId ?? row.platform_seller_id),
+    profileUrl: String(row.profileUrl ?? row.profile_url),
+    ruleVersion: Number(row.ruleVersion ?? row.rule_version),
+    status: String(row.status) as SellerMonitorTaskStatus,
     intervalSeconds: Number(row.intervalSeconds ?? row.interval_seconds),
     nextRunAt: timestamp(row.nextRunAt ?? row.next_run_at),
     createdAt: timestamp(row.createdAt ?? row.created_at),
@@ -404,6 +512,24 @@ const userMonitorsListConfig: ListConfig = {
   allowedFilters: ['q', 'status']
 }
 
+const userSellerMonitorsListConfig: ListConfig = {
+  resource: 'user.seller_monitors',
+  defaultSort: 'updated_at',
+  sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', recent: 'updated_at', priority_desc: 'next_run_at', next_run_at: 'next_run_at', platform_seller_id: 'platform_seller_id', title_asc: 'platform_seller_id', id: 'id' },
+  filterAliases: { search: 'q', sellerId: 'platform_seller_id' },
+  allowedFilters: ['q', 'status', 'platform', 'platform_seller_id']
+}
+
+const sellerItemsListConfig: ListConfig = { ...marketItemsListConfig, resource: 'user.seller_items' }
+
+const sellerEventsListConfig: ListConfig = {
+  resource: 'user.seller_events',
+  defaultSort: 'occurred_at',
+  sortAliases: { occurred_at: 'occurred_at', updated_at: 'occurred_at', updated_at_desc: 'occurred_at', recent: 'occurred_at', type: 'event_type', title_asc: 'event_type', id: 'id' },
+  filterAliases: { eventType: 'event_type', itemId: 'item_id', sellerId: 'seller_id' },
+  allowedFilters: ['event_type', 'item_id', 'seller_id']
+}
+
 const adminBillingListConfig: ListConfig = {
   resource: 'admin.billing_orders',
   defaultSort: 'created_at',
@@ -576,6 +702,42 @@ const userMonitorsPlan = tablePlan({
   }
 })
 
+const userSellerMonitorsPlan = tablePlan({
+  resource: userSellerMonitorsListConfig.resource,
+  from: 'ops.seller_monitor_tasks t JOIN market.seller_profiles s ON s.id = t.seller_id',
+  select: 't.id, t.seller_id AS "sellerId", s.platform, s.platform_seller_id AS "platformSellerId", s.public_name AS "publicName", s.region, t.profile_url AS "profileUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"',
+  idExpression: 't.id::text',
+  sortExpressions: { created_at: 't.created_at', updated_at: 't.updated_at', next_run_at: 't.next_run_at', platform_seller_id: 's.platform_seller_id', id: 't.id::text' },
+  conditions: (context, values, subjectId) => {
+    values.push(subjectId)
+    const conditions = ['t.created_at <= $1', 't.user_id = $2']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`(LOWER(s.platform_seller_id) LIKE LOWER($${values.length}) OR LOWER(COALESCE(s.public_name, '')) LIKE LOWER($${values.length}))`) }
+    if (context.filters.status) { values.push(context.filters.status); conditions.push(`t.status = $${values.length}`) }
+    if (context.filters.platform) { values.push(context.filters.platform); conditions.push(`s.platform = $${values.length}`) }
+    if (context.filters.platform_seller_id) { values.push(context.filters.platform_seller_id); conditions.push(`s.platform_seller_id = $${values.length}`) }
+    return conditions
+  }
+})
+
+const sellerEventsPlan = tablePlan({
+  resource: sellerEventsListConfig.resource,
+  from: 'market.item_events e',
+  select: 'e.id, e.item_id AS "itemId", e.seller_id AS "sellerId", e.event_type AS "eventType", e.before_version_id AS "beforeVersionId", e.after_version_id AS "afterVersionId", e.event_key AS "eventKey", e.occurred_at AS "occurredAt", e.detected_at AS "detectedAt"',
+  idExpression: 'e.id::text',
+  sortExpressions: { occurred_at: 'e.occurred_at', event_type: 'e.event_type', id: 'e.id::text' },
+  conditions: (context, values, subjectId) => {
+    values.push(subjectId)
+    const conditions = [
+      'e.occurred_at <= $1',
+      `EXISTS (SELECT 1 FROM market.observations o JOIN ops.collection_runs r ON r.id = o.collection_run_id JOIN identity.collector_clients c ON c.id = r.client_id WHERE o.item_id = e.item_id AND c.user_id = $2)`
+    ]
+    if (context.filters.event_type) { values.push(context.filters.event_type); conditions.push(`e.event_type = $${values.length}`) }
+    if (context.filters.item_id) { values.push(context.filters.item_id); conditions.push(`e.item_id = $${values.length}`) }
+    if (context.filters.seller_id) { values.push(context.filters.seller_id); conditions.push(`e.seller_id = $${values.length}`) }
+    return conditions
+  }
+})
+
 const adminBillingPlan = tablePlan({
   resource: adminBillingListConfig.resource,
   from: 'billing.orders o',
@@ -725,12 +887,44 @@ function marketItemsPlan(resource: string, userScoped = false): ListPlanBuilder 
       resource,
       page: () => {
         const query = build(true)
-        return { text: `SELECT i.id, i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id FROM market.items i WHERE ${query.where} ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()} LIMIT ${context.limit + 1}`, values: query.values }
+        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id FROM market.items i LEFT JOIN market.seller_profiles s ON s.id = i.seller_id WHERE ${query.where} ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()} LIMIT ${context.limit + 1}`, values: query.values }
       },
       count: () => {
         const query = build(false)
         return { text: `SELECT COUNT(*)::int AS total FROM market.items i WHERE ${query.where}`, values: query.values }
       }
+    }
+  }
+}
+
+function sellerItemsPlan(context: ListContext, subjectId: string): ListPlan {
+  const sortExpression = ({ last_seen_at: 'i.last_seen_at', first_seen_at: 'i.first_seen_at', platform_item_id: 'i.platform_item_id', id: 'i.id::text' } as Record<string, string>)[context.sort]
+  const build = (includeCursor: boolean): ListQuerySpec & { where: string } => {
+    const values: unknown[] = [context.snapshotAt]
+    const conditions = marketConditions(context, values, includeCursor, subjectId)
+    return { text: '', values, where: conditions.join(' AND ') }
+  }
+  return {
+    resource: sellerItemsListConfig.resource,
+    page: () => {
+      const query = build(true)
+        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
+        FROM market.items i
+        LEFT JOIN market.seller_profiles s ON s.id = i.seller_id
+        LEFT JOIN LATERAL (
+          SELECT title,price,region,condition_text,want_count
+          FROM market.item_versions
+          WHERE item_id=i.id
+          ORDER BY observed_at DESC,id DESC
+          LIMIT 1
+        ) v ON TRUE
+        WHERE ${query.where}
+        ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()}
+        LIMIT ${context.limit + 1}`, values: query.values }
+    },
+    count: () => {
+      const query = build(false)
+      return { text: `SELECT COUNT(*)::int AS total FROM market.items i WHERE ${query.where}`, values: query.values }
     }
   }
 }
@@ -837,9 +1031,25 @@ async function revokeCollector(sql: Sql, clientId: string, userId?: string): Pro
 }
 
 const monitorTaskColumns = `id, rule_json AS rule, rule_version AS "ruleVersion", status, interval_seconds AS "intervalSeconds", next_run_at AS "nextRunAt", created_at AS "createdAt", updated_at AS "updatedAt"`
+const sellerMonitorTaskColumns = `t.id, t.seller_id AS "sellerId", s.platform, s.platform_seller_id AS "platformSellerId", s.public_name AS "publicName", s.region, t.profile_url AS "profileUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"`
 
 async function ownedMonitorTask(sql: Sql, userId: string, taskId: string) {
   return (await sql.query(`SELECT ${monitorTaskColumns} FROM ops.monitor_tasks WHERE id=$1 AND user_id=$2`, [taskId, userId])).rows[0]
+}
+
+async function ownedSellerMonitorTask(sql: Sql, userId: string, taskId: string) {
+  return (await sql.query(`SELECT ${sellerMonitorTaskColumns}
+    FROM ops.seller_monitor_tasks t
+    JOIN market.seller_profiles s ON s.id = t.seller_id
+    WHERE t.id=$1 AND t.user_id=$2`, [taskId, userId])).rows[0]
+}
+
+async function findOrCreateSellerProfile(sql: Sql, platform: string, platformSellerId: string): Promise<string> {
+  const seller = await sql.query(`INSERT INTO market.seller_profiles (id,platform,platform_seller_id,public_profile,first_seen_at,last_seen_at)
+    VALUES ($1,$2,$3,'{}'::jsonb,now(),now())
+    ON CONFLICT (platform,platform_seller_id) DO UPDATE SET platform = EXCLUDED.platform
+    RETURNING id`, [randomUUID(), platform, platformSellerId])
+  return String(seller.rows[0]?.id ?? '')
 }
 
 async function allocateActiveTaskSlot(sql: Sql, userId: string, excludedTaskId?: string): Promise<number> {
@@ -865,9 +1075,33 @@ async function withActiveTaskSlotRetry<T>(sql: Sql, userId: string, excludedTask
   throw new Error('采集任务槽位分配失败')
 }
 
+async function allocateActiveSellerTaskSlot(sql: Sql, userId: string, excludedTaskId?: string): Promise<number> {
+  const entitlements = await collectorEntitlements(sql, userId)
+  if (!entitlements.allowed) throw new MonitorTaskRequestError('当前账号没有可用采集权益', 403)
+  const values: unknown[] = [userId]
+  const excluded = excludedTaskId ? (() => { values.push(excludedTaskId); return ` AND id <> $${values.length}` })() : ''
+  const active = await sql.query(`SELECT active_slot FROM ops.seller_monitor_tasks WHERE user_id=$1 AND status='active'${excluded}`, values)
+  const occupied = new Set(active.rows.map((task) => Number(task.active_slot)))
+  for (let slot = 1; slot <= MAX_ACTIVE_SELLER_TASKS; slot += 1) if (!occupied.has(slot)) return slot
+  throw new MonitorTaskRequestError(`当前账号最多启用 ${MAX_ACTIVE_SELLER_TASKS} 个竞品商家`, 403)
+}
+
+async function withActiveSellerTaskSlotRetry<T>(sql: Sql, userId: string, excludedTaskId: string | undefined, operation: (activeSlot: number) => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < MAX_ACTIVE_SELLER_TASKS; attempt += 1) {
+    const activeSlot = await allocateActiveSellerTaskSlot(sql, userId, excludedTaskId)
+    try {
+      return await operation(activeSlot)
+    } catch (error) {
+      if (!isUniqueViolation(error) || attempt === MAX_ACTIVE_SELLER_TASKS - 1) throw error
+    }
+  }
+  throw new Error('竞品商家任务槽位分配失败')
+}
+
 export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = {}) {
   const app = Fastify({ logger: false })
   installCors(app, options.allowedOrigins ?? [])
+  const sellerProfileHosts = [...DEFAULT_SELLER_PROFILE_HOSTS, ...(options.sellerProfileHosts ?? [])]
   app.get('/health', async () => ({ service: 'user-api', ok: true }))
   app.post('/v1/auth/register', async (request, reply) => {
     const input = body<{ email?: string; password?: string }>(request.body); const email = input.email?.trim().toLowerCase()
@@ -954,8 +1188,122 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
     if (!deleted.rows[0]) return fail(reply, 404, '监控任务不存在')
     return { deleted: true }
   })
+  app.post('/v1/seller-monitors', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = parseSellerMonitorTaskInput(request.body, true, sellerProfileHosts)
+      if (!input.platformSellerId) throw new MonitorTaskRequestError('卖家目标无效')
+      const platform = input.platform ?? 'goofish'
+      const profileUrl = input.profileUrl ?? canonicalSellerProfileUrl(platform, input.platformSellerId)
+      const sellerId = await findOrCreateSellerProfile(sql, platform, input.platformSellerId)
+      if (!sellerId) throw new Error('卖家目标创建失败')
+      const status = input.status ?? 'active'
+      const insertTask = (activeSlot: number | null) => sql.query(`INSERT INTO ops.seller_monitor_tasks (id,user_id,seller_id,profile_url,rule_version,status,active_slot,interval_seconds,next_run_at,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,1,$5,$6,$7,now(),now(),now())
+        RETURNING id`, [randomUUID(), claims.sub, sellerId, profileUrl, status, activeSlot, input.intervalSeconds])
+      const inserted = status === 'active'
+        ? await withActiveSellerTaskSlotRetry(sql, String(claims.sub), undefined, (activeSlot) => insertTask(activeSlot))
+        : await insertTask(null)
+      const task = await ownedSellerMonitorTask(sql, String(claims.sub), String(inserted.rows[0]?.id ?? ''))
+      if (!task) throw new Error('卖家任务创建失败')
+      return sellerMonitorTaskResponse(task)
+    } catch (error) {
+      if (error instanceof MonitorTaskRequestError) return fail(reply, error.status, error.message)
+      if (isUniqueViolation(error)) return fail(reply, 409, '该卖家已在监控列表中')
+      throw error
+    }
+  })
+  app.get('/v1/seller-monitors/:taskId/profile', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const task = taskId ? await ownedSellerMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!task) return fail(reply, 404, '竞品商家任务不存在')
+    const seller = await sql.query(`SELECT id,platform,platform_seller_id AS "platformSellerId",public_name AS "publicName",region,public_profile AS "publicProfile",first_seen_at AS "firstSeenAt",last_seen_at AS "lastSeenAt"
+      FROM market.seller_profiles WHERE id=$1`, [task.sellerId])
+    if (!seller.rows[0]) return fail(reply, 404, '竞品商家不存在')
+    return { task: sellerMonitorTaskResponse(task), seller: seller.rows[0] }
+  })
+  app.get('/v1/seller-monitors/:taskId/items', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const task = taskId ? await ownedSellerMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!task) return fail(reply, 404, '竞品商家任务不存在')
+    try {
+      const context = await prepareList(sql, { ...(request.query as Record<string, unknown>), sellerId: String(task.sellerId) }, sellerItemsListConfig, domains.user.secret)
+      return await executeList(sql, context, domains.user.secret, sellerItemsPlan(context, String(claims.sub)), String(claims.sub))
+    } catch (error) {
+      if (error instanceof ListRequestError) return listFail(reply, error)
+      throw error
+    }
+  })
+  app.get('/v1/seller-monitors/:taskId/events', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const task = taskId ? await ownedSellerMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!task) return fail(reply, 404, '竞品商家任务不存在')
+    try {
+      const context = await prepareList(sql, { ...(request.query as Record<string, unknown>), sellerId: String(task.sellerId) }, sellerEventsListConfig, domains.user.secret)
+      return await executeList(sql, context, domains.user.secret, sellerEventsPlan(context, String(claims.sub)), String(claims.sub))
+    } catch (error) {
+      if (error instanceof ListRequestError) return listFail(reply, error)
+      throw error
+    }
+  })
+  app.get('/v1/seller-monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const task = taskId ? await ownedSellerMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!task) return fail(reply, 404, '竞品商家任务不存在')
+    return sellerMonitorTaskResponse(task)
+  })
+  app.patch('/v1/seller-monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const existing = taskId ? await ownedSellerMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!existing) return fail(reply, 404, '竞品商家任务不存在')
+    try {
+      const input = parseSellerMonitorTaskInput(request.body, false, sellerProfileHosts)
+      if (input.profileUrl === undefined && input.intervalSeconds === undefined && input.status === undefined) throw new MonitorTaskRequestError('至少更新一个任务字段')
+      const current = sellerMonitorTaskResponse(existing)
+      if (input.profileUrl !== undefined) {
+        const profileSellerId = sellerIdFromProfileUrl(input.profileUrl)
+        if (!profileSellerId || profileSellerId !== current.platformSellerId) throw new MonitorTaskRequestError('profileUrl 必须包含与当前卖家一致的稳定 ID')
+      }
+      const status = input.status ?? current.status
+      const updateTask = (activeSlot: number | null) => sql.query(`UPDATE ops.seller_monitor_tasks
+        SET profile_url=$1, interval_seconds=$2, status=$3, active_slot=$4, rule_version=rule_version+1, next_run_at=now(), updated_at=now()
+        WHERE id=$5 AND user_id=$6
+        RETURNING id`, [input.profileUrl ?? current.profileUrl, input.intervalSeconds ?? current.intervalSeconds, status, activeSlot, taskId, claims.sub])
+      const updated = status === 'active'
+        ? await withActiveSellerTaskSlotRetry(sql, String(claims.sub), taskId, (activeSlot) => updateTask(activeSlot))
+        : await updateTask(null)
+      if (!updated.rows[0]) return fail(reply, 404, '竞品商家任务不存在')
+      const task = await ownedSellerMonitorTask(sql, String(claims.sub), taskId)
+      if (!task) return fail(reply, 404, '竞品商家任务不存在')
+      return sellerMonitorTaskResponse(task)
+    } catch (error) {
+      if (error instanceof MonitorTaskRequestError) return fail(reply, error.status, error.message)
+      if (isUniqueViolation(error)) return fail(reply, 403, `当前账号最多启用 ${MAX_ACTIVE_SELLER_TASKS} 个竞品商家`)
+      throw error
+    }
+  })
+  app.delete('/v1/seller-monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const deleted = taskId ? await sql.query('DELETE FROM ops.seller_monitor_tasks WHERE id=$1 AND user_id=$2 RETURNING id', [taskId, claims.sub]) : { rows: [] }
+    if (!deleted.rows[0]) return fail(reply, 404, '竞品商家任务不存在')
+    return { deleted: true }
+  })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
+  registerListEndpoint(app, ['/v1/seller-monitors'], sql, domains.user, 'user', userSellerMonitorsListConfig, userSellerMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/sellers', '/v1/market/sellers'], sql, domains.user, 'user', userSellersListConfig, userSellersPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/discoveries', '/v1/market/discoveries'], sql, domains.user, 'user', userDiscoveriesListConfig, userInsightPlan(userDiscoveriesListConfig.resource), 401, '未授权')
   registerListEndpoint(app, ['/v1/events', '/v1/market/events'], sql, domains.user, 'user', userEventsListConfig, userEventsPlan, 401, '未授权')
@@ -1062,12 +1410,18 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
       const entitlements = await collectorEntitlements(sql, client.user_id)
       if (!entitlements.allowed) return fail(reply, 403, '当前账号没有可用采集权益')
       const snapshotAt = timestamp((await sql.query('SELECT clock_timestamp() AS snapshot')).rows[0]?.snapshot)
-      const tasks = await sql.query(`SELECT id, rule_json AS rule, rule_version AS "ruleVersion", status, interval_seconds AS "intervalSeconds", next_run_at AS "nextRunAt", created_at AS "createdAt", updated_at AS "updatedAt"
+      const searchTasks = await sql.query(`SELECT id, 'search' AS kind, rule_json AS rule, rule_version AS "ruleVersion", status, interval_seconds AS "intervalSeconds", next_run_at AS "nextRunAt", created_at AS "createdAt", updated_at AS "updatedAt"
         FROM ops.monitor_tasks
         WHERE user_id=$1 AND kind='search' AND updated_at <= $2::timestamptz
           AND (status = 'paused' OR active_slot <= $3)
         ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END ASC, next_run_at ASC, id ASC`, [client.user_id, snapshotAt, entitlements.taskLimit])
-      return { items: tasks.rows, snapshotAt, taskLimit: entitlements.taskLimit }
+      const sellerTasks = await sql.query(`SELECT t.id, 'seller' AS kind, s.platform, s.platform_seller_id AS "platformSellerId", t.profile_url AS "profileUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"
+        FROM ops.seller_monitor_tasks t
+        JOIN market.seller_profiles s ON s.id = t.seller_id
+        WHERE t.user_id=$1 AND t.updated_at <= $2::timestamptz
+          AND (t.status = 'paused' OR t.active_slot <= ${MAX_ACTIVE_SELLER_TASKS})
+        ORDER BY CASE t.status WHEN 'active' THEN 0 ELSE 1 END ASC, t.next_run_at ASC, t.id ASC`, [client.user_id, snapshotAt])
+      return { items: [...searchTasks.rows, ...sellerTasks.rows], snapshotAt, taskLimit: entitlements.taskLimit, sellerTaskLimit: MAX_ACTIVE_SELLER_TASKS }
     } catch (error) {
       return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
     }

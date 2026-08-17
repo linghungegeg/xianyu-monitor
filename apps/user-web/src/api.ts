@@ -14,7 +14,7 @@ export type UserIdentity = {
   id: string
 }
 
-export type UserListResource = 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai'
+export type UserListResource = 'monitors' | 'sellerMonitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai'
 
 export type UserListRequest = {
   limit: number
@@ -65,6 +65,76 @@ export type MonitorTaskInput = {
   status?: MonitorTaskStatus
 }
 
+export type SellerMonitorStatus = 'active' | 'paused'
+
+export type SellerMonitor = {
+  id: string
+  sellerId: string
+  platform: 'goofish'
+  platformSellerId: string
+  profileUrl: string
+  publicName?: string
+  region?: string
+  ruleVersion: number
+  intervalSeconds: number
+  status: SellerMonitorStatus
+  nextRunAt: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type SellerMonitorInput = {
+  platform?: 'goofish'
+  platformSellerId?: string
+  profileUrl?: string
+  intervalSeconds: number
+  status?: SellerMonitorStatus
+}
+
+export type SellerProfile = {
+  id: string
+  platform: 'goofish'
+  platformSellerId: string
+  publicName?: string
+  region?: string
+  publicProfile?: unknown
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
+export type SellerMonitorProfile = {
+  task: SellerMonitor
+  seller: SellerProfile
+}
+
+export type SellerItemState = 'active' | 'sold' | 'offline' | 'unknown'
+
+export type SellerItem = {
+  id: string
+  platform: 'goofish'
+  platformItemId: string
+  state: SellerItemState
+  title?: string
+  price?: string
+  region?: string
+  conditionText?: string
+  wantCount?: number
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
+export type SellerEvent = {
+  id: string
+  itemId: string
+  sellerId: string
+  eventType: string
+  beforeVersionId?: string
+  afterVersionId?: string
+  eventKey: string
+  occurredAt: string
+  detectedAt: string
+}
+
 export class UserApiError extends Error {
   readonly status: number | null
   readonly code: string | null
@@ -82,6 +152,7 @@ const TOKEN_STORAGE_KEY = 'xianyu.user-web.session'
 // These paths are the User API read boundary. Admin and collector URLs never enter this client.
 export const USER_LIST_PATHS: Record<UserListResource, string> = {
   monitors: '/v1/monitors',
+  sellerMonitors: '/v1/seller-monitors',
   sellers: '/v1/sellers',
   pool: '/v1/market/items',
   discoveries: '/v1/market/discoveries',
@@ -166,6 +237,81 @@ function monitorTask(value: unknown): MonitorTask {
   }
 }
 
+function sellerMonitor(value: unknown): SellerMonitor {
+  const envelope = asRecord(value)
+  const record = asRecord(envelope.task ?? envelope.item ?? value)
+  const stringValue = (key: string) => typeof record[key] === 'string' ? record[key] as string : ''
+  const numberValue = (key: string, fallback: number) => typeof record[key] === 'number' && Number.isFinite(record[key]) ? record[key] : fallback
+  return {
+    id: stringValue('id'),
+    sellerId: stringValue('sellerId') || stringValue('seller_id'),
+    platform: 'goofish',
+    platformSellerId: stringValue('platformSellerId') || stringValue('platform_seller_id'),
+    profileUrl: stringValue('profileUrl') || stringValue('profile_url'),
+    ...(stringValue('publicName') || stringValue('public_name') ? { publicName: stringValue('publicName') || stringValue('public_name') } : {}),
+    ...(stringValue('region') ? { region: stringValue('region') } : {}),
+    ruleVersion: numberValue('ruleVersion', numberValue('rule_version', 1)),
+    intervalSeconds: numberValue('intervalSeconds', numberValue('interval_seconds', 60)),
+    status: record.status === 'paused' ? 'paused' : 'active',
+    nextRunAt: stringValue('nextRunAt') || stringValue('next_run_at'),
+    createdAt: stringValue('createdAt') || stringValue('created_at'),
+    updatedAt: stringValue('updatedAt') || stringValue('updated_at')
+  }
+}
+
+function sellerProfile(value: unknown): SellerProfile {
+  const record = asRecord(value)
+  const stringValue = (key: string) => typeof record[key] === 'string' ? record[key] as string : ''
+  return {
+    id: stringValue('id'),
+    platform: 'goofish',
+    platformSellerId: stringValue('platformSellerId') || stringValue('platform_seller_id'),
+    ...(stringValue('publicName') || stringValue('public_name') ? { publicName: stringValue('publicName') || stringValue('public_name') } : {}),
+    ...(stringValue('region') ? { region: stringValue('region') } : {}),
+    ...(record.publicProfile !== undefined ? { publicProfile: record.publicProfile } : record.public_profile !== undefined ? { publicProfile: record.public_profile } : {}),
+    firstSeenAt: stringValue('firstSeenAt') || stringValue('first_seen_at'),
+    lastSeenAt: stringValue('lastSeenAt') || stringValue('last_seen_at')
+  }
+}
+
+function sellerItem(value: unknown): SellerItem {
+  const record = asRecord(value)
+  const stringValue = (key: string) => typeof record[key] === 'string' ? record[key] as string : ''
+  const numberValue = (key: string) => typeof record[key] === 'number' && Number.isFinite(record[key]) ? record[key] as number : undefined
+  const stateValue = stringValue('state') || stringValue('lifecycleState') || stringValue('lifecycle_state')
+  const state: SellerItemState = stateValue === 'active' || stateValue === 'sold' || stateValue === 'offline' ? stateValue : 'unknown'
+  const wantCount = numberValue('wantCount') ?? numberValue('want_count')
+  return {
+    id: stringValue('id'),
+    platform: 'goofish',
+    platformItemId: stringValue('platformItemId') || stringValue('platform_item_id'),
+    state,
+    ...(stringValue('title') ? { title: stringValue('title') } : {}),
+    ...(typeof record.price === 'number' || typeof record.price === 'string' ? { price: String(record.price) } : {}),
+    ...(stringValue('region') ? { region: stringValue('region') } : {}),
+    ...(stringValue('conditionText') || stringValue('condition_text') ? { conditionText: stringValue('conditionText') || stringValue('condition_text') } : {}),
+    ...(wantCount === undefined ? {} : { wantCount }),
+    firstSeenAt: stringValue('firstSeenAt') || stringValue('first_seen_at'),
+    lastSeenAt: stringValue('lastSeenAt') || stringValue('last_seen_at')
+  }
+}
+
+function sellerEvent(value: unknown): SellerEvent {
+  const record = asRecord(value)
+  const stringValue = (key: string) => typeof record[key] === 'string' ? record[key] as string : ''
+  return {
+    id: stringValue('id'),
+    itemId: stringValue('itemId') || stringValue('item_id'),
+    sellerId: stringValue('sellerId') || stringValue('seller_id'),
+    eventType: stringValue('eventType') || stringValue('event_type'),
+    ...(stringValue('beforeVersionId') || stringValue('before_version_id') ? { beforeVersionId: stringValue('beforeVersionId') || stringValue('before_version_id') } : {}),
+    ...(stringValue('afterVersionId') || stringValue('after_version_id') ? { afterVersionId: stringValue('afterVersionId') || stringValue('after_version_id') } : {}),
+    eventKey: stringValue('eventKey') || stringValue('event_key'),
+    occurredAt: stringValue('occurredAt') || stringValue('occurred_at'),
+    detectedAt: stringValue('detectedAt') || stringValue('detected_at')
+  }
+}
+
 export class UserApiClient {
   private readonly baseUrl: string
   private tokens: UserTokens | null
@@ -212,13 +358,32 @@ export class UserApiClient {
   }
 
   async list<T>(resource: UserListResource, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<T>> {
+    return this.listPath<T>(USER_LIST_PATHS[resource], input, signal)
+  }
+
+  async getSellerMonitorProfile(id: string, signal?: AbortSignal): Promise<SellerMonitorProfile> {
+    const payload = asRecord(await this.request<unknown>(`/v1/seller-monitors/${encodeURIComponent(id)}/profile`, { signal }))
+    return { task: sellerMonitor(payload.task), seller: sellerProfile(payload.seller) }
+  }
+
+  async listSellerMonitorItems(id: string, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<SellerItem>> {
+    const page = await this.listPath<unknown>(`/v1/seller-monitors/${encodeURIComponent(id)}/items`, input, signal)
+    return { ...page, items: page.items.map(sellerItem) }
+  }
+
+  async listSellerMonitorEvents(id: string, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<SellerEvent>> {
+    const page = await this.listPath<unknown>(`/v1/seller-monitors/${encodeURIComponent(id)}/events`, input, signal)
+    return { ...page, items: page.items.map(sellerEvent) }
+  }
+
+  private async listPath<T>(path: string, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<T>> {
     const params = new URLSearchParams()
     params.set('limit', String(Math.min(100, Math.max(1, Math.trunc(input.limit)))))
     if (input.cursor) params.set('cursor', input.cursor)
     params.set('sort', input.sort)
     params.set('order', 'desc')
     params.set('filters', JSON.stringify(input.filters))
-    const payload = await this.request<unknown>(`${USER_LIST_PATHS[resource]}?${params.toString()}`, { signal })
+    const payload = await this.request<unknown>(`${path}?${params.toString()}`, { signal })
     const record = asRecord(payload)
     const page = asRecord(record.page)
     const items = Array.isArray(record.items) ? record.items as T[] : []
@@ -236,6 +401,11 @@ export class UserApiClient {
     return { ...page, items: page.items.map(monitorTask) }
   }
 
+  async listSellerMonitors(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<SellerMonitor>> {
+    const page = await this.list<unknown>('sellerMonitors', input, signal)
+    return { ...page, items: page.items.map(sellerMonitor) }
+  }
+
   async createMonitorTask(input: MonitorTaskInput): Promise<MonitorTask> {
     return monitorTask(await this.request<unknown>('/v1/monitors', { method: 'POST', body: JSON.stringify(input) }))
   }
@@ -246,6 +416,18 @@ export class UserApiClient {
 
   async deleteMonitorTask(id: string): Promise<void> {
     await this.request<unknown>(`/v1/monitors/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+
+  async createSellerMonitor(input: SellerMonitorInput): Promise<SellerMonitor> {
+    return sellerMonitor(await this.request<unknown>('/v1/seller-monitors', { method: 'POST', body: JSON.stringify(input) }))
+  }
+
+  async updateSellerMonitor(id: string, input: Partial<SellerMonitorInput>): Promise<SellerMonitor> {
+    return sellerMonitor(await this.request<unknown>(`/v1/seller-monitors/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }))
+  }
+
+  async deleteSellerMonitor(id: string): Promise<void> {
+    await this.request<unknown>(`/v1/seller-monitors/${encodeURIComponent(id)}`, { method: 'DELETE' })
   }
 
   private setTokens(tokens: UserTokens): void {

@@ -1,4 +1,5 @@
 export type SearchSort = 'comprehensive' | 'newly_reduced' | 'newly_published' | 'price_asc' | 'price_desc'
+export type SellerItemState = 'active' | 'sold' | 'offline' | 'unknown'
 
 export type SearchRule = {
   keyword?: string
@@ -40,12 +41,31 @@ export type SearchDetailSource = {
   publishedText?: string | null
   wantText?: string | null
   description?: string | null
+  conditionText?: string | null
   imageUrls?: string[]
   tags?: string[]
 }
 
 export type CollectedItem = SearchCandidate & {
   description: string | null
+  conditionText: string | null
+}
+
+export type SellerProfileSource = {
+  profileUrl: string
+  platformSellerId?: string | null
+  publicName?: string | null
+  region?: string | null
+  publicProfile?: Record<string, string | number | boolean | null>
+}
+
+export type SellerProfile = {
+  platform: 'goofish'
+  platformSellerId: string
+  profileUrl: string
+  publicName: string | null
+  region: string | null
+  publicProfile: Record<string, string | number | boolean | null>
 }
 
 export class SearchPageError extends Error {
@@ -73,6 +93,10 @@ function uniqueStrings(values: readonly string[] | undefined): string[] {
   return [...unique]
 }
 
+function canonicalStrings(values: readonly string[]): string[] {
+  return [...new Set(values.map((value) => compact(value)).filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN'))
+}
+
 function parsePrice(value: string | null | undefined): number | null {
   const match = compact(value).match(/[¥￥]\s*([\d,]+(?:\.\d{1,2})?)/)
   if (!match) return null
@@ -98,6 +122,21 @@ function itemIdFromHref(href: string): { id: string; url: string } | null {
   try {
     const url = new URL(href, 'https://www.goofish.com/')
     const id = url.searchParams.get('id') ?? url.searchParams.get('itemId') ?? url.searchParams.get('item_id') ?? /\/item\/([^/?#]+)/.exec(url.pathname)?.[1]
+    if (!id || id.length > 128) return null
+    return { id, url: url.toString() }
+  } catch {
+    return null
+  }
+}
+
+function sellerIdFromUrl(value: string): { id: string; url: string } | null {
+  try {
+    const url = new URL(value, 'https://www.goofish.com/')
+    const id = url.searchParams.get('sellerId')
+      ?? url.searchParams.get('seller_id')
+      ?? url.searchParams.get('userId')
+      ?? url.searchParams.get('user_id')
+      ?? /\/(?:seller|user)\/([^/?#]+)/.exec(url.pathname)?.[1]
     if (!id || id.length > 128) return null
     return { id, url: url.toString() }
   } catch {
@@ -149,7 +188,36 @@ export function mergeSearchDetail(candidate: SearchCandidate, source: SearchDeta
     wantCount: parseWantCount(source.wantText) ?? parseWantCount(detailText) ?? candidate.wantCount,
     imageUrls: uniqueStrings(source.imageUrls).length ? uniqueStrings(source.imageUrls) : candidate.imageUrls,
     tags: uniqueStrings(source.tags).length ? uniqueStrings(source.tags) : candidate.tags,
-    description: compact(source.description).slice(0, 5_000) || null
+    description: compact(source.description).slice(0, 5_000) || null,
+    conditionText: compact(source.conditionText).slice(0, 160) || null
+  }
+}
+
+export function parseSellerProfile(source: SellerProfileSource): SellerProfile | null {
+  const fromUrl = sellerIdFromUrl(source.profileUrl)
+  const platformSellerId = compact(source.platformSellerId) || fromUrl?.id || ''
+  if (!platformSellerId || platformSellerId.length > 128) return null
+  const profileUrl = fromUrl?.url ?? source.profileUrl
+  try {
+    const url = new URL(profileUrl)
+    if (!['http:', 'https:'].includes(url.protocol)) return null
+  } catch {
+    return null
+  }
+  const publicProfile: Record<string, string | number | boolean | null> = {}
+  for (const [key, value] of Object.entries(source.publicProfile ?? {})) {
+    const normalizedKey = compact(key).slice(0, 80)
+    if (!normalizedKey || value === undefined) continue
+    if (typeof value === 'string') publicProfile[normalizedKey] = compact(value).slice(0, 500)
+    else if (typeof value === 'number' || typeof value === 'boolean' || value === null) publicProfile[normalizedKey] = value
+  }
+  return {
+    platform: 'goofish',
+    platformSellerId,
+    profileUrl,
+    publicName: compact(source.publicName).slice(0, 160) || null,
+    region: parseRegion(source.region),
+    publicProfile
   }
 }
 
@@ -175,5 +243,30 @@ export function canonicalItemPayload(item: CollectedItem): string {
     imageUrls: [...item.imageUrls],
     tags: [...item.tags],
     description: item.description
+  })
+}
+
+export function canonicalSellerItemPayload(item: CollectedItem): string {
+  return JSON.stringify({
+    platform: 'goofish',
+    platformItemId: item.platformItemId,
+    title: item.title,
+    price: item.price,
+    region: item.region,
+    wantCount: item.wantCount,
+    imageUrls: canonicalStrings(item.imageUrls),
+    tags: canonicalStrings(item.tags),
+    description: item.description,
+    conditionText: item.conditionText
+  })
+}
+
+export function canonicalSellerProfilePayload(profile: SellerProfile): string {
+  return JSON.stringify({
+    platform: profile.platform,
+    platformSellerId: profile.platformSellerId,
+    publicName: profile.publicName,
+    region: profile.region,
+    publicProfile: Object.fromEntries(Object.entries(profile.publicProfile).sort(([left], [right]) => left.localeCompare(right, 'zh-CN')))
   })
 }

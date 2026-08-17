@@ -4,9 +4,10 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import type { LauncherStatus } from '../shared/types'
-import { MonitorDatabase, type CachedMonitorTask } from './database'
+import { MonitorDatabase, type CachedMonitorTask, type CachedSearchMonitorTask, type CachedSellerMonitorTask } from './database'
 import {
   canonicalItemPayload,
+  canonicalSellerItemPayload,
   mergeSearchDetail,
   matchesSearchRule,
   parseSearchCards,
@@ -14,7 +15,11 @@ import {
   type SearchCardSource,
   type SearchDetailSource,
   type SearchRule,
-  type SearchSort
+  type SearchSort,
+  type SellerItemState,
+  type SellerProfile,
+  canonicalSellerProfilePayload,
+  parseSellerProfile
 } from './search'
 
 const GOOFISH_HOME = process.env.XIANYU_LOGIN_URL ?? 'https://www.goofish.com/'
@@ -24,9 +29,11 @@ const PAGE_TIMEOUT_MS = 15_000
 const TOKEN_RENEW_WINDOW_MS = 2 * 60_000
 const SCHEDULER_INTERVAL_MS = positiveEnvironmentNumber('XIANYU_SCHEDULER_INTERVAL_MS', 60_000, 250)
 const TASK_SYNC_INTERVAL_MS = positiveEnvironmentNumber('XIANYU_TASK_SYNC_INTERVAL_MS', 60_000, 250)
+const SELLER_PAGE_LIMIT = positiveEnvironmentNumber('XIANYU_SELLER_PAGE_LIMIT', 4, 1)
 const STATE_REFRESH_TOKEN = 'collector.refresh-token'
 const STATE_PRIVATE_KEY = 'collector.device-private-key'
 const STATE_PUBLIC_KEY = 'collector.device-public-key'
+const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com']
 
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
 type EntitlementResponse = { allowed?: boolean }
@@ -48,6 +55,48 @@ function apiBase(value: string, name: string): string {
   const url = new URL(value)
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`${name} 必须是 HTTP(S) 地址`)
   return url.toString().replace(/\/$/, '')
+}
+
+function sellerProfileHostMatches(hostname: string, pattern: string): boolean {
+  const normalized = pattern.trim().toLowerCase().replace(/\.$/, '')
+  if (!normalized) return false
+  if (normalized.startsWith('*.')) {
+    const base = normalized.slice(2)
+    return hostname === base || hostname.endsWith(`.${base}`)
+  }
+  return hostname === normalized
+}
+
+function sellerProfileUrlAllowed(value: string): boolean {
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+    return navigationUrlAllowed(url, hostname)
+  } catch {
+    return false
+  }
+}
+
+function navigationUrlAllowed(value: string | URL, hostname = value instanceof URL ? value.hostname.toLowerCase().replace(/\.$/, '') : ''): boolean {
+  try {
+    const url = typeof value === 'string' ? new URL(value) : value
+    const configuredHosts = [
+      ...DEFAULT_SELLER_PROFILE_HOSTS,
+      ...(process.env.XIANYU_PROFILE_ALLOWED_HOSTS ?? '').split(','),
+      ...[GOOFISH_HOME, GOOFISH_SEARCH].flatMap((configured) => {
+        try { return [new URL(configured).hostname] } catch { return [] }
+      })
+    ]
+    const normalizedHost = hostname || url.hostname.toLowerCase().replace(/\.$/, '')
+    const isDefaultHost = normalizedHost === 'goofish.com' || normalizedHost.endsWith('.goofish.com')
+    return ['http:', 'https:'].includes(url.protocol)
+      && !url.username
+      && !url.password
+      && configuredHosts.some((pattern) => sellerProfileHostMatches(normalizedHost, pattern))
+      && (!isDefaultHost || (url.protocol === 'https:' && !url.port))
+  } catch {
+    return false
+  }
 }
 
 function responseMessage(payload: unknown, fallback: string): string {
@@ -93,18 +142,28 @@ function parseTask(value: unknown): CachedMonitorTask {
   if (!value || typeof value !== 'object') throw new Error('云端任务快照无效')
   const row = value as Record<string, unknown>
   const id = typeof row.id === 'string' ? row.id : ''
-  const rule = row.rule && typeof row.rule === 'object' && !Array.isArray(row.rule) ? row.rule as SearchRule : undefined
+  const kind = row.kind === 'seller' ? 'seller' : 'search'
   const ruleVersion = typeof row.ruleVersion === 'number' ? row.ruleVersion : NaN
   const status = row.status === 'active' || row.status === 'paused' ? row.status : undefined
   const intervalSeconds = typeof row.intervalSeconds === 'number' ? row.intervalSeconds : NaN
   const nextRunAt = typeof row.nextRunAt === 'string' ? row.nextRunAt : ''
   const createdAt = typeof row.createdAt === 'string' ? row.createdAt : ''
   const updatedAt = typeof row.updatedAt === 'string' ? row.updatedAt : ''
-  if (!id || !rule || !Number.isInteger(ruleVersion) || ruleVersion < 1 || !status || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || !nextRunAt || !createdAt || !updatedAt) throw new Error('云端任务快照无效')
+  if (!id || !Number.isInteger(ruleVersion) || ruleVersion < 1 || !status || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || !nextRunAt || !createdAt || !updatedAt) throw new Error('云端任务快照无效')
+  if (kind === 'seller') {
+    const platform = row.platform === undefined ? 'goofish' : row.platform
+    const platformSellerId = typeof row.platformSellerId === 'string' ? row.platformSellerId.trim() : ''
+    const profileUrl = typeof row.profileUrl === 'string' ? row.profileUrl.trim() : ''
+    if (platform !== 'goofish' || !platformSellerId || platformSellerId.length > 128 || !profileUrl) throw new Error('云端卖家任务快照无效')
+    if (!sellerProfileUrlAllowed(profileUrl)) throw new Error('云端卖家任务快照包含不允许的主页地址')
+    return { id, kind: 'seller', platform: 'goofish', platformSellerId, profileUrl, ruleVersion, status, intervalSeconds, nextRunAt, createdAt, updatedAt }
+  }
+  const rule = row.rule && typeof row.rule === 'object' && !Array.isArray(row.rule) ? row.rule as SearchRule : undefined
+  if (!rule) throw new Error('云端任务规则无效')
   if (!rule.keyword && !rule.categoryPath?.length) throw new Error('云端任务规则无效')
   if (!['comprehensive', 'newly_reduced', 'newly_published', 'price_asc', 'price_desc'].includes(rule.sort)) throw new Error('云端任务规则无效')
   if (!Number.isInteger(rule.pageLimit) || rule.pageLimit < 1 || rule.pageLimit > 10) throw new Error('云端任务规则无效')
-  return { id, rule, ruleVersion, status, intervalSeconds, nextRunAt, createdAt, updatedAt }
+  return { id, kind: 'search', rule, ruleVersion, status, intervalSeconds, nextRunAt, createdAt, updatedAt }
 }
 
 export class XianyuMonitor {
@@ -113,6 +172,7 @@ export class XianyuMonitor {
   private context: BrowserContext | undefined
   private loginPage: Page | undefined
   private scannerPage: Page | undefined
+  private sellerPage: Page | undefined
   private detailPage: Page | undefined
   private timer: NodeJS.Timeout | undefined
   private accessToken: string | undefined
@@ -275,6 +335,14 @@ export class XianyuMonitor {
   }
 
   private async scanTask(task: CachedMonitorTask): Promise<void> {
+    if (task.kind === 'seller') {
+      await this.scanSellerTask(task)
+      return
+    }
+    await this.scanSearchTask(task)
+  }
+
+  private async scanSearchTask(task: CachedSearchMonitorTask): Promise<void> {
     const startedAt = new Date().toISOString()
     let scannedCount = 0
     let newItemCount = 0
@@ -319,18 +387,186 @@ export class XianyuMonitor {
       if (!this.running) return
       this.db.markMonitorTaskRun(task.id)
       this.db.recordMonitorTaskRun({
-        id: randomUUID(), taskId: task.id, ruleVersion: task.ruleVersion, status: 'completed',
+        id: randomUUID(), taskId: task.id, kind: 'search', ruleVersion: task.ruleVersion, status: 'completed',
         scannedCount, newItemCount, newVersionCount, startedAt, finishedAt: new Date().toISOString()
       })
       this.db.addLog('success', `“${label}”采集完成：${scannedCount} 条，新增 ${newItemCount} 条`)
       this.updateStatus('running', '采集器正在运行', true)
     } catch (error) {
       this.db.recordMonitorTaskRun({
-        id: randomUUID(), taskId: task.id, ruleVersion: task.ruleVersion, status: 'failed',
+        id: randomUUID(), taskId: task.id, kind: 'search', ruleVersion: task.ruleVersion, status: 'failed',
         scannedCount, newItemCount, newVersionCount, startedAt, finishedAt: new Date().toISOString()
       })
       throw error
     }
+  }
+
+  private async scanSellerTask(task: CachedSellerMonitorTask): Promise<void> {
+    const startedAt = new Date().toISOString()
+    const scanId = randomUUID()
+    let scannedCount = 0
+    let newItemCount = 0
+    let newVersionCount = 0
+    let eventCount = 0
+    let seller: SellerProfile | undefined
+    try {
+      await this.ensureAuthorized()
+      const page = await this.openSellerPage()
+      await this.goto(page, task.profileUrl, '闲鱼卖家主页加载失败，请检查网络后重试')
+      await this.assertSellerPageAvailable(page)
+      seller = await this.readSellerProfile(page, task)
+      const sellerPayload = canonicalSellerProfilePayload(seller)
+      this.db.saveSellerProfile(seller, createHash('sha256').update(sellerPayload).digest('hex'), sellerPayload)
+      const seenItems = new Set<string>()
+      const activeResult = await this.scanSellerListingState(page, task, seller, 'active', scanId, seenItems)
+      const soldResult = await this.scanSellerListingState(page, task, seller, 'sold', scanId, seenItems)
+      scannedCount = activeResult.scannedCount + soldResult.scannedCount
+      newItemCount = activeResult.newItemCount + soldResult.newItemCount
+      newVersionCount = activeResult.newVersionCount + soldResult.newVersionCount
+      eventCount += activeResult.eventCount + soldResult.eventCount
+      if (activeResult.complete && soldResult.complete) eventCount += this.db.markSellerActiveItemsOffline(seller.platformSellerId, scanId)
+      if (!this.running) return
+      this.db.markMonitorTaskRun(task.id)
+      this.db.recordMonitorTaskRun({
+        id: randomUUID(), taskId: task.id, kind: 'seller', ruleVersion: task.ruleVersion, status: 'completed',
+        scannedCount, newItemCount, newVersionCount, eventCount, startedAt, finishedAt: new Date().toISOString()
+      })
+      this.db.addLog('success', `“${seller.publicName ?? seller.platformSellerId}”卖家采集完成：${scannedCount} 条，新增事件 ${eventCount} 条`)
+      this.updateStatus('running', '采集器正在运行', true)
+    } catch (error) {
+      this.db.recordMonitorTaskRun({
+        id: randomUUID(), taskId: task.id, kind: 'seller', ruleVersion: task.ruleVersion, status: 'failed',
+        scannedCount, newItemCount, newVersionCount, eventCount, startedAt, finishedAt: new Date().toISOString()
+      })
+      throw error
+    }
+  }
+
+  private async scanSellerListingState(
+    page: Page,
+    task: CachedSellerMonitorTask,
+    seller: SellerProfile,
+    state: Extract<SellerItemState, 'active' | 'sold'>,
+    scanId: string,
+    seenItems: Set<string>
+  ): Promise<{ complete: boolean; scannedCount: number; newItemCount: number; newVersionCount: number; eventCount: number }> {
+    await this.ensureAuthorized()
+    await this.selectSellerState(page, state)
+    const seenPages = new Set<string>()
+    let scannedCount = 0
+    let newItemCount = 0
+    let newVersionCount = 0
+    let eventCount = 0
+    for (let pageIndex = 0; pageIndex < SELLER_PAGE_LIMIT; pageIndex += 1) {
+      if (!this.running) return { complete: false, scannedCount, newItemCount, newVersionCount, eventCount }
+      await this.ensureAuthorized()
+      const cards = await this.readSellerCards(page, state)
+      const pageKey = `${state}|${page.url()}|${cards.map((card) => card.platformItemId).join(',')}`
+      if (seenPages.has(pageKey)) throw new SearchPageError('structure', '闲鱼卖家分页未前进，请检查页面结构后重试')
+      seenPages.add(pageKey)
+      for (const card of cards) {
+        if (!this.running || seenItems.has(card.platformItemId)) continue
+        seenItems.add(card.platformItemId)
+        await this.ensureAuthorized()
+        const item = await this.readSellerItemDetail(card, seller.platformSellerId)
+        await this.ensureAuthorized()
+        const payload = canonicalSellerItemPayload(item)
+        const saved = this.db.saveSellerItem({
+          taskId: task.id,
+          scanId,
+          seller,
+          state,
+          item,
+          contentHash: createHash('sha256').update(payload).digest('hex'),
+          canonicalPayload: payload
+        })
+        scannedCount += 1
+        if (saved.isNewItem) newItemCount += 1
+        if (saved.isNewVersion) newVersionCount += 1
+        eventCount += saved.eventCount
+      }
+      if (pageIndex + 1 >= SELLER_PAGE_LIMIT) return { complete: !(await this.hasNextPage(page, true)), scannedCount, newItemCount, newVersionCount, eventCount }
+      if (!(await this.clickNextPage(page, true))) return { complete: true, scannedCount, newItemCount, newVersionCount, eventCount }
+    }
+    return { complete: false, scannedCount, newItemCount, newVersionCount, eventCount }
+  }
+
+  private async readSellerProfile(page: Page, task: CachedSellerMonitorTask): Promise<SellerProfile> {
+    const fixture = page.locator('[data-xianyu-seller-profile]').first()
+    const source = await fixture.count()
+      ? await fixture.evaluate((root): Record<string, unknown> => ({
+          platformSellerId: root.getAttribute('data-xianyu-seller-id') ?? root.getAttribute('data-seller-id'),
+          publicName: root.querySelector('[data-xianyu-seller-name], [data-seller-name]')?.textContent ?? null,
+          region: root.querySelector('[data-xianyu-seller-region], [data-seller-region]')?.textContent ?? null,
+          publicProfile: {
+            followerText: root.querySelector('[data-xianyu-seller-followers]')?.textContent ?? null,
+            ratingText: root.querySelector('[data-xianyu-seller-rating]')?.textContent ?? null,
+            itemCountText: root.querySelector('[data-xianyu-seller-item-count]')?.textContent ?? null
+          }
+        }))
+      : {
+          platformSellerId: await page.locator('[data-xianyu-seller-id], [data-seller-id]').first().evaluate((node) => node.getAttribute('data-xianyu-seller-id') ?? node.getAttribute('data-seller-id')).catch(() => null),
+          publicName: await page.locator('[data-xianyu-seller-name], [data-seller-name], h1').first().textContent().catch(() => null),
+          region: await page.locator('[data-xianyu-seller-region], [data-seller-region], [class*="region"], [class*="location"]').first().textContent().catch(() => null),
+          publicProfile: {}
+        }
+    const profile = parseSellerProfile({
+      profileUrl: task.profileUrl,
+      platformSellerId: typeof source.platformSellerId === 'string' && source.platformSellerId.trim() ? source.platformSellerId : task.platformSellerId,
+      publicName: typeof source.publicName === 'string' ? source.publicName : null,
+      region: typeof source.region === 'string' ? source.region : null,
+      publicProfile: source.publicProfile && typeof source.publicProfile === 'object' ? source.publicProfile as Record<string, string | number | boolean | null> : {}
+    })
+    if (!profile || profile.platformSellerId !== task.platformSellerId) throw new SearchPageError('structure', '卖家公开资料缺少稳定卖家 ID')
+    return profile
+  }
+
+  private async selectSellerState(page: Page, state: Extract<SellerItemState, 'active' | 'sold'>): Promise<void> {
+    const label = state === 'active' ? '在售' : '已售'
+    const fixture = page.locator(`[data-xianyu-seller-tab="${state}"]`).first()
+    const generic = page.locator('button, a, [role="button"], [role="tab"]').filter({ hasText: escapedText(label) }).first()
+    const control = await fixture.count() ? fixture : generic
+    if (!(await control.count())) throw new SearchPageError('structure', `未找到卖家${label}商品入口`)
+    await control.click()
+    await page.waitForTimeout(120)
+    const selected = await page.locator('body').getAttribute('data-xianyu-selected-seller-state')
+    if (selected !== null && selected !== state) throw new SearchPageError('structure', `卖家${label}商品入口未生效`)
+  }
+
+  private async readSellerCards(page: Page, state: Extract<SellerItemState, 'active' | 'sold'>) {
+    const fixture = page.locator('[data-xianyu-seller-item], [data-xianyu-item]')
+    const fallback = page.locator('a[href*="/item?id="], a[href*="/item/"]')
+    const cards = await fixture.count() ? fixture : fallback
+    if (!(await cards.count())) {
+      const text = await page.locator('body').innerText().catch(() => '')
+      if (/非法访问|访问受限|操作太频繁|安全验证|扫码|登录/.test(compact(text))) this.throwPageState(text, `卖家${state === 'active' ? '在售' : '已售'}列表不可用`)
+      return []
+    }
+    const sources = await cards.evaluateAll((nodes): SearchCardSource[] => nodes.map((node) => {
+      const root = node.closest('[data-xianyu-seller-item], [data-xianyu-item]') ?? node
+      const anchor = root instanceof HTMLAnchorElement ? root : root.querySelector<HTMLAnchorElement>('a[href]')
+      return {
+        href: anchor?.href ?? '',
+        text: root.textContent ?? '',
+        title: root.querySelector('[data-xianyu-title], h2, h3')?.textContent ?? null,
+        imageUrls: Array.from(root.querySelectorAll('[data-xianyu-image], img')).map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url)),
+        tags: Array.from(root.querySelectorAll('[data-xianyu-tag], [class*="tag"]')).map((tag) => tag.textContent ?? '')
+      }
+    }))
+    return parseSearchCards(sources)
+  }
+
+  private async readSellerItemDetail(card: ReturnType<typeof parseSearchCards>[number], sellerId: string) {
+    const item = await this.readItemDetail(card)
+    const detailSellerId = await this.detailPage?.locator('[data-xianyu-seller-id], [data-seller-id]').first().evaluate((node) => node.getAttribute('data-xianyu-seller-id') ?? node.getAttribute('data-seller-id')).catch(() => null)
+    if (!detailSellerId) throw new SearchPageError('structure', '商品详情缺少卖家 ID，已跳过以避免归属错误')
+    if (detailSellerId !== sellerId) throw new SearchPageError('structure', '商品详情卖家与监控目标不一致')
+    return item
+  }
+
+  private async assertSellerPageAvailable(page: Page): Promise<void> {
+    const text = await page.locator('body').innerText().catch(() => '')
+    if (/非法访问|访问受限|操作太频繁|安全验证|扫码|登录/.test(compact(text))) this.throwPageState(text, '卖家主页不可用')
   }
 
   private searchUrl(rule: SearchRule): string {
@@ -472,9 +708,10 @@ export class XianyuMonitor {
           priceText: root.querySelector('[data-xianyu-price]')?.textContent ?? null,
           region: root.querySelector('[data-xianyu-region]')?.textContent ?? null,
           publishedText: root.querySelector('[data-xianyu-published]')?.textContent ?? null,
-          wantText: root.querySelector('[data-xianyu-want]')?.textContent ?? null,
-          description: root.querySelector('[data-xianyu-description], [class*="desc"]')?.textContent ?? null,
-          imageUrls: Array.from(root.querySelectorAll('[data-xianyu-image], [class*="image"] img')).map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url)),
+           wantText: root.querySelector('[data-xianyu-want]')?.textContent ?? null,
+           description: root.querySelector('[data-xianyu-description], [class*="desc"]')?.textContent ?? null,
+           conditionText: root.querySelector('[data-xianyu-condition], [data-condition], [class*="condition"]')?.textContent ?? null,
+           imageUrls: Array.from(root.querySelectorAll('[data-xianyu-image], [class*="image"] img')).map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url)),
           tags: Array.from(root.querySelectorAll('[data-xianyu-tag], [class*="tag"]')).map((tag) => tag.textContent ?? '')
         }))
       : {
@@ -482,25 +719,41 @@ export class XianyuMonitor {
           priceText: await page.locator('[class*="price"]').first().textContent().catch(() => null),
           region: await page.locator('[class*="region"], [class*="location"]').first().textContent().catch(() => null),
           publishedText: await page.locator('[class*="publish"], [class*="time"]').first().textContent().catch(() => null),
-          wantText: await page.locator('[class*="want"]').first().textContent().catch(() => null),
-          description: await page.locator('[class*="desc"]').first().textContent().catch(() => null),
-          imageUrls: await page.locator('[class*="image"] img').evaluateAll((images) => images.map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url))),
+           wantText: await page.locator('[class*="want"]').first().textContent().catch(() => null),
+           description: await page.locator('[class*="desc"]').first().textContent().catch(() => null),
+           conditionText: await page.locator('[data-xianyu-condition], [data-condition], [class*="condition"]').first().textContent().catch(() => null),
+           imageUrls: await page.locator('[class*="image"] img').evaluateAll((images) => images.map((image) => image instanceof HTMLImageElement ? image.currentSrc || image.src : '').filter((url) => /^https?:/i.test(url))),
           tags: await page.locator('[class*="tag"]').allTextContents()
         }
     return mergeSearchDetail(card, source)
   }
 
   private async nextSearchPage(page: Page): Promise<boolean> {
-    const fixture = page.locator('[data-xianyu-next]').first()
-    const role = page.getByRole('button', { name: escapedText('下一页') }).first()
-    const link = page.locator('a[rel="next"]').first()
-    const next = await fixture.count() ? fixture : await role.count() ? role : link
+    return this.clickNextPage(page, false)
+  }
+
+  private async hasNextPage(page: Page, seller: boolean): Promise<boolean> {
+    const next = await this.nextControl(page, seller)
     if (!(await next.count())) return false
-    const disabled = await next.isDisabled().catch(() => false) || await next.getAttribute('aria-disabled') === 'true'
-    if (disabled) return false
+    return !(await next.isDisabled().catch(() => false)) && await next.getAttribute('aria-disabled') !== 'true'
+  }
+
+  private async clickNextPage(page: Page, seller: boolean): Promise<boolean> {
+    const next = await this.nextControl(page, seller)
+    if (!(await next.count())) return false
+    if (!(await this.hasNextPage(page, seller))) return false
     await next.click()
     await page.waitForTimeout(180)
     return true
+  }
+
+  private async nextControl(page: Page, seller: boolean): Promise<ReturnType<Page['locator']>> {
+    const fixture = page.locator(seller ? '[data-xianyu-seller-next], [data-xianyu-next]' : '[data-xianyu-next]').first()
+    const role = page.getByRole('button', { name: escapedText('下一页') }).first()
+    const link = page.locator('a[rel="next"]').first()
+    if (await fixture.count()) return fixture
+    if (await role.count()) return role
+    return link
   }
 
   private throwPageState(text: string, fallback: string): never {
@@ -511,10 +764,13 @@ export class XianyuMonitor {
   }
 
   private async goto(page: Page, url: string, failureMessage: string): Promise<void> {
+    if (!navigationUrlAllowed(url)) throw new SearchPageError('access', '页面地址不在允许的闲鱼域名范围内')
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT_MS })
       await page.waitForTimeout(120)
-    } catch {
+      if (!navigationUrlAllowed(page.url())) throw new SearchPageError('access', '页面跳转到了不允许的域名')
+    } catch (error) {
+      if (error instanceof SearchPageError) throw error
       throw new SearchPageError('network', failureMessage)
     }
   }
@@ -529,6 +785,12 @@ export class XianyuMonitor {
     if (this.scannerPage && !this.scannerPage.isClosed()) return this.scannerPage
     this.scannerPage = await this.newProfilePage()
     return this.scannerPage
+  }
+
+  private async openSellerPage(): Promise<Page> {
+    if (this.sellerPage && !this.sellerPage.isClosed()) return this.sellerPage
+    this.sellerPage = await this.newProfilePage()
+    return this.sellerPage
   }
 
   private async openDetailPage(): Promise<Page> {
@@ -553,6 +815,7 @@ export class XianyuMonitor {
         this.context = undefined
         this.loginPage = undefined
         this.scannerPage = undefined
+        this.sellerPage = undefined
         this.detailPage = undefined
         this.updateBrowser('idle')
       })
