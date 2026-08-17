@@ -1,13 +1,13 @@
 import Fastify from 'fastify'
 import { createHash, randomUUID, verify } from 'node:crypto'
-import type { TokenDomain, SubjectKind } from './security.js'
-import { createRefreshToken, hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from './security.js'
+import type { TokenDomain, SubjectKind } from './security.ts'
+import { createRefreshToken, hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from './security.ts'
 
 export type Sql = { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }
 export type Domains = Record<SubjectKind, TokenDomain>
 
 type UserRow = { id: string; email_normalized: string; password_hash: string; status: string }
-type SessionRow = { id: string; subject_id: string; family_id: string | null; revoked_at: string | null; expires_at: string }
+type SessionRow = { id: string; subject_type: SubjectKind; subject_id: string; family_id: string | null; revoked_at: string | null; expires_at: string }
 
 function body<T>(value: unknown): T { return value as T }
 function refreshHash(token: string): string { return createHash('sha256').update(token).digest('hex') }
@@ -21,12 +21,14 @@ async function issue(sql: Sql, domain: TokenDomain, kind: SubjectKind, subjectId
   return { accessToken: await signAccessToken(domain, kind, subjectId, sessionId, clientId), refreshToken: refresh.token }
 }
 
-async function authenticate(sql: Sql, domain: TokenDomain, kind: SubjectKind, header: string | undefined) {
-  const claims = await verifyAccessToken(domain, kind, bearer(header))
-  const session = await sql.query('SELECT id, revoked_at, expires_at FROM identity.auth_refresh_sessions WHERE id = $1', [claims.sessionId])
-  if (!session.rows[0] || session.rows[0].revoked_at || new Date(String(session.rows[0].expires_at)) <= new Date()) throw new Error('会话已失效')
+async function authenticateToken(sql: Sql, domain: TokenDomain, kind: SubjectKind, token: string) {
+  const claims = await verifyAccessToken(domain, kind, token)
+  const session = (await sql.query('SELECT id, subject_type, subject_id, revoked_at, expires_at FROM identity.auth_refresh_sessions WHERE id = $1', [claims.sessionId])).rows[0] as SessionRow | undefined
+  if (!session || session.subject_type !== kind || session.subject_id !== claims.sub || session.revoked_at || new Date(String(session.expires_at)) <= new Date()) throw new Error('会话已失效')
   return claims
 }
+
+async function authenticate(sql: Sql, domain: TokenDomain, kind: SubjectKind, header: string | undefined) { return authenticateToken(sql, domain, kind, bearer(header)) }
 
 async function refresh(sql: Sql, domain: TokenDomain, kind: SubjectKind, refreshToken: string, clientId?: string) {
   const result = await sql.query(`SELECT id, subject_id, family_id, revoked_at, expires_at FROM identity.auth_refresh_sessions
@@ -79,7 +81,7 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
   app.post('/v1/devices/bind', async (request, reply) => {
     const input = body<{ userToken?: string; publicKey?: string; proof?: string; deviceName?: string }>(request.body)
     try {
-      const user = await verifyAccessToken(domains.user, 'user', input.userToken ?? ''); const key = Buffer.from(input.publicKey ?? '', 'base64'); const proof = Buffer.from(input.proof ?? '', 'base64')
+      const user = await authenticateToken(sql, domains.user, 'user', input.userToken ?? ''); const key = Buffer.from(input.publicKey ?? '', 'base64'); const proof = Buffer.from(input.proof ?? '', 'base64')
       if (!key.length || !verify(null, Buffer.from(user.sub ?? ''), { key, format: 'der', type: 'spki' }, proof)) return fail(reply, 401, '设备签名无效')
       const fingerprint = createHash('sha256').update(key).digest('hex'); const active = await sql.query("SELECT COUNT(*)::int AS total FROM identity.collector_clients WHERE user_id=$1 AND status='active'", [user.sub])
       if (Number(active.rows[0]?.total) >= 2) return fail(reply, 403, '设备数量已达上限')

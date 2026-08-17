@@ -9,6 +9,7 @@
     "preview": "electron-vite preview",
     "package:win": "npm run build && electron-builder --win",
     "check:cloud": "tsc -p tsconfig.cloud.json",
+    "serve:cloud": "node --experimental-strip-types services/cloud/src/main.ts",
     "test:phase0:contract": "node tools/phase0/postgres-contract-test.mjs",
     "test:phase0:stress": "node tools/phase0/sqlite-synthetic-load.mjs --items=100000 --devices=4 --batch-size=250 --database=temp"
   },

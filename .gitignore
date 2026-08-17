@@ -2,6 +2,9 @@ node_modules/
 out/
 release/
 dist/
+.env
+.env.*
+!.env.example
 .electron/
 *.db
 *.db-shm
