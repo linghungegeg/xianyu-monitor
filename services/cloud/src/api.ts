@@ -558,8 +558,8 @@ const adminAiJobsListConfig: ListConfig = {
   resource: 'admin.ai_jobs',
   defaultSort: 'created_at',
   sortAliases: { created_at: 'created_at', updated_at: 'created_at', updated_at_desc: 'created_at', recent: 'created_at', status: 'status', title: 'billing_reference', title_asc: 'billing_reference', id: 'id' },
-  filterAliases: { userId: 'requesting_user_id', capabilityId: 'capability_id' },
-  allowedFilters: ['q', 'status', 'requesting_user_id', 'capability_id']
+  filterAliases: { userId: 'requesting_user_id', capabilityId: 'capability_id', failureReason: 'failure_reason', from: 'from', to: 'to' },
+  allowedFilters: ['q', 'status', 'requesting_user_id', 'capability_id', 'failure_reason', 'from', 'to']
 }
 
 const adminCapacityListConfig: ListConfig = {
@@ -797,7 +797,7 @@ const adminUploadsPlan = tablePlan({
 const adminAiJobsPlan = tablePlan({
   resource: adminAiJobsListConfig.resource,
   from: 'ai.jobs j',
-  select: 'j.id, j.requesting_user_id AS "requestingUserId", j.idempotency_key AS "idempotencyKey", j.capability_id AS "capabilityId", j.prompt_version_id AS "promptVersionId", j.input_object_key AS "inputObjectKey", j.status, j.queued_at AS "queuedAt", j.started_at AS "startedAt", j.finished_at AS "finishedAt", j.billing_reference AS "billingReference", j.created_at AS "createdAt"',
+  select: 'j.id, j.requesting_user_id AS "requestingUserId", j.idempotency_key AS "idempotencyKey", j.capability_id AS "capabilityId", j.prompt_version_id AS "promptVersionId", j.input_object_key AS "inputObjectKey", j.status, j.retry_count AS "retryCount", j.last_error AS "lastError", j.cost_quantity AS "costQuantity", j.queued_at AS "queuedAt", j.started_at AS "startedAt", j.finished_at AS "finishedAt", j.billing_reference AS "billingReference", j.created_at AS "createdAt"',
   idExpression: 'j.id::text',
   sortExpressions: { created_at: 'j.created_at', status: 'j.status', billing_reference: "COALESCE(j.billing_reference, '')", id: 'j.id::text' },
   conditions: (context, values) => {
@@ -806,6 +806,9 @@ const adminAiJobsPlan = tablePlan({
     if (context.filters.status) { values.push(context.filters.status); conditions.push(`j.status = $${values.length}`) }
     if (context.filters.requesting_user_id) { values.push(context.filters.requesting_user_id); conditions.push(`j.requesting_user_id = $${values.length}`) }
     if (context.filters.capability_id) { values.push(context.filters.capability_id); conditions.push(`j.capability_id = $${values.length}`) }
+    if (context.filters.failure_reason) { values.push(`%${context.filters.failure_reason}%`); conditions.push(`j.last_error ILIKE $${values.length}`) }
+    if (context.filters.from) { values.push(context.filters.from); conditions.push(`j.created_at >= $${values.length}::timestamptz`) }
+    if (context.filters.to) { values.push(context.filters.to); conditions.push(`j.created_at < $${values.length}::timestamptz`) }
     return conditions
   }
 })
@@ -1127,6 +1130,36 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   app.post('/v1/auth/refresh', async (request, reply) => { try { return await refresh(sql, domains.user, 'user', body<{ refreshToken: string }>(request.body).refreshToken) } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') } })
   app.get('/v1/me', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); return { id: claims.sub } } catch { return fail(reply, 401, '未授权') } })
   app.get('/v1/me/entitlements', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); const rows = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [claims.sub]); return { items: rows.rows } } catch { return fail(reply, 401, '未授权') } })
+  app.post('/v1/ai/jobs', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = body<{ capabilityCode?: string; input?: unknown; idempotencyKey?: string; promptVersion?: number }>(request.body)
+      const code = input.capabilityCode?.trim(); const key = input.idempotencyKey?.trim()
+      if (!code || !key || key.length > 256) return fail(reply, 400, 'AI 任务参数无效')
+      const capability = (await sql.query(`SELECT id, published_version, entitlement FROM ai.capabilities WHERE code=$1 AND published_version IS NOT NULL`, [code])).rows[0]
+      if (!capability) return fail(reply, 404, 'AI 能力未发布')
+      const entitlement = await sql.query(`SELECT 1 FROM billing.entitlement_grants WHERE user_id=$1 AND capability=$2 AND limit_value > 0 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now()) LIMIT 1`, [claims.sub, capability.entitlement])
+      if (!entitlement.rows[0]) return fail(reply, 403, '当前账号没有可用 AI 权益')
+      const prompt = (await sql.query(`SELECT id FROM ai.prompt_versions WHERE capability_id=$1 AND version=$2 AND status='published'`, [capability.id, input.promptVersion ?? capability.published_version])).rows[0]
+      if (!prompt) return fail(reply, 409, 'AI 提示版本未发布')
+      const id = randomUUID()
+      const claimed = await sql.query(`WITH claim AS (
+          INSERT INTO ai.job_idempotency (requesting_user_id,idempotency_key,job_id,created_at)
+          VALUES ($1,$2,$3,now()) ON CONFLICT DO NOTHING RETURNING job_id
+        ), created AS (
+          INSERT INTO ai.jobs (id,created_at,requesting_user_id,idempotency_key,capability_id,prompt_version_id,input_payload,status,queued_at)
+          SELECT job_id,now(),$1,$2,$4,$5,$6::jsonb,'queued',now() FROM claim RETURNING id
+        )
+        SELECT id,false AS duplicate FROM created
+        UNION ALL
+        SELECT job_id,true AS duplicate FROM ai.job_idempotency WHERE requesting_user_id=$1 AND idempotency_key=$2 AND NOT EXISTS (SELECT 1 FROM claim)
+        LIMIT 1`, [claims.sub, key, id, capability.id, prompt.id, JSON.stringify(input.input ?? {})])
+      const job = claimed.rows[0]
+      if (!job) throw new Error('AI 任务幂等声明失败')
+      return reply.code(202).send({ id: job.id, status: 'queued', duplicate: Boolean(job.duplicate) })
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : 'AI 任务创建失败') }
+  })
   app.post('/v1/collector-devices/:clientId/revoke', async (request, reply) => {
     try {
       const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization)
@@ -1338,6 +1371,55 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
     } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') }
   })
   app.get('/v1/me', async (request, reply) => { try { const claims = await authenticate(sql, domains.admin, 'admin', request.headers.authorization); const rows = await sql.query('SELECT role FROM identity.admin_users WHERE id=$1', [claims.sub]); return { id: claims.sub, role: rows.rows[0]?.role } } catch { return fail(reply, 403, '管理员权限不足') } })
+  app.post('/v1/admin/ai/providers', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    try {
+      const input = body<{ providerCode?: string; modelReference?: string; apiKeyCiphertext?: string; apiKey?: string; settings?: unknown; status?: string }>(request.body)
+      if (input.apiKey !== undefined || !input.providerCode?.trim() || !input.modelReference?.trim()) return fail(reply, 400, 'AI 提供方参数无效')
+      const settings = input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {}
+      const result = await sql.query(`INSERT INTO ai.provider_configs (id,provider_code,model_reference,api_key_ciphertext,settings,status,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5::jsonb,$6,now(),now())
+        RETURNING id,provider_code AS "providerCode",model_reference AS "modelReference",settings,status,created_at AS "createdAt",updated_at AS "updatedAt"`, [randomUUID(), input.providerCode.trim(), input.modelReference.trim(), input.apiKeyCiphertext ?? null, JSON.stringify(settings), input.status === 'active' ? 'active' : 'draft'])
+      return result.rows[0]
+    } catch (error) { return fail(reply, isUniqueViolation(error) ? 409 : 400, isUniqueViolation(error) ? 'AI 提供方已存在' : (error instanceof Error ? error.message : 'AI 提供方创建失败')) }
+  })
+  app.get('/v1/admin/ai/providers', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    const result = await sql.query('SELECT id,provider_code AS "providerCode",model_reference AS "modelReference",settings,status,created_at AS "createdAt",updated_at AS "updatedAt" FROM ai.provider_configs ORDER BY created_at DESC, id DESC')
+    return { items: result.rows }
+  })
+  app.post('/v1/admin/ai/capabilities', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    try {
+      const input = body<{ code?: string; inputSchema?: unknown; outputSchema?: unknown; entitlement?: string }>(request.body)
+      if (!input.code?.trim() || !input.entitlement?.trim()) return fail(reply, 400, 'AI 能力参数无效')
+      const id = randomUUID()
+      const result = await sql.query(`INSERT INTO ai.capabilities (id,code,input_schema,output_schema,entitlement,created_at) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,now()) RETURNING id,code,published_version AS "publishedVersion",input_schema AS "inputSchema",output_schema AS "outputSchema",entitlement`, [id, input.code.trim(), JSON.stringify(input.inputSchema ?? {}), JSON.stringify(input.outputSchema ?? {}), input.entitlement.trim()])
+      return result.rows[0]
+    } catch (error) { return fail(reply, isUniqueViolation(error) ? 409 : 400, isUniqueViolation(error) ? 'AI 能力已存在' : (error instanceof Error ? error.message : 'AI 能力创建失败')) }
+  })
+  app.post('/v1/admin/ai/prompts', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    try {
+      const input = body<{ capabilityId?: string; version?: number; providerReference?: string; modelReference?: string; promptBody?: string; status?: string }>(request.body)
+      if (!input.capabilityId || !Number.isInteger(input.version) || !input.providerReference || !input.modelReference || !input.promptBody) return fail(reply, 400, 'AI 提示版本参数无效')
+      const result = await sql.query(`INSERT INTO ai.prompt_versions (id,capability_id,version,provider_reference,model_reference,prompt_body,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,now()) RETURNING id,capability_id AS "capabilityId",version,status,created_at AS "createdAt"`, [randomUUID(), input.capabilityId, input.version, input.providerReference, input.modelReference, input.promptBody, input.status === 'published' ? 'published' : 'draft'])
+      return result.rows[0]
+    } catch (error) { return fail(reply, isUniqueViolation(error) ? 409 : 400, isUniqueViolation(error) ? '提示版本已存在' : (error instanceof Error ? error.message : '提示版本创建失败')) }
+  })
+  app.post('/v1/admin/ai/prompts/:id/publish', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    const result = await sql.query(`UPDATE ai.prompt_versions SET status='published',published_at=now() WHERE id=$1 RETURNING id,capability_id AS "capabilityId",version,status`, [(request.params as { id?: string }).id])
+    return result.rows[0] ?? fail(reply, 404, '提示版本不存在')
+  })
+  app.post('/v1/admin/ai/capabilities/:id/publish', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    const input = body<{ promptVersionId?: string }>(request.body)
+    const prompt = await sql.query('SELECT version FROM ai.prompt_versions WHERE id=$1 AND capability_id=$2 AND status=\'published\'', [input.promptVersionId, (request.params as { id?: string }).id])
+    if (!prompt.rows[0]) return fail(reply, 409, '提示版本未发布')
+    const result = await sql.query(`UPDATE ai.capabilities SET published_version=$2 WHERE id=$1 RETURNING id,code,published_version AS "publishedVersion",entitlement`, [(request.params as { id?: string }).id, prompt.rows[0].version])
+    return result.rows[0] ?? fail(reply, 404, 'AI 能力不存在')
+  })
   app.get('/v1/users', async (request, reply) => {
     try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
     try {
@@ -1352,7 +1434,7 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
   registerListEndpoint(app, ['/v1/billing', '/v1/billing/orders', '/v1/admin/billing'], sql, domains.admin, 'admin', adminBillingListConfig, adminBillingPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/quality', '/v1/quality/categories', '/v1/admin/quality'], sql, domains.admin, 'admin', adminQualityListConfig, adminQualityPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/uploads', '/v1/ingest/batches', '/v1/admin/uploads'], sql, domains.admin, 'admin', adminUploadsListConfig, adminUploadsPlan, 403, '管理员权限不足')
-  registerListEndpoint(app, ['/v1/ai', '/v1/ai/jobs', '/v1/admin/ai'], sql, domains.admin, 'admin', adminAiJobsListConfig, adminAiJobsPlan, 403, '管理员权限不足')
+  registerListEndpoint(app, ['/v1/ai', '/v1/ai/jobs', '/v1/admin/ai', '/v1/admin/ai/jobs'], sql, domains.admin, 'admin', adminAiJobsListConfig, adminAiJobsPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/capacity', '/v1/admin/capacity'], sql, domains.admin, 'admin', adminCapacityListConfig, adminCapacityPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/audit', '/v1/audit/logs', '/v1/admin/audit'], sql, domains.admin, 'admin', adminAuditListConfig, adminAuditPlan, 403, '管理员权限不足')
   return app

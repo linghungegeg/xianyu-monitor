@@ -21,7 +21,9 @@
     "test:phase5:desktop": "npm run build && node --experimental-strip-types tools/phase5/electron-seller-runtime.mjs",
     "test:phase6:cloud": "node --experimental-strip-types tools/phase6/cloud-silent-ingest-integration.mjs",
     "test:phase6:desktop": "npm run build && node --experimental-strip-types tools/phase6/electron-silent-upload-runtime.mjs",
-    "test:phase6:admin": "npm --prefix apps/admin-web run build && npm run test:phase6:cloud"
+    "test:phase6:admin": "npm --prefix apps/admin-web run build && npm run test:phase6:cloud",
+    "test:phase7:cloud": "node --experimental-strip-types tools/phase7/cloud-ai-integration.mjs",
+    "test:phase7:admin": "npm --prefix apps/admin-web run build && npm run test:phase7:cloud"
   },
   "dependencies": {
     "@electron-toolkit/utils": "4.0.0",
