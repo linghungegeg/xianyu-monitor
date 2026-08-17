@@ -7,8 +7,8 @@ export async function startCloudServices() {
   const pool = new Pool({ connectionString: config.databaseUrl, max: 20, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : undefined })
   const sql = { query: (text: string, values?: unknown[]) => pool.query(text, values) }
   const services = [
-    { app: createUserApi(sql, config.domains), port: config.userPort },
-    { app: createAdminApi(sql, config.domains), port: config.adminPort },
+    { app: createUserApi(sql, config.domains, { allowedOrigins: config.userAllowedOrigins }), port: config.userPort },
+    { app: createAdminApi(sql, config.domains, { allowedOrigins: config.adminAllowedOrigins }), port: config.adminPort },
     { app: createCollectorApi(sql, config.domains), port: config.collectorPort }
   ]
 

@@ -12,12 +12,25 @@ function port(name: string, fallback: number): number {
   return value
 }
 
+function allowedOrigins(name: string): string[] {
+  const value = process.env[name] ?? ''
+  return value.split(',').map((origin) => origin.trim()).filter(Boolean).map((origin) => {
+    if (origin === '*') throw new Error(`${name} 不允许使用 *`)
+    let parsed: URL
+    try { parsed = new URL(origin) } catch { throw new Error(`${name} 包含无效源`) }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.origin !== origin && parsed.origin !== `${origin}/`) throw new Error(`${name} 包含不安全源`)
+    return parsed.origin
+  })
+}
+
 export type CloudConfig = {
   databaseUrl: string
   host: string
   userPort: number
   adminPort: number
   collectorPort: number
+  userAllowedOrigins: string[]
+  adminAllowedOrigins: string[]
   domains: Domains
 }
 
@@ -28,6 +41,8 @@ export function loadCloudConfig(): CloudConfig {
     userPort: port('USER_API_PORT', 3101),
     adminPort: port('ADMIN_API_PORT', 3102),
     collectorPort: port('COLLECTOR_API_PORT', 3103),
+    userAllowedOrigins: allowedOrigins('USER_ALLOWED_ORIGINS'),
+    adminAllowedOrigins: allowedOrigins('ADMIN_ALLOWED_ORIGINS'),
     domains: {
       user: { issuer: required('USER_TOKEN_ISSUER'), audience: required('USER_TOKEN_AUDIENCE'), secret: required('USER_TOKEN_SECRET') },
       admin: { issuer: required('ADMIN_TOKEN_ISSUER'), audience: required('ADMIN_TOKEN_AUDIENCE'), secret: required('ADMIN_TOKEN_SECRET') },
