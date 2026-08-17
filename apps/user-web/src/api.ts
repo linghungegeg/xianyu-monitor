@@ -25,9 +25,11 @@ export type UserListRequest = {
 
 export type UserPage<T> = {
   items: T[]
+  limit?: number
   total: number
   nextCursor: string | null
   hasMore: boolean
+  snapshot?: string | null
 }
 
 export class UserApiError extends Error {
@@ -139,15 +141,19 @@ export class UserApiClient {
     params.set('limit', String(Math.min(100, Math.max(1, Math.trunc(input.limit)))))
     if (input.cursor) params.set('cursor', input.cursor)
     params.set('sort', input.sort)
+    params.set('order', 'desc')
     params.set('filters', JSON.stringify(input.filters))
     const payload = await this.request<unknown>(`${USER_LIST_PATHS[resource]}?${params.toString()}`, { signal })
     const record = asRecord(payload)
+    const page = asRecord(record.page)
     const items = Array.isArray(record.items) ? record.items as T[] : []
-    const nextCursorValue = record.nextCursor ?? record.next_cursor
+    const nextCursorValue = page.nextCursor ?? page.next_cursor
     const nextCursor = typeof nextCursorValue === 'string' && nextCursorValue.length > 0 ? nextCursorValue : null
-    const hasMore = typeof record.hasMore === 'boolean' ? record.hasMore : Boolean(nextCursor)
-    const total = typeof record.total === 'number' && Number.isFinite(record.total) ? record.total : items.length
-    return { items, total, nextCursor, hasMore }
+    const hasMore = typeof page.hasMore === 'boolean' ? page.hasMore : Boolean(nextCursor)
+    const total = typeof page.total === 'number' && Number.isFinite(page.total) ? page.total : items.length
+    const limit = typeof page.limit === 'number' && Number.isFinite(page.limit) ? page.limit : undefined
+    const snapshot = typeof page.snapshot === 'string' ? page.snapshot : null
+    return { items, limit, total, nextCursor, hasMore, snapshot }
   }
 
   private setTokens(tokens: UserTokens): void {
