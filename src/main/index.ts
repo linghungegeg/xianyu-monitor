@@ -107,7 +107,7 @@ function requestQuit(): void {
   void shutdown().finally(() => app.quit())
 }
 
-app.setName('闲鱼采集启动器')
+app.setName('懒人闲鱼监控')
 app.setPath('userData', process.env.XIANYU_MONITOR_USER_DATA ? resolve(process.env.XIANYU_MONITOR_USER_DATA) : join(app.getPath('appData'), 'XianyuMonitor'))
 
 app.whenReady().then(() => {

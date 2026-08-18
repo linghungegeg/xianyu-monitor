@@ -215,7 +215,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
 }
 
 function AuthFrame({ title, detail, children }: { title: string; detail: string; children?: ReactNode }): ReactNode {
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span><Fish size={18} /></span><strong>闲鱼数据台</strong></div><div className="auth-copy"><h1>{title}</h1>{detail && <p>{detail}</p>}</div>{children}</section></main>
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span><Fish size={18} /></span><strong>懒人闲鱼监控</strong></div><div className="auth-copy"><h1>{title}</h1>{detail && <p>{detail}</p>}</div>{children}</section></main>
 }
 
 function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: () => void }): ReactNode {
@@ -302,7 +302,7 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
 
   return <div className={`app ${collapsed ? 'collapsed' : ''}`}>
     <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
-      <div className="brand"><span><Fish size={18} /></span>{!collapsed && <strong>闲鱼数据台</strong>}</div>
+      <div className="brand"><span><Fish size={18} /></span>{!collapsed && <strong>懒人闲鱼监控</strong>}</div>
       <nav>{pages.map((item) => <button key={item.key} className={active === item.key ? 'active' : ''} onClick={() => switchPage(item.key)} title={collapsed ? item.label : undefined}><item.icon size={18} /><span>{item.label}</span></button>)}</nav>
       <div className="side-foot"><div className="side-account"><span>管</span>{!collapsed && <div><strong>{identity.role ?? '管理员'}</strong><small>{identity.id}</small></div>}</div><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开导航' : '收起导航'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>

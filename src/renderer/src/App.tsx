@@ -138,7 +138,7 @@ export default function App(): JSX.Element {
 
   return <main className="launcher-shell">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark"><ShieldCheck size={20} /></span><strong>咸鱼监控</strong></div>
+      <div className="brand"><span className="brand-mark"><ShieldCheck size={20} /></span><strong>懒人闲鱼监控</strong></div>
       <div className={`status-chip status-${status.session}`}><span /><strong>{statusLabel(status)}</strong></div>
     </header>
 

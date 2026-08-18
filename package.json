@@ -57,7 +57,7 @@
   },
   "build": {
     "appId": "com.local.xianyumonitor",
-    "productName": "闲鱼监控",
+    "productName": "懒人闲鱼监控",
     "directories": {
       "output": "release"
     },

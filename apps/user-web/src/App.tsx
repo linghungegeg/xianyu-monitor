@@ -1214,7 +1214,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
           <span className="brand-mark">
             <Fish size={18} />
           </span>
-          {!collapsed && <span>闲鱼数据台</span>}
+          {!collapsed && <span>懒人闲鱼监控</span>}
         </div>
         <nav>
           {pages
