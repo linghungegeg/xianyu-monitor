@@ -41,7 +41,7 @@ const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com']
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
 type EntitlementResponse = { allowed?: boolean }
 type TaskResponse = { items?: unknown[]; snapshotAt?: string }
-type SupplyClaimResponse = { claimBatchId?: string; plans?: Array<{ id?: string; materialSnapshot?: unknown }> }
+type SupplyClaimResponse = { claimBatchId?: string; items?: Array<{ id?: string; materialSnapshot?: unknown }> }
 type DeviceKey = { publicKey: string; privateKey: ReturnType<typeof createPrivateKey> }
 
 class CloudRequestError extends Error {
@@ -348,8 +348,8 @@ export class XianyuMonitor {
     const claim = await this.request<SupplyClaimResponse>(this.collectorApiBase, '/v1/supply/publish-plans/claim', {
       method: 'POST', token: this.accessToken, body: { schemaVersion: 1, deviceId: clientId, idempotencyKey: claimIdempotencyKey, limit: 1 }
     })
-    if (!claim.claimBatchId || !Array.isArray(claim.plans)) return
-    for (const plan of claim.plans) {
+    if (!claim.claimBatchId || !Array.isArray(claim.items)) return
+    for (const plan of claim.items) {
       if (!plan.id) continue
       const attemptId = randomUUID()
       this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'claimed', message: '已领取发布计划，等待本机发布页处理' })
@@ -358,6 +358,7 @@ export class XianyuMonitor {
         await this.goto(page, GOOFISH_PUBLISH, '无法打开闲鱼发布页，请检查网络后重试')
         const attention = await this.publishPageNeedsAttention(page)
         this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message: attention })
+        this.db.enqueueSupplyPublishResult({ id: `supply-result:${attemptId}`, planId: plan.id, claimBatchId: claim.claimBatchId, attemptKey: `attempt:${attemptId}`, status: 'failed', errorMessage: attention })
         this.db.addLog('info', `发布计划 ${plan.id} 已领取，${attention}`)
       } catch (error) {
         this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message: this.safeMessage(error, '发布页打开失败') })
@@ -894,7 +895,7 @@ export class XianyuMonitor {
   private async flushOutbox(): Promise<void> {
     for (const entry of this.db.listDueOutbox()) {
       try {
-        const path = entry.kind === 'market_batch' ? '/v1/ingest' : '/v1/heartbeat'
+        const path = entry.kind === 'market_batch' ? '/v1/ingest' : entry.kind === 'supply_result' ? '/v1/supply/publish-results' : '/v1/heartbeat'
         await this.request(this.collectorApiBase, path, { method: 'POST', token: this.accessToken, body: entry.payload })
         this.db.completeOutbox(entry.id)
       } catch (error) {

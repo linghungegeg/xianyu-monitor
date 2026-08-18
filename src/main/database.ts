@@ -116,7 +116,7 @@ export class MonitorDatabase {
       );
       CREATE TABLE IF NOT EXISTS outbox (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch')),
+        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch', 'supply_result')),
         payload TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at TEXT NOT NULL,
@@ -281,12 +281,12 @@ export class MonitorDatabase {
 
   private ensureOutboxKinds(): void {
     const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='outbox'").get() as { sql?: string } | undefined
-    if (!row?.sql || row.sql.includes("'market_batch'")) return
+    if (!row?.sql || row.sql.includes("'supply_result'")) return
     this.db.exec(`
       ALTER TABLE outbox RENAME TO outbox_legacy;
       CREATE TABLE outbox (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch')),
+        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch', 'supply_result')),
         payload TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at TEXT NOT NULL,
@@ -394,6 +394,12 @@ export class MonitorDatabase {
     this.db.prepare(`INSERT INTO supply_publish_attempts (id,plan_id,claim_batch_id,status,message,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,message=excluded.message,updated_at=excluded.updated_at`)
       .run(input.id, input.planId, input.claimBatchId, input.status, input.message, now, now)
+  }
+
+  enqueueSupplyPublishResult(input: { id: string; planId: string; claimBatchId: string; attemptKey: string; status: 'failed' | 'needs_attention'; errorMessage: string }): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO outbox (id,kind,payload,attempts,next_attempt_at,created_at) VALUES (?,'supply_result',?,0,?,?)`)
+      .run(input.id, JSON.stringify({ schemaVersion: 1, deviceId: this.getState('collector.client-id'), results: [{ planId: input.planId, claimBatchId: input.claimBatchId, attemptKey: input.attemptKey, status: input.status, errorMessage: input.errorMessage }] }), now, now)
   }
 
   syncMonitorTasks(tasks: readonly CachedMonitorTask[]): void {

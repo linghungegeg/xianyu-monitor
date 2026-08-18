@@ -14,7 +14,7 @@ export type LauncherLog = {
 
 export type OutboxEntry = {
   id: string
-  kind: 'heartbeat' | 'market_batch'
+  kind: 'heartbeat' | 'market_batch' | 'supply_result'
   payload: Record<string, unknown>
   attempts: number
   nextAttemptAt: string

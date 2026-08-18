@@ -2346,6 +2346,42 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
       return fail(reply, 400, error instanceof Error ? error.message : '发布计划领取失败')
     }
   })
+  app.post('/v1/supply/publish-results', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
+    try { claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization) } catch { return fail(reply, 403, '采集器权限不足') }
+    try {
+      const client = await activeCollector(sql, String(claims.sub))
+      await requireCollectorEntitlement(sql, client.user_id)
+      const input = supplyRecord(request.body, '发布结果请求')
+      if (input.schemaVersion !== 1 || input.deviceId !== String(claims.sub) || !Array.isArray(input.results) || input.results.length > 20) throw new SupplyImportRequestError('发布结果请求无效')
+      const accepted: Array<Record<string, unknown>> = []
+      for (const raw of input.results) {
+        const result = supplyRecord(raw, '发布结果')
+        const planId = supplyString(result.planId, 'planId', 64)!
+        const claimBatchId = supplyString(result.claimBatchId, 'claimBatchId', 64)!
+        const attemptKey = supplyString(result.attemptKey, 'attemptKey', 256)!
+        const status = result.status
+        if (status !== 'succeeded' && status !== 'failed' && status !== 'needs_attention') throw new SupplyImportRequestError('发布结果状态无效')
+        rejectSupplySensitive(result)
+        const existingAttempt = await sql.query('SELECT id FROM supply.publish_attempts WHERE client_id=$1 AND attempt_key=$2', [claims.sub, attemptKey])
+        if (existingAttempt.rows[0]) {
+          accepted.push({ planId, attemptKey, duplicate: true })
+          continue
+        }
+        const plan = (await sql.query(`SELECT id,status,user_id FROM supply.publish_plans WHERE id=$1 AND user_id=$2 AND claimed_by_client_id=$3`, [planId, client.user_id, claims.sub])).rows[0]
+        if (!plan) throw new SupplyImportRequestError('发布计划不属于当前设备')
+        const attemptNo = Number((await sql.query('SELECT COALESCE(MAX(attempt_no),0)+1 AS next FROM supply.publish_attempts WHERE plan_id=$1', [planId])).rows[0].next)
+        const inserted = await sql.query(`INSERT INTO supply.publish_attempts (id,plan_id,user_id,client_id,claim_batch_id,attempt_key,attempt_no,status,error_code,error_message,xianyu_item_id,xianyu_url,created_at,completed_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,now(),now()) ON CONFLICT (client_id,attempt_key) DO NOTHING RETURNING id`, [randomUUID(), planId, client.user_id, claims.sub, claimBatchId, attemptKey, attemptNo, status, typeof result.errorCode === 'string' ? result.errorCode.slice(0,128) : null, typeof result.errorMessage === 'string' ? result.errorMessage.slice(0,1000) : null, typeof result.xianyuItemId === 'string' ? result.xianyuItemId.slice(0,128) : null, typeof result.xianyuUrl === 'string' ? result.xianyuUrl.slice(0,2048) : null])
+        if (inserted.rows[0]) {
+          const nextPlanStatus = status === 'succeeded' ? 'published' : status === 'failed' ? 'planned' : 'failed'
+          await sql.query(`UPDATE supply.publish_plans SET status=$1,retry_count=retry_count+$2,last_error_code=$3,last_error_message=$4,xianyu_item_id=$5,xianyu_url=$6,claimed_by_client_id=NULL,claimed_at=NULL,updated_at=now() WHERE id=$7 AND user_id=$8`, [nextPlanStatus, status === 'failed' ? 1 : 0, result.errorCode ?? null, result.errorMessage ?? null, result.xianyuItemId ?? null, result.xianyuUrl ?? null, planId, client.user_id])
+        }
+        accepted.push({ planId, attemptKey, duplicate: !inserted.rows[0] })
+      }
+      return { schemaVersion: 1, deviceId: String(claims.sub), accepted }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '发布结果接收失败') }
+  })
   app.get('/v1/tasks', async (request, reply) => {
     try {
       const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)

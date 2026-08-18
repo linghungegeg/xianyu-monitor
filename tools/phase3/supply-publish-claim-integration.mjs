@@ -137,6 +137,13 @@ async function run() {
     assert(JSON.stringify(first).match(/cookie|authorization|profile|chrome/i) === null, '领取响应包含本机敏感状态')
     const frozen = first.items.find((item) => item.id === archived.plan.id)
     assert(frozen.materialSnapshot.title === '冻结素材 archived-001', '归档后未返回冻结素材快照')
+    const publishResult = { schemaVersion: 1, deviceId: deviceA.clientId, results: [{ planId: due.plan.id, claimBatchId: first.claimBatchId, attemptKey: 'phase4-result-due', status: 'succeeded', xianyuItemId: 'xy-published-1', xianyuUrl: 'https://www.goofish.com/item/xy-published-1' }] }
+    const reported = await collectorApi.inject({ method: 'POST', url: '/v1/supply/publish-results', headers: auth(deviceA.accessToken), payload: publishResult })
+    assert(reported.statusCode === 200 && json(reported).accepted[0].duplicate === false, `发布结果上报失败：${reported.body}`)
+    const replayedResult = await collectorApi.inject({ method: 'POST', url: '/v1/supply/publish-results', headers: auth(deviceA.accessToken), payload: publishResult })
+    assert(replayedResult.statusCode === 200 && json(replayedResult).accepted[0].duplicate === true, '发布结果重试未幂等')
+    const published = (await db.query('SELECT status,xianyu_item_id,xianyu_url FROM supply.publish_plans WHERE id=$1', [due.plan.id])).rows[0]
+    assert(published.status === 'published' && published.xianyu_item_id === 'xy-published-1', '成功结果未回写发布计划')
 
     const race = await materialAndPlan(userApi, userA.accessToken, 'race-001', 'phase3-race')
     const concurrent = await Promise.all([
@@ -158,7 +165,7 @@ async function run() {
     assert(otherDeviceClaim.statusCode === 200 && json(otherDeviceClaim).items.map((item) => item.id).join(',') === other.plan.id, '其他设备越权领取了用户 A 的计划')
     const states = await db.query('SELECT id,status,claimed_by_client_id FROM supply.publish_plans WHERE id = ANY($1::uuid[])', [[due.plan.id, archived.plan.id, future.plan.id, cancelled.plan.id]])
     const stateById = new Map(states.rows.map((row) => [String(row.id), row]))
-    assert(stateById.get(due.plan.id).status === 'claimed' && stateById.get(due.plan.id).claimed_by_client_id === deviceA.clientId, '到期计划没有绑定领取设备')
+    assert(stateById.get(due.plan.id).status === 'published' && stateById.get(due.plan.id).claimed_by_client_id === null, '成功结果没有收口到已发布状态')
     assert(stateById.get(future.plan.id).status === 'planned' && stateById.get(cancelled.plan.id).status === 'cancelled', '未到期或取消计划状态被改变')
     const storedSensitive = await db.query("SELECT COUNT(*)::int AS total FROM supply.publish_claim_batches b JOIN supply.publish_plan_claims c ON c.claim_batch_id=b.id WHERE row_to_json(b)::text ILIKE '%cookie%' OR row_to_json(c)::text ILIKE '%cookie%'")
     assert(Number(storedSensitive.rows[0].total) === 0, '领取审计表写入了敏感状态')
@@ -175,7 +182,8 @@ async function run() {
         concurrentClaimIdempotency: true,
         archivedMaterialUsesFrozenSnapshot: true,
         sensitiveBoundary: true,
-        claimAuditNoSensitiveState: true
+        claimAuditNoSensitiveState: true,
+        publishResultIdempotencyAndPlanLinkage: true
       }
     }, null, 2))
   } finally {
