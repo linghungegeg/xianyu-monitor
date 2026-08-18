@@ -74,13 +74,13 @@ export default function App(): JSX.Element {
 
   return <main className="launcher-shell">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>闲鱼采集启动器</strong><small>Windows Collector</small></div></div>
+      <div className="brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>闲鱼采集器</strong><small>本机采集工具</small></div></div>
       <div className={`status-chip status-${status.session}`}><span /><strong>{statusLabel(status)}</strong></div>
     </header>
 
     <section className="launcher-content">
       <div className="status-heading">
-        <div><p className="eyebrow">DEVICE AUTHORIZATION</p><h1>{status.message}</h1></div>
+        <div><p className="eyebrow">采集状态</p><h1>{status.message}</h1></div>
         {status.browser === 'open' ? <span className="browser-state"><Chrome size={16} /> Chrome 已打开</span> : null}
       </div>
 
@@ -93,7 +93,7 @@ export default function App(): JSX.Element {
         <label>密码<input type="password" autoComplete="off" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         <button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录并绑定</button>
       </form> : <section className="control-panel">
-        <div className="control-summary"><span className={`state-icon state-${status.session}`}>{status.session === 'running' ? <Play size={22} /> : <CircleCheck size={22} />}</span><div><h2>{running ? '采集器正在运行' : '设备已就绪'}</h2><p>{status.entitled ? '云端权益已校验' : '正在等待云端权益校验'}</p></div></div>
+        <div className="control-summary"><span className={`state-icon state-${status.session}`}>{status.session === 'running' ? <Play size={22} /> : <CircleCheck size={22} />}</span><div><h2>{running ? '采集器正在运行' : '设备已就绪'}</h2><p>{status.entitled ? '账号权益有效' : '正在确认账号状态'}</p></div></div>
         <div className="control-actions">
           <button className="secondary-button" type="button" disabled={busy || !status.entitled} onClick={() => void run(() => window.xianyu.launcher.openChrome())}><Chrome size={17} />打开 Chrome</button>
           {running
@@ -104,7 +104,7 @@ export default function App(): JSX.Element {
       </section>}
 
       <section className="logs-panel" aria-label="运行日志">
-        <div className="panel-heading"><div><h2>运行日志</h2><p>最近 60 条</p></div><CircleCheck size={18} /></div>
+        <div className="panel-heading"><div><h2>活动记录</h2><p>最近活动</p></div><CircleCheck size={18} /></div>
         <div className="log-list">
           {logs.length === 0 ? <p className="empty-log">尚无运行记录</p> : logs.map((log) => <div className={`log-row log-${log.level}`} key={log.id}><time>{formatTime(log.createdAt)}</time><span>{log.level === 'error' ? <CircleAlert size={15} /> : <span className="log-dot" />}</span><p>{log.message}</p></div>)}
         </div>

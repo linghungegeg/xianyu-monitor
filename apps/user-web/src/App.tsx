@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Bell, Bot, ChevronDown, ChevronLeft, ChevronRight, ClipboardList,
+  Activity, Bell, Bot, ChevronLeft, ChevronRight, ClipboardList,
   ExternalLink, FileSearch, Filter, Fish, Gauge, LayoutDashboard, LogOut, Menu, MoreHorizontal, PanelLeft, PanelLeftClose,
   PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SlidersHorizontal, Store, Trash2, X
 } from 'lucide-react'
@@ -188,7 +188,7 @@ function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow
   return {
     id,
     title: recordValue(record, ['title', 'name', 'subject'], id),
-    subtitle: recordValue(record, ['subtitle', 'description', 'scope', 'region'], 'User API 返回的公开字段'),
+    subtitle: recordValue(record, ['subtitle', 'description', 'scope', 'region'], '暂无说明'),
     metric: recordValue(record, ['metric', 'summary', 'value', 'detail'], '暂无摘要'),
     updatedAt: recordValue(record, ['updatedAt', 'updated_at', 'occurredAt', 'occurred_at'], '最近更新未知'),
     status: normalizeStatus(recordValue(record, ['status', 'state'], '正常')),
@@ -203,6 +203,13 @@ const monitorSortOptions: Array<{ value: MonitorTaskSort; label: string }> = [
   { value: 'newly_published', label: '最新发布' },
   { value: 'price_asc', label: '价格从低到高' },
   { value: 'price_desc', label: '价格从高到低' }
+]
+
+const pageGroups: Array<{ label: string; keys: PageKey[] }> = [
+  { label: '工作台', keys: ['dashboard', 'monitors'] },
+  { label: '市场', keys: ['sellers', 'pool', 'discoveries', 'events', 'logs'] },
+  { label: '分析', keys: ['ai'] },
+  { label: '账户', keys: ['settings'] }
 ]
 
 const demoMonitorTasks: MonitorTask[] = [
@@ -448,9 +455,9 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
   const [error, setError] = useState<string | null>(auth.error)
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSubmitting(true); setError(null)
-    try { onAuthenticated(await api.login(email.trim(), password)) } catch (caught) { setError(caught instanceof UserApiError ? caught.message : 'User API 登录失败，请稍后重试') } finally { setSubmitting(false) }
+    try { onAuthenticated(await api.login(email.trim(), password)) } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '登录失败，请稍后重试') } finally { setSubmitting(false) }
   }
-  return <main className="auth-shell"><section className="auth-panel"><div className="auth-brand"><span className="brand-mark">鱼</span><strong>闲鱼数据台</strong></div><h1>登录</h1><p className="auth-copy">登录后查看你的监控、市场和分析数据。</p>{!api.configured && <div className="auth-alert"><strong>服务暂未配置</strong><span>请联系管理员完成服务配置。</span></div>}<form onSubmit={(event) => void submit(event)}><label><span>邮箱</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" minLength={12} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>{submitting ? '正在登录…' : '登录'}</button></form></section></main>
+  return <main className="auth-shell"><section className="auth-panel"><div className="auth-brand"><span className="brand-mark">鱼</span><strong>闲鱼数据台</strong></div><div className="auth-heading"><h1>登录工作台</h1><p className="auth-copy">查看关注商品、市场变化和分析结果。</p></div>{!api.configured && <div className="auth-alert"><strong>暂时无法登录</strong><span>请稍后再试。</span></div>}<form onSubmit={(event) => void submit(event)}><label><span>邮箱</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" minLength={12} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>{submitting ? '正在登录…' : '登录'}</button></form></section></main>
 }
 
 function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIdentity; onLogout: () => void }): ReactNode {
@@ -471,7 +478,6 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const [reloadKey, setReloadKey] = useState(0)
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
-  const openTabs = active === 'dashboard' ? [pages[0]] : [pages[0], activePage]
   const listKind = active === 'dashboard' || active === 'settings' || active === 'monitors' || active === 'sellers' ? null : active
   const listRequest = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort, filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, sort, status])
 
@@ -489,16 +495,16 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const changeFilter = (callback: () => void) => { callback(); setCursor(null); setCursorHistory([]) }
   const nextPage = () => { if (!page.nextCursor) return; setCursorHistory((history) => [...history, cursor]); setCursor(page.nextCursor) }
   const previousPage = () => { if (!cursorHistory.length) return; setCursor(cursorHistory[cursorHistory.length - 1] ?? null); setCursorHistory(cursorHistory.slice(0, -1)) }
-  const accountName = runtime.mode === 'demo' ? '数据预览' : `用户 ${user.id.slice(0, 8)}`
+  const accountName = runtime.mode === 'demo' ? '预览账户' : `用户 ${user.id.slice(0, 8)}`
 
   return <div className={`app ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><Fish size={18} /></span>{!collapsed && <span>闲鱼数据台</span>}</div>
-      <nav>{!collapsed && <p className="nav-caption">工作台</p>}{pages.map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}</nav>
+      <nav>{pageGroups.map((group) => <div className="nav-section" key={group.label}>{!collapsed && <p className="nav-caption">{group.label}</p>}{group.keys.map((key) => { const pageItem = pages.find((item) => item.key === key)!; return <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button> })}</div>)}</nav>
       <div className="sidebar-foot"><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开侧边栏' : '收起侧边栏'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
-    <section className="main-shell"><header className="workspace-header"><div className="header-greeting"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>欢迎使用闲鱼数据台</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /><i>3</i></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span><ChevronDown size={15} /></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header><div className="tabs-bar">{openTabs.map((tab) => <div className={`workspace-tab ${active === tab.key ? 'active' : ''}`} key={tab.key}><button onClick={() => switchPage(tab.key)}>{tab.label}</button>{tab.key !== 'dashboard' && <button className="tab-close" title={`关闭${tab.label}`} onClick={() => switchPage('dashboard')}><X size={13} /></button>}</div>)}</div>
+    <section className="main-shell"><header className="workspace-header"><div className="header-context"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{activePage.label}</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header>
       <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
     {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />}
   </div>
@@ -1026,7 +1032,7 @@ function DetailDrawer({ row, onClose, onAddSeller }: { row: TableRow; onClose: (
 }
 
 function SettingsPage(): ReactNode {
-  return <><div className="page-heading"><div><p className="eyebrow">账户</p><h1>账户设置</h1><p>管理个人工作台的显示与提醒偏好。</p></div></div><div className="settings-grid"><section className="panel setting"><div className="panel-head"><div><h2>提醒偏好</h2><p>仅影响此浏览器中的工作台展示。</p></div></div><Toggle title="价格变化提醒" subtitle="价格达到关注阈值时生成事件" enabled /><Toggle title="竞品商家动态" subtitle="商家公开商品发生变化时生成事件" enabled /><Toggle title="日报摘要" subtitle="每天汇总工作台的市场变化" /></section><section className="panel setting"><div className="panel-head"><div><h2>界面偏好</h2><p>仅保存当前工作台的显示偏好。</p></div></div><label className="setting-select"><span>默认市场范围</span><select><option>全国</option><option>常用地区</option></select></label><label className="setting-select"><span>列表默认排序</span><select><option>最近更新</option><option>优先级</option></select></label></section></div></>
+  return <><div className="page-heading"><div><p className="eyebrow">账户</p><h1>账户设置</h1><p>管理个人工作台的显示与提醒偏好。</p></div></div><div className="settings-grid"><section className="panel setting"><div className="panel-head"><div><h2>提醒偏好</h2><p>提醒仅用于当前账户。</p></div></div><Toggle title="价格变化提醒" subtitle="价格达到关注阈值时生成事件" enabled /><Toggle title="竞品商家动态" subtitle="商家公开商品发生变化时生成事件" enabled /><Toggle title="日报摘要" subtitle="每天汇总工作台的市场变化" /></section><section className="panel setting"><div className="panel-head"><div><h2>界面偏好</h2><p>修改后立即生效。</p></div></div><label className="setting-select"><span>默认市场范围</span><select><option>全国</option><option>常用地区</option></select></label><label className="setting-select"><span>列表默认排序</span><select><option>最近更新</option><option>优先级</option></select></label></section></div></>
 }
 
 function Toggle({ title, subtitle, enabled = false }: { title: string; subtitle: string; enabled?: boolean }): ReactNode {
