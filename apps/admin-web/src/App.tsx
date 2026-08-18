@@ -195,7 +195,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
     }
   }
 
-  return <AuthFrame title="管理员登录" detail="使用管理账号继续。">
+  return <AuthFrame title="管理员登录" detail="">
     <form className="auth-form" onSubmit={submit}>
       <label>账号<input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} /></label>
       <label>密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} type="password" /></label>
@@ -207,7 +207,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
 }
 
 function AuthFrame({ title, detail, children }: { title: string; detail: string; children?: ReactNode }): ReactNode {
-  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span><Fish size={18} /></span><strong>闲鱼数据台</strong></div><div className="auth-copy"><h1>{title}</h1><p>{detail}</p></div>{children}</section></main>
+  return <main className="auth-shell"><section className="auth-card"><div className="auth-brand"><span><Fish size={18} /></span><strong>闲鱼数据台</strong></div><div className="auth-copy"><h1>{title}</h1>{detail && <p>{detail}</p>}</div>{children}</section></main>
 }
 
 function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: () => void }): ReactNode {
