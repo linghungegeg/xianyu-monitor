@@ -9,11 +9,18 @@ const initialStatus: LauncherStatus = {
   message: '正在读取本机授权状态'
 }
 
-const rememberedCredentialsKey = 'xianyu.launcher.remembered-credentials'
+const rememberedAccountKey = 'xianyu.launcher.remembered-account.v2'
+const legacyRememberedCredentialsKey = 'xianyu.launcher.remembered-credentials'
 
-type RememberedCredentials = {
-  email: string
-  password: string
+function readRememberedAccount(): string {
+  try {
+    localStorage.removeItem(legacyRememberedCredentialsKey)
+    const value = JSON.parse(localStorage.getItem(rememberedAccountKey) ?? '{}') as Partial<{ email: string }>
+    return typeof value.email === 'string' ? value.email : ''
+  } catch {
+    localStorage.removeItem(rememberedAccountKey)
+    return ''
+  }
 }
 
 function formatTime(value: string): string {
@@ -36,11 +43,12 @@ function isSignedOut(status: LauncherStatus): boolean {
 }
 
 export default function App(): JSX.Element {
+  const [rememberedAccount] = useState(readRememberedAccount)
   const [status, setStatus] = useState<LauncherStatus>(initialStatus)
   const [logs, setLogs] = useState<LauncherLog[]>([])
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(rememberedAccount)
   const [password, setPassword] = useState('')
-  const [rememberPassword, setRememberPassword] = useState(false)
+  const [rememberAccount, setRememberAccount] = useState(Boolean(rememberedAccount))
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -57,20 +65,6 @@ export default function App(): JSX.Element {
       void window.xianyu.launcher.logs().then(setLogs)
     })
   }, [refresh])
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(rememberedCredentialsKey)
-      if (!saved) return
-      const credentials = JSON.parse(saved) as RememberedCredentials
-      if (typeof credentials.email !== 'string' || typeof credentials.password !== 'string') return
-      setEmail(credentials.email)
-      setPassword(credentials.password)
-      setRememberPassword(true)
-    } catch {
-      localStorage.removeItem(rememberedCredentialsKey)
-    }
-  }, [])
 
   const run = async (action: () => Promise<void>): Promise<void> => {
     setBusy(true)
@@ -99,10 +93,10 @@ export default function App(): JSX.Element {
     setNotice(null)
     try {
       await window.xianyu.launcher.login(account, password)
-      if (rememberPassword) {
-        localStorage.setItem(rememberedCredentialsKey, JSON.stringify({ email: account, password }))
+      if (rememberAccount) {
+        localStorage.setItem(rememberedAccountKey, JSON.stringify({ email: account }))
       } else {
-        localStorage.removeItem(rememberedCredentialsKey)
+        localStorage.removeItem(rememberedAccountKey)
         setPassword('')
       }
     } catch (error) {
@@ -130,7 +124,7 @@ export default function App(): JSX.Element {
         <h1>登录</h1>
         <label>账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入账号" /></label>
         <label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" /></label>
-        <label className="launcher-remember"><input type="checkbox" aria-label="保存登录" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} />记住密码</label>
+        <label className="launcher-remember"><input type="checkbox" aria-label="保存登录" checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} />记住账号</label>
         <button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录</button>
       </form>
     </main>

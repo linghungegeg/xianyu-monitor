@@ -72,7 +72,7 @@ async function runWorker(sql, provider) {
 
 async function run() {
   const db = new PGlite(databasePath)
-  const sql = { query: (text, values) => db.query(text, values) }
+  const sql = { query: (text, values) => db.query(text, values), transaction: (callback) => db.transaction(callback) }
   const userApi = createUserApi(sql, domains)
   const adminApi = createAdminApi(sql, domains, { modelListProxy: async ({ baseUrl, modelReference, apiKeyCiphertext }) => {
     assert(baseUrl === 'https://models.phase7.test' && modelReference === 'deterministic-v1' && apiKeyCiphertext === 'ciphertext:phase7-test', '模型列表代理未收到正确配置')

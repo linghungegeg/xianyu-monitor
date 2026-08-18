@@ -98,7 +98,7 @@ async function materialAndPlan(userApi, token, sourceItemId, planKey, schedule =
 
 async function run() {
   const db = new PGlite(databasePath)
-  const sql = { query: (text, values) => db.query(text, values) }
+  const sql = { query: (text, values) => db.query(text, values), transaction: (callback) => db.transaction(callback) }
   const userApi = createUserApi(sql, domains)
   const collectorApi = createCollectorApi(sql, domains)
   const migrations = await applyMigrations(db)

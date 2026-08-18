@@ -24,16 +24,22 @@ const pages: Array<{ key: Page; label: string; icon: typeof Gauge }> = [
   { key: 'settings', label: '设置中心', icon: Settings }
 ]
 
-const rememberedCredentialsKey = 'xianyu-admin-web.remembered-credentials.v1'
+const rememberedAccountKey = 'xianyu-admin-web.remembered-account.v2'
+const legacyRememberedCredentialsKey = 'xianyu-admin-web.remembered-credentials.v1'
 
-function readRememberedCredentials(): { account: string; password: string } {
+function clearLegacyRememberedCredentials(): void {
+  try { localStorage.removeItem(legacyRememberedCredentialsKey) } catch { /* storage may be unavailable */ }
+}
+
+function readRememberedCredentials(): { account: string } {
   try {
-    const value = JSON.parse(localStorage.getItem(rememberedCredentialsKey) ?? '{}') as Partial<{ account: string; password: string }>
-    if (typeof value.account === 'string' && typeof value.password === 'string') return { account: value.account, password: value.password }
+    clearLegacyRememberedCredentials()
+    const value = JSON.parse(localStorage.getItem(rememberedAccountKey) ?? '{}') as Partial<{ account: string }>
+    if (typeof value.account === 'string') return { account: value.account }
   } catch {
-    localStorage.removeItem(rememberedCredentialsKey)
+    localStorage.removeItem(rememberedAccountKey)
   }
-  return { account: '', password: '' }
+  return { account: '' }
 }
 
 const copy: Record<AdminResource, { title: string; description: string; columns: [string, string, string, string] }> = {
@@ -133,6 +139,7 @@ function normalizeAdminRows(resource: AdminResource, page: CursorPage<Record<str
 }
 
 export default function App(): ReactNode {
+  clearLegacyRememberedCredentials()
   const [ready, setReady] = useState(adminWebConfig.demoMode)
   const [identity, setIdentity] = useState<AdminIdentity | null>(null)
   const [bootstrapError, setBootstrapError] = useState<string | null>(null)
@@ -158,8 +165,8 @@ export default function App(): ReactNode {
 function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | null; onAuthenticated: (identity: AdminIdentity) => void; onEnterDemo: () => void }): ReactNode {
   const [remembered] = useState(readRememberedCredentials)
   const [account, setAccount] = useState(remembered.account)
-  const [password, setPassword] = useState(remembered.password)
-  const [rememberPassword, setRememberPassword] = useState(Boolean(remembered.account && remembered.password))
+  const [password, setPassword] = useState('')
+  const [rememberAccount, setRememberAccount] = useState(Boolean(remembered.account))
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState(error)
 
@@ -194,8 +201,8 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
     try {
       if (adminWebConfig.demoMode) onEnterDemo()
       else onAuthenticated((await adminApi.login(account.trim(), password)).identity)
-      if (rememberPassword) localStorage.setItem(rememberedCredentialsKey, JSON.stringify({ account: account.trim(), password }))
-      else localStorage.removeItem(rememberedCredentialsKey)
+      if (rememberAccount) localStorage.setItem(rememberedAccountKey, JSON.stringify({ account: account.trim() }))
+      else localStorage.removeItem(rememberedAccountKey)
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : '管理员登录失败')
     } finally {
@@ -207,7 +214,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
     <form className="auth-form" onSubmit={submit}>
       <label>账号<input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} /></label>
       <label>密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} type="password" /></label>
-      <label className="remember-password"><input checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} type="checkbox" /><span>记住密码</span></label>
+      <label className="remember-password"><input checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} type="checkbox" /><span>记住账号</span></label>
       {message && <p className="auth-error" role="alert">{message}</p>}
       <button className="primary auth-submit" disabled={submitting} type="submit"><ShieldCheck size={16} />{submitting ? '正在登录' : '登录'}</button>
     </form>

@@ -79,6 +79,70 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
   { key: 'settings', label: '账户设置', icon: Settings }
 ]
 
+const dashboardEncouragements = [
+  '慢一点也没关系，稳定向前的每一步都算数。',
+  '今天的认真，会在未来某个时刻回到你身边。',
+  '愿你忙有所值，做的每件小事都在积累答案。',
+  '先把眼前的一件事做好，新的机会会自己出现。',
+  '你已经比昨天更接近想要的结果了。',
+  '不必和别人比较，按自己的节奏走就很好。',
+  '保持耐心，好消息往往正在路上。',
+  '把复杂的事情拆小，今天也能轻松完成一点。',
+  '每一次认真观察，都会让下一次判断更从容。',
+  '愿今天的你，有发现机会的眼光，也有照顾自己的余地。',
+  '别忘了肯定自己，你已经处理好了很多难题。',
+  '努力不一定马上开花，但每一次积累都不会白费。',
+  '给自己一点时间，好的变化需要耐心发芽。',
+  '专注当下，答案会在持续行动里越来越清晰。',
+  '你不需要一次做到完美，先让事情向前走。',
+  '今天也值得被好好对待，工作和生活都慢慢来。',
+  '愿你看见细小的进步，也记得为自己开心。',
+  '每个清晰的记录，都是下一次出发的底气。',
+  '不怕起步晚，只怕忘了继续走。',
+  '把今天过扎实，明天自然会更有把握。',
+  '你正在建立属于自己的节奏，这本身就是进步。',
+  '有目标时全力以赴，累了就好好休息。',
+  '今天的好状态，从认真照顾自己开始。',
+  '愿你的付出都有回声，愿你的坚持终有收获。',
+  '做长期正确的事，时间会替你放大答案。',
+  '不急着证明什么，踏实做好每一步就够了。',
+  '你比想象中更有韧性，已经走过了不少路。',
+  '把握能把握的，剩下的交给时间和好心情。',
+  '愿每一次查看，都带来一点新发现和小惊喜。',
+  '今天也辛苦了，记得给自己留一盏温柔的灯。',
+  '好的机会来自持续留意，好的结果来自持续行动。',
+  '不必担心暂时看不见结果，成长常常发生在水面之下。',
+  '愿你做事有方向，休息有安心，收获有惊喜。',
+  '每一次复盘都不是否定，而是在为下一次变好做准备。',
+  '保持好奇，保持耐心，属于你的机会不会错过。',
+  '把今天能做的做好，就是很了不起的进展。',
+  '愿你在忙碌里有秩序，在努力里有回甘。',
+  '别低估日积月累的力量，它会把小优势变成大不同。',
+  '给努力一点时间，也给自己一点掌声。',
+  '你的每一次坚持，都在为未来增加一种可能。'
+] as const
+
+let lastDashboardEncouragement = -1
+
+function chooseDashboardEncouragement(): string {
+  let previous = lastDashboardEncouragement
+  try {
+    const stored = Number(sessionStorage.getItem('xianyu-dashboard-encouragement'))
+    if (Number.isInteger(stored)) previous = stored
+  } catch {
+    // Storage may be unavailable in restricted browser contexts.
+  }
+  let index = Math.floor(Math.random() * dashboardEncouragements.length)
+  if (dashboardEncouragements.length > 1 && index === previous) index = (index + 1) % dashboardEncouragements.length
+  lastDashboardEncouragement = index
+  try {
+    sessionStorage.setItem('xianyu-dashboard-encouragement', String(index))
+  } catch {
+    // Storage may be unavailable in restricted browser contexts.
+  }
+  return dashboardEncouragements[index]
+}
+
 const pageCopy: Record<
   RowKind,
   {
@@ -930,19 +994,26 @@ type AuthView = {
   error: string | null
 }
 
-const rememberedLoginKey = 'xianyu-user-web.remembered-credentials.v1'
+const rememberedLoginKey = 'xianyu-user-web.remembered-account.v2'
+const legacyRememberedLoginKey = 'xianyu-user-web.remembered-credentials.v1'
 
-function readRememberedLogin(): { account: string; password: string } {
+function clearLegacyRememberedLogin(): void {
+  try { localStorage.removeItem(legacyRememberedLoginKey) } catch { /* storage may be unavailable */ }
+}
+
+function readRememberedLogin(): { account: string } {
   try {
-    const value = JSON.parse(localStorage.getItem(rememberedLoginKey) ?? '{}') as Partial<{ account: string; password: string }>
-    if (typeof value.account === 'string' && typeof value.password === 'string') return { account: value.account, password: value.password }
+    clearLegacyRememberedLogin()
+    const value = JSON.parse(localStorage.getItem(rememberedLoginKey) ?? '{}') as Partial<{ account: string }>
+    if (typeof value.account === 'string') return { account: value.account }
   } catch {
     localStorage.removeItem(rememberedLoginKey)
   }
-  return { account: '', password: '' }
+  return { account: '' }
 }
 
 function App(): ReactNode {
+  clearLegacyRememberedLogin()
   const api = useMemo(() => new UserApiClient(runtime.baseUrl), [])
   const [auth, setAuth] = useState<AuthView>({
     status: runtime.mode === 'demo' ? 'ready' : 'checking',
@@ -977,8 +1048,8 @@ function App(): ReactNode {
 function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: AuthView; onAuthenticated: (user: UserIdentity) => void }): ReactNode {
   const [remembered] = useState(readRememberedLogin)
   const [email, setEmail] = useState(remembered.account)
-  const [password, setPassword] = useState(remembered.password)
-  const [rememberPassword, setRememberPassword] = useState(Boolean(remembered.account && remembered.password))
+  const [password, setPassword] = useState('')
+  const [rememberAccount, setRememberAccount] = useState(Boolean(remembered.account))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(auth.error)
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -1012,7 +1083,7 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
     }
     try {
       onAuthenticated(await api.login(email.trim(), password))
-      if (rememberPassword) localStorage.setItem(rememberedLoginKey, JSON.stringify({ account: email.trim(), password }))
+      if (rememberAccount) localStorage.setItem(rememberedLoginKey, JSON.stringify({ account: email.trim() }))
       else localStorage.removeItem(rememberedLoginKey)
     } catch (caught) {
       setError(caught instanceof UserApiError ? caught.message : '登录失败，请稍后重试')
@@ -1073,8 +1144,8 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
             />
           </label>
           <label className="remember-password">
-            <input type="checkbox" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} />
-            <span>记住密码</span>
+            <input type="checkbox" checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} />
+            <span>记住账号</span>
           </label>
           {error && (
             <p className="form-error" role="alert">
@@ -1377,6 +1448,7 @@ function AnnouncementModal({ api, mode, open, onClose }: { api: UserApiClient; m
 }
 
 function Dashboard({ mode, onNavigate }: { mode: 'demo' | 'api'; onNavigate: (key: PageKey) => void }): ReactNode {
+  const [encouragement] = useState(chooseDashboardEncouragement)
   if (mode === 'api') return <ApiState title="暂无数据概览" description="数据概览准备完成后将在这里展示。" />
   const stats = [
     ['生效监控', '18', '较昨日 +2', Gauge, 'blue'],
@@ -1396,6 +1468,12 @@ function Dashboard({ mode, onNavigate }: { mode: 'demo' | 'api'; onNavigate: (ke
           <Plus size={16} />
           新建监控
         </button>
+      </div>
+      <div className="encouragement-ticker" aria-live="polite">
+        <span className="encouragement-icon"><Activity size={15} /></span>
+        <div className="encouragement-window">
+          <span className="encouragement-text" key={encouragement}>{encouragement}</span>
+        </div>
       </div>
       <section className="stats-grid">
         {stats.map(([label, value, note, Icon, tone]) => (

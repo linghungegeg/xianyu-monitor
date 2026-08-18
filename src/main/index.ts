@@ -110,22 +110,30 @@ function requestQuit(): void {
 app.setName('懒人闲鱼监控')
 app.setPath('userData', process.env.XIANYU_MONITOR_USER_DATA ? resolve(process.env.XIANYU_MONITOR_USER_DATA) : join(app.getPath('appData'), 'XianyuMonitor'))
 
-app.whenReady().then(() => {
-  database = new MonitorDatabase()
-  monitor = new XianyuMonitor(database, (status) => {
-    mainWindow?.webContents.send('launcher:status', status)
-    refreshTrayMenu()
+const singleInstanceLock = app.requestSingleInstanceLock()
+
+if (!singleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', showMainWindow)
+
+  app.whenReady().then(() => {
+    database = new MonitorDatabase()
+    monitor = new XianyuMonitor(database, (status) => {
+      mainWindow?.webContents.send('launcher:status', status)
+      refreshTrayMenu()
+    })
+    registerIpc()
+    createTray()
+    createWindow()
+    void monitor.restore()
+
+    app.on('activate', showMainWindow)
   })
-  registerIpc()
-  createTray()
-  createWindow()
-  void monitor.restore()
 
-  app.on('activate', showMainWindow)
-})
-
-app.on('before-quit', (event) => {
-  if (shutdownPromise) return
-  event.preventDefault()
-  requestQuit()
-})
+  app.on('before-quit', (event) => {
+    if (shutdownPromise) return
+    event.preventDefault()
+    requestQuit()
+  })
+}

@@ -1,10 +1,11 @@
 import Fastify from 'fastify'
 import type { FastifyInstance } from 'fastify'
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomUUID, timingSafeEqual, verify } from 'node:crypto'
+import { createHash, createHmac, randomUUID, timingSafeEqual, verify } from 'node:crypto'
 import type { TokenDomain, SubjectKind } from './security.ts'
-import { createRefreshToken, hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from './security.ts'
+import { createRefreshToken, decryptProviderKey, encryptProviderKey, hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from './security.ts'
 
-export type Sql = { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }
+export type Queryable = { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }
+export type Sql = Queryable & { transaction?: <T>(callback: (sql: Queryable) => Promise<T>) => Promise<T> }
 export type Domains = Record<SubjectKind, TokenDomain>
 export type ApiOptions = {
   allowedOrigins?: readonly string[]
@@ -27,19 +28,17 @@ type SnapshotPayload = { v: 1; resource: string; at: string }
 type ListContext = ParsedListQuery & { snapshot: string; snapshotAt: string; cursorKey?: [string, string] }
 type ListQuerySpec = { text: string; values: unknown[] }
 
-function providerSecret(secret: string): Buffer { return createHash('sha256').update(`${secret}:provider-config`).digest() }
-function encryptProviderKey(value: string, secret: string): string {
-  const iv = Buffer.from(randomUUID().replaceAll('-', ''), 'hex').subarray(0, 12)
-  const cipher = createCipheriv('aes-256-gcm', providerSecret(secret), iv)
-  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
-  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64')
-}
-function decryptProviderKey(value: string | null, secret: string): string | null {
-  if (!value) return null
+async function withTransaction<T>(sql: Sql, callback: (transaction: Queryable) => Promise<T>): Promise<T> {
+  if (sql.transaction) return sql.transaction(callback)
+  await sql.query('BEGIN')
   try {
-    const bytes = Buffer.from(value, 'base64'); const decipher = createDecipheriv('aes-256-gcm', providerSecret(secret), bytes.subarray(0, 12)); decipher.setAuthTag(bytes.subarray(12, 28))
-    return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8')
-  } catch { return null }
+    const result = await callback(sql)
+    await sql.query('COMMIT')
+    return result
+  } catch (error) {
+    await sql.query('ROLLBACK')
+    throw error
+  }
 }
 function credentialValid(value: unknown): value is string { return typeof value === 'string' && value.length >= 6 && value.length <= 20 }
 type ListPlan = { resource: string; page: (context: ListContext, subjectId: string) => ListQuerySpec; count: (context: ListContext, subjectId: string) => ListQuerySpec }
@@ -2845,15 +2844,17 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
         }
         if (!claimBatchId) throw new Error('发布计划领取幂等声明失败')
       }
-      const batchState = await sql.query('SELECT status FROM supply.publish_claim_batches WHERE id=$1 AND client_id=$2 AND user_id=$3', [claimBatchId, claims.sub, client.user_id])
-      if (!batchState.rows[0]) throw new Error('发布计划领取批次不存在')
-      if (String(batchState.rows[0].status) !== 'completed') {
-        const due = await sql.query(`WITH candidates AS (
+      await withTransaction(sql, async (transaction) => {
+        const batchState = await transaction.query('SELECT status FROM supply.publish_claim_batches WHERE id=$1 AND client_id=$2 AND user_id=$3 FOR UPDATE', [claimBatchId, claims.sub, client.user_id])
+        if (!batchState.rows[0]) throw new Error('发布计划领取批次不存在')
+        if (String(batchState.rows[0].status) === 'completed') return
+        const due = await transaction.query(`WITH candidates AS (
               SELECT p.id
               FROM supply.publish_plans p
               WHERE p.user_id=$1 AND p.status='planned' AND p.scheduled_at <= now()
               ORDER BY p.scheduled_at ASC,p.id ASC
               LIMIT $2
+              FOR UPDATE SKIP LOCKED
             ), claimed AS (
               UPDATE supply.publish_plans p
               SET status='claimed',claimed_by_client_id=$3,claimed_at=now(),updated_at=now()
@@ -2862,22 +2863,22 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
               RETURNING p.id
             )
               SELECT id FROM claimed`, [client.user_id, claimLimit, claims.sub])
-          for (const row of due.rows) {
-            await sql.query(`INSERT INTO supply.publish_plan_claims (id,claim_batch_id,plan_id,user_id,client_id,claimed_at)
-              VALUES ($1,$2,$3,$4,$5,now())
-              ON CONFLICT (plan_id) DO NOTHING
-              RETURNING plan_id`, [randomUUID(), claimBatchId, row.id, client.user_id, claims.sub])
-          }
+        for (const row of due.rows) {
+          await transaction.query(`INSERT INTO supply.publish_plan_claims (id,claim_batch_id,plan_id,user_id,client_id,claimed_at)
+            VALUES ($1,$2,$3,$4,$5,now())
+            ON CONFLICT (plan_id) DO NOTHING
+            RETURNING plan_id`, [randomUUID(), claimBatchId, row.id, client.user_id, claims.sub])
+        }
         if (due.rows.length) {
           const updatedIds = due.rows.map((row) => String(row.id))
-          await sql.query(`UPDATE supply.publish_plans
+          await transaction.query(`UPDATE supply.publish_plans
             SET claimed_by_client_id=NULL,claimed_at=NULL,status='planned',updated_at=now()
             WHERE user_id=$1 AND id = ANY($2::uuid[]) AND id NOT IN (
               SELECT plan_id FROM supply.publish_plan_claims WHERE claim_batch_id=$3
             )`, [client.user_id, updatedIds, claimBatchId])
         }
-        await sql.query("UPDATE supply.publish_claim_batches SET status='completed' WHERE id=$1 AND client_id=$2 AND status='processing'", [claimBatchId, claims.sub])
-      }
+        await transaction.query("UPDATE supply.publish_claim_batches SET status='completed' WHERE id=$1 AND client_id=$2 AND status='processing'", [claimBatchId, claims.sub])
+      })
       const delivered = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",p.status,c.claimed_at AS "claimedAt"
         FROM supply.publish_plan_claims c
         JOIN supply.publish_plans p ON p.id=c.plan_id

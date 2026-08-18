@@ -1,4 +1,4 @@
-import { argon2, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { argon2, createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose'
 
 export type SubjectKind = 'user' | 'admin' | 'collector'
@@ -13,6 +13,25 @@ export type AccessClaims = JWTPayload & {
   subjectKind: SubjectKind
   sessionId: string
   clientId?: string
+}
+
+function providerSecret(secret: string): Buffer { return createHash('sha256').update(`${secret}:provider-config`).digest() }
+
+export function encryptProviderKey(value: string, secret: string): string {
+  const iv = Buffer.from(randomUUID().replaceAll('-', ''), 'hex').subarray(0, 12)
+  const cipher = createCipheriv('aes-256-gcm', providerSecret(secret), iv)
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64')
+}
+
+export function decryptProviderKey(value: string | null, secret: string): string | null {
+  if (!value) return null
+  try {
+    const bytes = Buffer.from(value, 'base64')
+    const decipher = createDecipheriv('aes-256-gcm', providerSecret(secret), bytes.subarray(0, 12))
+    decipher.setAuthTag(bytes.subarray(12, 28))
+    return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8')
+  } catch { return null }
 }
 
 const textEncoder = new TextEncoder()
