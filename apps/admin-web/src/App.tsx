@@ -207,7 +207,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
     <form className="auth-form" onSubmit={submit}>
       <label>账号<input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} /></label>
       <label>密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} type="password" /></label>
-      <label className="remember-password"><input checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} type="checkbox" /><span>记住账号和密码</span></label>
+      <label className="remember-password"><input checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} type="checkbox" /><span>记住密码</span></label>
       {message && <p className="auth-error" role="alert">{message}</p>}
       <button className="primary auth-submit" disabled={submitting} type="submit"><ShieldCheck size={16} />{submitting ? '正在登录' : '登录'}</button>
     </form>

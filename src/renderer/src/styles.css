@@ -89,7 +89,7 @@ button:disabled { cursor: not-allowed; }
   place-items: center;
   border-radius: 6px;
 }
-.panel-icon { width: 40px; height: 40px; color: #d8842d; background: #fff1df; }
+.panel-icon { width: 40px; height: 40px; color: #2563eb; background: #eff6ff; }
 .launcher-auth-card h1, .control-panel h2, .panel-heading h2 { margin: 0; color: #222c34; font-size: 16px; font-weight: 700; }
 .control-summary p, .panel-heading p { margin: 5px 0 0; color: #64748b; font-size: 12px; line-height: 1.5; }
 .launcher-auth-card label { display: grid; gap: 6px; color: #475569; font-size: 12px; font-weight: 600; }
@@ -104,9 +104,9 @@ button:disabled { cursor: not-allowed; }
   border-radius: 5px;
   outline: none;
 }
-.launcher-auth-card input:not([type="checkbox"]):focus { border-color: #d8842d; box-shadow: 0 0 0 3px #fff1df; }
+.launcher-auth-card input:not([type="checkbox"]):focus { border-color: #2563eb; box-shadow: 0 0 0 3px #dbeafe; }
 .launcher-remember { display: flex !important; align-items: center; justify-content: flex-end; gap: 7px !important; color: #7b858c !important; font-weight: 400 !important; }
-.launcher-remember input { width: 14px; height: 14px; margin: 0; accent-color: #d8842d; }
+.launcher-remember input { width: 14px; height: 14px; margin: 0; accent-color: #2563eb; }
 
 .primary-button, .secondary-button, .icon-button {
   display: inline-flex;
@@ -117,9 +117,9 @@ button:disabled { cursor: not-allowed; }
   border-radius: 5px;
   font-weight: 600;
 }
-.primary-button { padding: 0 14px; color: #fff; background: #d8842d; border: 1px solid #d8842d; }
-.primary-button:hover:not(:disabled) { background: #bd6f1d; border-color: #bd6f1d; }
-.primary-button:disabled { color: #fff; background: #eab87f; border-color: #eab87f; }
+.primary-button { padding: 0 14px; color: #fff; background: #2563eb; border: 1px solid #2563eb; }
+.primary-button:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+.primary-button:disabled { color: #fff; background: #93c5fd; border-color: #93c5fd; }
 .secondary-button { padding: 0 14px; color: #475569; background: #fff; border: 1px solid #cbd5e1; }
 .secondary-button:hover:not(:disabled) { color: #1e293b; background: #f8fafc; }
 .secondary-button:disabled { color: #94a3b8; background: #f8fafc; border-color: #e2e8f0; }

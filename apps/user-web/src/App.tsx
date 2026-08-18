@@ -1074,7 +1074,7 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
           </label>
           <label className="remember-password">
             <input type="checkbox" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} />
-            <span>记住账号和密码</span>
+            <span>记住密码</span>
           </label>
           {error && (
             <p className="form-error" role="alert">
