@@ -16,6 +16,7 @@
     "test:phase2:cloud": "node --experimental-strip-types tools/phase2/cloud-api-integration.mjs",
     "test:phase2:supply": "node --experimental-strip-types tools/phase2/supply-publish-plan-integration.mjs",
     "test:phase3:cloud": "node --experimental-strip-types tools/phase3/collector-api-integration.mjs",
+    "test:phase3:supply": "node --experimental-strip-types tools/phase3/supply-publish-claim-integration.mjs",
     "test:phase4:cloud": "node --experimental-strip-types tools/phase4/cloud-task-integration.mjs",
     "test:phase5:cloud": "node --experimental-strip-types tools/phase5/cloud-seller-monitor-integration.mjs",
     "test:phase3:desktop": "npm run build && node --experimental-strip-types tools/phase3/electron-runtime-smoke.mjs",

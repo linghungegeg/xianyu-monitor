@@ -123,6 +123,16 @@ export class MonitorDatabase {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox (next_attempt_at, created_at, id);
+      CREATE TABLE IF NOT EXISTS supply_publish_attempts (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        claim_batch_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('claimed', 'needs_attention')),
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_supply_publish_attempts_plan ON supply_publish_attempts (plan_id, created_at DESC, id DESC);
       CREATE TABLE IF NOT EXISTS cached_monitor_tasks (
         id TEXT PRIMARY KEY,
         rule_json TEXT NOT NULL,
@@ -377,6 +387,13 @@ export class MonitorDatabase {
     const delayMs = Math.min(60 * 60_000, Math.max(5_000, 2 ** Math.min(attempts, 8) * 1_000))
     this.db.prepare('UPDATE outbox SET attempts = ?, next_attempt_at = ? WHERE id = ?')
       .run(attempts, new Date(Date.now() + delayMs).toISOString(), id)
+  }
+
+  recordSupplyPublishAttempt(input: { id: string; planId: string; claimBatchId: string; status: 'claimed' | 'needs_attention'; message: string }): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`INSERT INTO supply_publish_attempts (id,plan_id,claim_batch_id,status,message,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,message=excluded.message,updated_at=excluded.updated_at`)
+      .run(input.id, input.planId, input.claimBatchId, input.status, input.message, now, now)
   }
 
   syncMonitorTasks(tasks: readonly CachedMonitorTask[]): void {

@@ -24,6 +24,7 @@ import {
 
 const GOOFISH_HOME = process.env.XIANYU_LOGIN_URL ?? 'https://www.goofish.com/'
 const GOOFISH_SEARCH = process.env.XIANYU_SEARCH_URL ?? 'https://www.goofish.com/search'
+const GOOFISH_PUBLISH = process.env.XIANYU_PUBLISH_URL ?? 'https://www.goofish.com/'
 const REQUEST_TIMEOUT_MS = 10_000
 const PAGE_TIMEOUT_MS = 15_000
 const TOKEN_RENEW_WINDOW_MS = 2 * 60_000
@@ -40,6 +41,7 @@ const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com']
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
 type EntitlementResponse = { allowed?: boolean }
 type TaskResponse = { items?: unknown[]; snapshotAt?: string }
+type SupplyClaimResponse = { claimBatchId?: string; plans?: Array<{ id?: string; materialSnapshot?: unknown }> }
 type DeviceKey = { publicKey: string; privateKey: ReturnType<typeof createPrivateKey> }
 
 class CloudRequestError extends Error {
@@ -317,6 +319,7 @@ export class XianyuMonitor {
         if (!this.running) return
         await this.scanTask(task)
       }
+      await this.prepareDueSupplyPlans()
       const clientId = PHASE6_UPLOAD_ENABLED ? this.db.getState(STATE_CLIENT_ID) : null
       if (clientId) this.db.enqueueMarketBatch(clientId)
       if (this.running) await this.flushOutbox()
@@ -336,6 +339,42 @@ export class XianyuMonitor {
     if (!Array.isArray(snapshot.items)) throw new Error('云端任务快照无效')
     this.db.syncMonitorTasks(snapshot.items.map(parseTask))
     this.lastTaskSyncAt = Date.now()
+  }
+
+  private async prepareDueSupplyPlans(): Promise<void> {
+    const clientId = this.db.getState(STATE_CLIENT_ID)
+    if (!clientId) return
+    const claimIdempotencyKey = `collector:${clientId}:${new Date().toISOString().slice(0, 16)}`
+    const claim = await this.request<SupplyClaimResponse>(this.collectorApiBase, '/v1/supply/publish-plans/claim', {
+      method: 'POST', token: this.accessToken, body: { schemaVersion: 1, deviceId: clientId, idempotencyKey: claimIdempotencyKey, limit: 1 }
+    })
+    if (!claim.claimBatchId || !Array.isArray(claim.plans)) return
+    for (const plan of claim.plans) {
+      if (!plan.id) continue
+      const attemptId = randomUUID()
+      this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'claimed', message: '已领取发布计划，等待本机发布页处理' })
+      try {
+        const page = await this.openPublishPage()
+        await this.goto(page, GOOFISH_PUBLISH, '无法打开闲鱼发布页，请检查网络后重试')
+        const attention = await this.publishPageNeedsAttention(page)
+        this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message: attention })
+        this.db.addLog('info', `发布计划 ${plan.id} 已领取，${attention}`)
+      } catch (error) {
+        this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message: this.safeMessage(error, '发布页打开失败') })
+      }
+    }
+  }
+
+  private async openPublishPage(): Promise<Page> {
+    return this.newProfilePage()
+  }
+
+  private async publishPageNeedsAttention(page: Page): Promise<string> {
+    const url = page.url()
+    if (!url.includes('goofish.com')) return '发布页地址未通过本机校验'
+    const text = compact(await page.locator('body').innerText().catch(() => ''))
+    if (/登录|扫码|验证|安全校验|人机/.test(text)) return '需要在本机 Chrome 完成登录或安全校验'
+    return '已打开本机闲鱼发布页，本阶段不自动提交商品'
   }
 
   private async scanTask(task: CachedMonitorTask): Promise<void> {

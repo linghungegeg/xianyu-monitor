@@ -92,6 +92,7 @@ type SupplyPublishPlanInput = {
   idempotencyKey: string
   schedule: { mode: 'immediate' | 'scheduled' | 'random_window'; scheduledAt: string; windowStart?: string; windowEnd?: string }
 }
+type SupplyPublishClaimInput = { deviceId: string; idempotencyKey: string; limit: number }
 
 class ListRequestError extends Error {
   code: string
@@ -125,6 +126,7 @@ const supplyImportKeys = new Set(['schemaVersion', 'sourceType', 'sourceFormat',
 const supplyMaterialPatchKeys = new Set(['title', 'description', 'price', 'mainImages', 'detailImages', 'sku', 'attributes', 'status'])
 const supplyPublishPlanKeys = new Set(['schemaVersion', 'materialId', 'idempotencyKey', 'schedule'])
 const supplyPublishScheduleKeys = new Set(['mode', 'scheduledAt', 'windowStart', 'windowEnd'])
+const supplyPublishClaimKeys = new Set(['schemaVersion', 'deviceId', 'idempotencyKey', 'limit'])
 const supplySensitiveKey = /(?:cookie|token|authorization|password|session|profile(?:path)?|chrome|qr(?:code)?|credential|secret)/i
 const supplyCredentialQueryKey = /(?:cookie|token|authorization|password|session|profile|chrome|qr|credential|secret)/i
 const supplyPlatforms = new Set(['goofish', 'pdd', 'taobao', 'tmall', '1688', 'douyin', 'jd', 'amazon'])
@@ -325,6 +327,25 @@ function parseSupplyPublishPlanPatch(value: unknown): { schedule?: SupplyPublish
   if (!Object.keys(input).length) throw new SupplyImportRequestError('至少更新一个发布计划字段')
   if (input.status !== undefined && input.status !== 'cancelled') throw new SupplyImportRequestError('发布计划仅支持取消')
   return { schedule: input.schedule === undefined ? undefined : parseSupplySchedule(input.schedule), status: input.status as 'cancelled' | undefined }
+}
+
+function parseSupplyPublishClaim(value: unknown): SupplyPublishClaimInput {
+  const input = supplyRecord(value, '发布计划领取请求')
+  for (const key of Object.keys(input)) if (!supplyPublishClaimKeys.has(key)) throw new SupplyImportRequestError(`发布计划领取不支持字段 ${key}`)
+  if (input.schemaVersion !== 1) throw new SupplyImportRequestError('发布计划领取只支持 schemaVersion 1')
+  const limit = input.limit === undefined ? 10 : Number(input.limit)
+  if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new SupplyImportRequestError('领取数量必须在 1 到 20 之间')
+  return {
+    deviceId: supplyString(input.deviceId, 'deviceId', 64)!,
+    idempotencyKey: supplyString(input.idempotencyKey, 'idempotencyKey', 256)!,
+    limit
+  }
+}
+
+function supplyClaimSnapshot(value: unknown): Record<string, unknown> {
+  const snapshot = supplyRecord(value, '冻结素材快照')
+  rejectSupplySensitive(snapshot)
+  return snapshot
 }
 
 function supplyStableJson(value: unknown): string {
@@ -2246,6 +2267,83 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
       return await collectorEntitlements(sql, client.user_id)
     } catch (error) {
       return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
+    }
+  })
+  app.post('/v1/supply/publish-plans/claim', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
+    let client: { user_id: string }
+    try {
+      claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      client = await activeCollector(sql, String(claims.sub))
+      await requireCollectorEntitlement(sql, client.user_id)
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
+    }
+    try {
+      const input = parseSupplyPublishClaim(request.body)
+      if (input.deviceId !== String(claims.sub)) return fail(reply, 403, 'deviceId 与授权设备不匹配')
+      const existing = await sql.query(`SELECT b.id,b.status,b.requested_limit
+        FROM supply.publish_claim_batches b
+        WHERE b.client_id=$1 AND b.idempotency_key=$2`, [claims.sub, input.idempotencyKey])
+      let claimBatchId = String(existing.rows[0]?.id ?? '')
+      let duplicate = Boolean(claimBatchId)
+      let claimLimit = Number(existing.rows[0]?.requested_limit ?? input.limit)
+      if (!claimBatchId) {
+        const inserted = await sql.query(`INSERT INTO supply.publish_claim_batches (id,user_id,client_id,idempotency_key,requested_limit,created_at)
+          VALUES ($1,$2,$3,$4,$5,now())
+          ON CONFLICT (client_id,idempotency_key) DO NOTHING
+          RETURNING id`, [randomUUID(), client.user_id, claims.sub, input.idempotencyKey, input.limit])
+        claimBatchId = String(inserted.rows[0]?.id ?? '')
+        duplicate = !claimBatchId
+        if (!claimBatchId) {
+          const raced = await sql.query('SELECT id,status,requested_limit FROM supply.publish_claim_batches WHERE client_id=$1 AND idempotency_key=$2', [claims.sub, input.idempotencyKey])
+          claimBatchId = String(raced.rows[0]?.id ?? '')
+          claimLimit = Number(raced.rows[0]?.requested_limit ?? input.limit)
+        }
+        if (!claimBatchId) throw new Error('发布计划领取幂等声明失败')
+      }
+      const batchState = await sql.query('SELECT status FROM supply.publish_claim_batches WHERE id=$1 AND client_id=$2 AND user_id=$3', [claimBatchId, claims.sub, client.user_id])
+      if (!batchState.rows[0]) throw new Error('发布计划领取批次不存在')
+      if (String(batchState.rows[0].status) !== 'completed') {
+        const due = await sql.query(`WITH candidates AS (
+              SELECT p.id
+              FROM supply.publish_plans p
+              WHERE p.user_id=$1 AND p.status='planned' AND p.scheduled_at <= now()
+              ORDER BY p.scheduled_at ASC,p.id ASC
+              LIMIT $2
+            ), claimed AS (
+              UPDATE supply.publish_plans p
+              SET status='claimed',claimed_by_client_id=$3,claimed_at=now(),updated_at=now()
+              FROM candidates c
+              WHERE p.id=c.id AND p.status='planned'
+              RETURNING p.id
+            )
+              SELECT id FROM claimed`, [client.user_id, claimLimit, claims.sub])
+          for (const row of due.rows) {
+            await sql.query(`INSERT INTO supply.publish_plan_claims (id,claim_batch_id,plan_id,user_id,client_id,claimed_at)
+              VALUES ($1,$2,$3,$4,$5,now())
+              ON CONFLICT (plan_id) DO NOTHING
+              RETURNING plan_id`, [randomUUID(), claimBatchId, row.id, client.user_id, claims.sub])
+          }
+        if (due.rows.length) {
+          const updatedIds = due.rows.map((row) => String(row.id))
+          await sql.query(`UPDATE supply.publish_plans
+            SET claimed_by_client_id=NULL,claimed_at=NULL,status='planned',updated_at=now()
+            WHERE user_id=$1 AND id = ANY($2::uuid[]) AND id NOT IN (
+              SELECT plan_id FROM supply.publish_plan_claims WHERE claim_batch_id=$3
+            )`, [client.user_id, updatedIds, claimBatchId])
+        }
+        await sql.query("UPDATE supply.publish_claim_batches SET status='completed' WHERE id=$1 AND client_id=$2 AND status='processing'", [claimBatchId, claims.sub])
+      }
+      const delivered = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",c.claimed_at AS "claimedAt"
+        FROM supply.publish_plan_claims c
+        JOIN supply.publish_plans p ON p.id=c.plan_id
+        WHERE c.claim_batch_id=$1 AND c.client_id=$2 AND c.user_id=$3
+        ORDER BY p.scheduled_at ASC,p.id ASC`, [claimBatchId, claims.sub, client.user_id])
+      const items = delivered.rows.map((row) => ({ ...row, materialSnapshot: supplyClaimSnapshot(row.materialSnapshot) }))
+      return { schemaVersion: 1, claimBatchId, deviceId: String(claims.sub), duplicate, items }
+    } catch (error) {
+      return fail(reply, 400, error instanceof Error ? error.message : '发布计划领取失败')
     }
   })
   app.get('/v1/tasks', async (request, reply) => {
