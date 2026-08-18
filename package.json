@@ -12,6 +12,7 @@
     "serve:cloud": "node --experimental-strip-types services/cloud/src/main.ts",
     "test:phase0:contract": "node tools/phase0/postgres-contract-test.mjs",
     "test:phase0:stress": "node tools/phase0/sqlite-synthetic-load.mjs --items=100000 --devices=4 --batch-size=250 --database=temp",
+    "test:phase1:cloud": "node --experimental-strip-types tools/phase1/material-import-integration.mjs",
     "test:phase2:cloud": "node --experimental-strip-types tools/phase2/cloud-api-integration.mjs",
     "test:phase3:cloud": "node --experimental-strip-types tools/phase3/collector-api-integration.mjs",
     "test:phase4:cloud": "node --experimental-strip-types tools/phase4/cloud-task-integration.mjs",

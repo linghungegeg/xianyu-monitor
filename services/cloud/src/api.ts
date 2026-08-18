@@ -63,6 +63,20 @@ type SellerMonitorTaskInput = {
   intervalSeconds?: number
   status?: SellerMonitorTaskStatus
 }
+type SupplySourceType = 'xianyu' | 'general'
+type SupplyMaterial = {
+  sourceType: SupplySourceType
+  sourcePlatform: string
+  sourceItemId: string
+  sourceUrl: string
+  title: string
+  description?: string
+  price: number
+  mainImages: string[]
+  detailImages: string[]
+  sku?: unknown
+  attributes: Record<string, unknown>
+}
 
 class ListRequestError extends Error {
   code: string
@@ -82,6 +96,8 @@ class MonitorTaskRequestError extends Error {
   }
 }
 
+class SupplyImportRequestError extends Error {}
+
 const monitorTaskSorts = new Set<MonitorTaskRule['sort']>(['comprehensive', 'newly_reduced', 'newly_published', 'price_asc', 'price_desc'])
 const monitorTaskFilterKeys = new Set(['condition', 'delivery', 'shipping', 'guarantee', 'newOnly'])
 const monitorTaskRuleKeys = new Set(['keyword', 'categoryPath', 'sort', 'minPrice', 'maxPrice', 'region', 'filters', 'includeWords', 'excludeWords', 'pageLimit'])
@@ -90,6 +106,10 @@ const MAX_ACTIVE_SEARCH_TASKS = 20
 const MAX_ACTIVE_SELLER_TASKS = 5
 const sellerMonitorTaskInputKeys = new Set(['platform', 'platformSellerId', 'profileUrl', 'intervalSeconds', 'status'])
 const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com'] as const
+const supplyImportKeys = new Set(['schemaVersion', 'sourceType', 'sourceFormat', 'idempotencyKey', 'snapshots'])
+const supplySensitiveKey = /(?:cookie|token|authorization|password|session|profile(?:path)?|chrome|qr(?:code)?|credential|secret)/i
+const supplyCredentialQueryKey = /(?:cookie|token|authorization|password|session|profile|chrome|qr|credential|secret)/i
+const supplyPlatforms = new Set(['goofish', 'pdd', 'taobao', 'tmall', '1688', 'douyin', 'jd', 'amazon'])
 
 function body<T>(value: unknown): T { return value as T }
 function refreshHash(token: string): string { return createHash('sha256').update(token).digest('hex') }
@@ -101,6 +121,117 @@ function isUniqueViolation(error: unknown): boolean { return Boolean(error && ty
 function monitorTaskRecord(value: unknown, name: string): Record<string, unknown> {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw new MonitorTaskRequestError(`${name} 必须是对象`)
   return value as Record<string, unknown>
+}
+
+function supplyRecord(value: unknown, name: string): Record<string, unknown> {
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw new SupplyImportRequestError(`${name} 必须是对象`)
+  return value as Record<string, unknown>
+}
+
+function supplyString(value: unknown, name: string, maxLength: number, required = true): string | undefined {
+  if (value === undefined || value === null) {
+    if (required) throw new SupplyImportRequestError(`${name} 必填`)
+    return undefined
+  }
+  if (typeof value !== 'string') throw new SupplyImportRequestError(`${name} 必须是字符串`)
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if ((required && !normalized) || normalized.length > maxLength) throw new SupplyImportRequestError(`${name} 长度无效`)
+  return normalized || undefined
+}
+
+function rejectSupplySensitive(value: unknown, depth = 0): void {
+  if (depth > 12) throw new SupplyImportRequestError('快照嵌套层级过深')
+  if (Array.isArray(value)) {
+    if (value.length > 200) throw new SupplyImportRequestError('快照数组过长')
+    value.forEach((entry) => rejectSupplySensitive(entry, depth + 1))
+    return
+  }
+  if (!value || typeof value !== 'object') return
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (supplySensitiveKey.test(key)) throw new SupplyImportRequestError('快照包含仅限本机的敏感字段')
+    rejectSupplySensitive(entry, depth + 1)
+  }
+}
+
+function supplyPublicUrl(value: unknown, name: string): string {
+  const raw = supplyString(value, name, 2_048)!
+  let url: URL
+  try { url = new URL(raw) } catch { throw new SupplyImportRequestError(`${name} 必须是公开地址`) }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new SupplyImportRequestError(`${name} 必须是公开地址`)
+  for (const key of [...url.searchParams.keys()]) if (supplyCredentialQueryKey.test(key)) url.searchParams.delete(key)
+  url.hash = ''
+  return url.toString()
+}
+
+function supplyImages(value: unknown, name: string, max: number): string[] {
+  const values = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]
+  if (values.length > max) throw new SupplyImportRequestError(`${name} 数量无效`)
+  const result: string[] = []
+  for (const entry of values) {
+    const candidate = typeof entry === 'string' ? entry : entry && typeof entry === 'object' ? (entry as Record<string, unknown>).url ?? (entry as Record<string, unknown>).imageUrl : undefined
+    const normalized = supplyPublicUrl(candidate, name)
+    if (!result.includes(normalized)) result.push(normalized)
+  }
+  return result
+}
+
+function supplyPrice(value: unknown, name: string): number {
+  const numberValue = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
+  if (!Number.isFinite(numberValue) || numberValue < 0 || numberValue > 100_000_000) throw new SupplyImportRequestError(`${name} 必须是有效价格`)
+  return Number(numberValue.toFixed(2))
+}
+
+function supplyPlatformFromUrl(url: string): string | undefined {
+  const host = new URL(url).hostname.toLowerCase()
+  if (host.includes('goofish.com')) return 'goofish'
+  if (host.includes('yangkeduo.com') || host.includes('pinduoduo.com')) return 'pdd'
+  if (host.includes('tmall.com')) return 'tmall'
+  if (host.includes('taobao.com')) return 'taobao'
+  if (host.includes('1688.com')) return '1688'
+  if (host.includes('douyin.com') || host.includes('jinritemai.com')) return 'douyin'
+  if (host.includes('jd.com')) return 'jd'
+  if (host.includes('amazon.')) return 'amazon'
+  return undefined
+}
+
+function parseSupplySnapshot(value: unknown): SupplyMaterial {
+  const snapshot = supplyRecord(value, '快照')
+  rejectSupplySensitive(snapshot)
+  const pddGoods = (((snapshot.store as Record<string, unknown> | undefined)?.initDataObj as Record<string, unknown> | undefined)?.goods as Record<string, unknown> | undefined)
+  if (pddGoods) {
+    const sourceItemId = supplyString(pddGoods.goodsID ?? pddGoods.goodsId, 'PDD 商品 ID', 128)!
+    const title = supplyString(pddGoods.goodsName ?? pddGoods.goods_name, 'PDD 标题', 240)!
+    const mainImages = supplyImages(pddGoods.topGallery ?? [pddGoods.hdThumbUrl, pddGoods.thumbUrl].filter(Boolean), 'PDD 主图', 10)
+    if (!mainImages.length) throw new SupplyImportRequestError('PDD 主图至少需要一张')
+    const rawPrice = pddGoods.minOnSaleGroupPrice ?? pddGoods.minGroupPrice ?? pddGoods.groupPrice ?? pddGoods.price
+    const price = supplyPrice(typeof rawPrice === 'number' && Number.isInteger(rawPrice) && rawPrice >= 100 ? rawPrice / 100 : rawPrice, 'PDD 价格')
+    return { sourceType: 'general', sourcePlatform: 'pdd', sourceItemId, sourceUrl: `https://mobile.yangkeduo.com/goods.html?goods_id=${encodeURIComponent(sourceItemId)}`, title, price, mainImages, detailImages: supplyImages(pddGoods.detailGallery, 'PDD 详情图', 120), sku: pddGoods.skus, attributes: {} }
+  }
+  const data = supplyRecord(snapshot.data ?? snapshot.Data ?? snapshot, '快照')
+  const itemInfo = supplyRecord(data.itemInfo ?? data.item ?? snapshot.itemInfo ?? {}, '快照 itemInfo')
+  const sourceUrl = snapshot.sourceUrl ?? snapshot.url ? supplyPublicUrl(snapshot.sourceUrl ?? snapshot.url, 'sourceUrl') : undefined
+  const sourcePlatform = supplyString(snapshot.sourcePlatform ?? snapshot.platform ?? (data.itemInfo ? 'taobao' : sourceUrl ? supplyPlatformFromUrl(sourceUrl) : undefined), '来源平台', 32, false)
+  const sourceItemId = supplyString(snapshot.sourceItemId ?? snapshot.sourceGoodsId ?? snapshot.goodsId ?? snapshot.itemId ?? snapshot.platformItemId ?? itemInfo.itemId ?? itemInfo.item_id, '商品 ID', 128)!
+  if (!sourcePlatform || !supplyPlatforms.has(sourcePlatform)) throw new SupplyImportRequestError('不支持的来源平台')
+  const canonicalUrl = sourceUrl ?? (sourcePlatform === 'taobao' ? `https://item.taobao.com/item.htm?id=${encodeURIComponent(sourceItemId)}` : sourcePlatform === 'tmall' ? `https://detail.tmall.com/item.htm?id=${encodeURIComponent(sourceItemId)}` : undefined)
+  if (!canonicalUrl) throw new SupplyImportRequestError('快照缺少 sourceUrl')
+  const title = supplyString(snapshot.title ?? snapshot.goodsName ?? itemInfo.title ?? itemInfo.itemName, '商品标题', 240)!
+  const mainImages = supplyImages(snapshot.mainImages ?? snapshot.images ?? snapshot.image ?? itemInfo.images ?? itemInfo.itemImages, '主图', 10)
+  if (!mainImages.length) throw new SupplyImportRequestError('主图至少需要一张')
+  const itemPrice = data.itemPrice && typeof data.itemPrice === 'object' ? data.itemPrice as Record<string, unknown> : {}
+  const attributes = snapshot.attrs && !Array.isArray(snapshot.attrs) && typeof snapshot.attrs === 'object' ? snapshot.attrs as Record<string, unknown> : {}
+  return { sourceType: sourcePlatform === 'goofish' ? 'xianyu' : 'general', sourcePlatform, sourceItemId, sourceUrl: canonicalUrl, title, description: supplyString(snapshot.description ?? snapshot.desc, '描述', 10_000, false), price: supplyPrice(snapshot.price ?? itemInfo.price ?? itemPrice.promotionPrice ?? itemPrice.originalPrice, '价格'), mainImages, detailImages: supplyImages(snapshot.detailImages, '详情图', 120), sku: snapshot.sku ?? snapshot.skuJson ?? data.skuCore ?? data.itemSkuDO, attributes }
+}
+
+function parseSupplyImport(value: unknown): { sourceType: SupplySourceType; sourceFormat: 'parsed_snapshot_json' | 'parsed_snapshot_jsonl'; idempotencyKey: string; snapshots: unknown[] } {
+  const input = supplyRecord(value, '导入请求')
+  for (const key of Object.keys(input)) if (!supplyImportKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (input.schemaVersion !== 1) throw new SupplyImportRequestError('只支持 schemaVersion 1')
+  if (input.sourceType !== 'xianyu' && input.sourceType !== 'general') throw new SupplyImportRequestError('sourceType 只允许 xianyu 或 general')
+  if (input.sourceFormat !== 'parsed_snapshot_json' && input.sourceFormat !== 'parsed_snapshot_jsonl') throw new SupplyImportRequestError('只接受已解析 JSON 或 JSONL 快照，不接受链接文本')
+  const idempotencyKey = supplyString(input.idempotencyKey, 'idempotencyKey', 256)!
+  if (!Array.isArray(input.snapshots) || input.snapshots.length < 1 || input.snapshots.length > 100) throw new SupplyImportRequestError('snapshots 必须是 1 到 100 项的已解析快照数组')
+  return { sourceType: input.sourceType, sourceFormat: input.sourceFormat, idempotencyKey, snapshots: input.snapshots }
 }
 
 function monitorTaskString(value: unknown, name: string, maxLength: number): string {
@@ -540,6 +671,14 @@ const userSellerMonitorsListConfig: ListConfig = {
   allowedFilters: ['q', 'status', 'platform', 'platform_seller_id']
 }
 
+const userSupplyMaterialsListConfig: ListConfig = {
+  resource: 'user.supply_materials',
+  defaultSort: 'updated_at',
+  sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', recent: 'updated_at', title: 'title', title_asc: 'title', price: 'price', id: 'id' },
+  filterAliases: { search: 'q', sourceType: 'source_type', sourcePlatform: 'source_platform' },
+  allowedFilters: ['q', 'source_type', 'source_platform', 'status']
+}
+
 const sellerItemsListConfig: ListConfig = { ...marketItemsListConfig, resource: 'user.seller_items' }
 
 const sellerEventsListConfig: ListConfig = {
@@ -726,6 +865,23 @@ const userMonitorsPlan = tablePlan({
     const conditions = ['t.created_at <= $1', 't.user_id = $2']
     if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`LOWER(t.rule_json::text) LIKE LOWER($${values.length})`) }
     if (context.filters.status) { values.push(context.filters.status); conditions.push(`t.status = $${values.length}`) }
+    return conditions
+  }
+})
+
+const userSupplyMaterialsPlan = tablePlan({
+  resource: userSupplyMaterialsListConfig.resource,
+  from: 'supply.materials m',
+  select: 'm.id, m.source_type AS "sourceType", m.source_platform AS "sourcePlatform", m.source_item_id AS "sourceItemId", m.source_url AS "sourceUrl", m.title, m.description, m.price::float8 AS price, m.main_images AS "mainImages", m.detail_images AS "detailImages", m.sku, m.attributes, m.current_version AS "currentVersion", m.status, m.import_batch_id AS "importBatchId", m.created_at AS "createdAt", m.updated_at AS "updatedAt"',
+  idExpression: 'm.id::text',
+  sortExpressions: { created_at: 'm.created_at', updated_at: 'm.updated_at', title: 'm.title', price: 'm.price', id: 'm.id::text' },
+  conditions: (context, values, subjectId) => {
+    values.push(subjectId)
+    const conditions = ['m.created_at <= $1', 'm.user_id = $2']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`(LOWER(m.title) LIKE LOWER($${values.length}) OR LOWER(m.source_item_id) LIKE LOWER($${values.length}))`) }
+    if (context.filters.source_type) { values.push(context.filters.source_type); conditions.push(`m.source_type = $${values.length}`) }
+    if (context.filters.source_platform) { values.push(context.filters.source_platform); conditions.push(`m.source_platform = $${values.length}`) }
+    if (context.filters.status) { values.push(context.filters.status); conditions.push(`m.status = $${values.length}`) }
     return conditions
   }
 })
@@ -1253,6 +1409,62 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
       return fail(reply, 401, '未授权')
     }
   })
+  app.post('/v1/supply/imports', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = parseSupplyImport(request.body)
+      const existing = (await sql.query('SELECT id,result FROM supply.import_batches WHERE user_id=$1 AND idempotency_key=$2', [claims.sub, input.idempotencyKey])).rows[0]
+      if (existing) return { ...(existing.result as Record<string, unknown>), batchId: existing.id, duplicate: true }
+
+      const parsed = input.snapshots.map((snapshot, recordIndex) => {
+        try {
+          const material = parseSupplySnapshot(snapshot)
+          if (material.sourceType !== input.sourceType) throw new SupplyImportRequestError('sourceType 与快照来源平台不一致')
+          return { material, recordIndex }
+        } catch (error) {
+          const safeDetail = error instanceof SupplyImportRequestError ? error.message : '快照解析失败'
+          return { recordIndex, safeDetail }
+        }
+      })
+      const payloadHash = createHash('sha256').update(JSON.stringify(parsed.map((entry) => entry.material ?? { recordIndex: entry.recordIndex, rejected: true }))).digest('hex')
+      const batchId = randomUUID()
+      await sql.query(`INSERT INTO supply.import_batches (id,user_id,idempotency_key,source_type,source_format,payload_hash,received_count,inserted_count,deduplicated_count,failed_count,result,created_at,completed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,0,0,0,'{}'::jsonb,now(),now())`, [batchId, claims.sub, input.idempotencyKey, input.sourceType, input.sourceFormat, payloadHash, input.snapshots.length])
+      let insertedCount = 0
+      let deduplicatedCount = 0
+      const rejections: Array<{ recordIndex: number; reasonCode: string }> = []
+      for (const entry of parsed) {
+        if (!entry.material) {
+          await sql.query('INSERT INTO supply.import_rejections (id,batch_id,record_index,reason_code,safe_detail,created_at) VALUES ($1,$2,$3,$4,$5,now())', [randomUUID(), batchId, entry.recordIndex, 'INVALID_SNAPSHOT', entry.safeDetail ?? '快照解析失败'])
+          rejections.push({ recordIndex: entry.recordIndex, reasonCode: 'INVALID_SNAPSHOT' })
+          continue
+        }
+        const material = entry.material
+        const snapshot = { schemaVersion: 1, ...material, sku: material.sku ?? null }
+        const contentHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+        const existingMaterial = (await sql.query('SELECT id,current_version FROM supply.materials WHERE user_id=$1 AND source_platform=$2 AND source_item_id=$3', [claims.sub, material.sourcePlatform, material.sourceItemId])).rows[0]
+        if (!existingMaterial) {
+          const materialId = randomUUID()
+          await sql.query(`INSERT INTO supply.materials (id,user_id,source_type,source_platform,source_item_id,source_url,title,description,price,main_images,detail_images,sku,attributes,import_batch_id,current_version,status,created_at,updated_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13::jsonb,$14,1,'draft',now(),now())`, [materialId, claims.sub, material.sourceType, material.sourcePlatform, material.sourceItemId, material.sourceUrl, material.title, material.description ?? null, material.price, JSON.stringify(material.mainImages), JSON.stringify(material.detailImages), JSON.stringify(material.sku ?? null), JSON.stringify(material.attributes), batchId])
+          await sql.query('INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at) VALUES ($1,$2,1,$3,$4::jsonb,$5,now())', [randomUUID(), materialId, contentHash, JSON.stringify(snapshot), batchId])
+          insertedCount += 1
+          continue
+        }
+        const materialId = String(existingMaterial.id)
+        const knownVersion = await sql.query('SELECT 1 FROM supply.material_versions WHERE material_id=$1 AND content_hash=$2', [materialId, contentHash])
+        if (knownVersion.rows[0]) { deduplicatedCount += 1; continue }
+        const nextVersion = Number(existingMaterial.current_version) + 1
+        await sql.query(`UPDATE supply.materials SET source_type=$1,source_url=$2,title=$3,description=$4,price=$5,main_images=$6::jsonb,detail_images=$7::jsonb,sku=$8::jsonb,attributes=$9::jsonb,import_batch_id=$10,current_version=$11,updated_at=now() WHERE id=$12 AND user_id=$13`, [material.sourceType, material.sourceUrl, material.title, material.description ?? null, material.price, JSON.stringify(material.mainImages), JSON.stringify(material.detailImages), JSON.stringify(material.sku ?? null), JSON.stringify(material.attributes), batchId, nextVersion, materialId, claims.sub])
+        await sql.query('INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,now())', [randomUUID(), materialId, nextVersion, contentHash, JSON.stringify(snapshot), batchId])
+        insertedCount += 1
+      }
+      const result = { receivedCount: input.snapshots.length, insertedCount, deduplicatedCount, failedCount: rejections.length, rejections, duplicate: false }
+      await sql.query('UPDATE supply.import_batches SET inserted_count=$1,deduplicated_count=$2,failed_count=$3,result=$4::jsonb,completed_at=now() WHERE id=$5', [insertedCount, deduplicatedCount, rejections.length, JSON.stringify(result), batchId])
+      return { batchId, ...result }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '素材导入失败') }
+  })
   app.post('/v1/monitors', async (request, reply) => {
     let claims
     try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
@@ -1428,6 +1640,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
     return { deleted: true }
   })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
+  registerListEndpoint(app, ['/v1/supply/materials'], sql, domains.user, 'user', userSupplyMaterialsListConfig, userSupplyMaterialsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/seller-monitors'], sql, domains.user, 'user', userSellerMonitorsListConfig, userSellerMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/sellers', '/v1/market/sellers'], sql, domains.user, 'user', userSellersListConfig, userSellersPlan, 401, '未授权')
