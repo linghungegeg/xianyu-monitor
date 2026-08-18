@@ -12,7 +12,7 @@ const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase6-desktop-cloud-${process.pid}-${Date.now()}`)
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase6-desktop-'))
 const email = 'phase6-desktop@example.test'
-const password = 'phase6-desktop-password-123'
+const password = 'p6-desktop-123456'
 const domains = {
   user: { issuer: 'https://user.phase6.desktop', audience: 'user-api', secret: 'user-phase6-desktop-secret-012345678901234567890' },
   admin: { issuer: 'https://admin.phase6.desktop', audience: 'admin-api', secret: 'admin-phase6-desktop-secret-012345678901234567890' },

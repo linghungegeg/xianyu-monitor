@@ -11,7 +11,7 @@ const workspace = join(import.meta.dirname, '..', '..')
 const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase3-desktop-cloud-${process.pid}-${Date.now()}`)
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase3-desktop-'))
-const password = 'phase3-runtime-password-123'
+const password = 'p3-runtime-123456'
 const email = 'runtime@example.test'
 const domains = {
   user: { issuer: 'https://user.runtime.test', audience: 'user-api', secret: 'user-phase3-runtime-secret-012345678901234567890' },

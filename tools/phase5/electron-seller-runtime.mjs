@@ -11,7 +11,7 @@ const workspace = join(import.meta.dirname, '..', '..')
 const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase5-desktop-cloud-${process.pid}-${Date.now()}`)
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase5-desktop-'))
-const password = 'phase5-runtime-password-123'
+const password = 'p5-runtime-123456'
 const cookieValue = 'phase5-cookie-local-only'
 const email = 'phase5-runtime@example.test'
 const sellerId = 'seller-phase5-001'
@@ -294,7 +294,7 @@ async function run() {
       method: 'POST',
       url: '/v1/seller-monitors',
       headers: auth(userAccess),
-      payload: { platform: 'goofish', platformSellerId: sellerId, profileUrl: `${userApiUrl}/seller?userId=${sellerId}`, intervalSeconds: 60 }
+      payload: { platform: 'goofish', platformSellerId: sellerId, profileUrl: `${userApiUrl}/seller?userId=${sellerId}`, intervalSeconds: 1800 }
     })
     assert(created.statusCode === 200, `卖家监控任务创建失败：${created.statusCode} ${created.body}`)
     const taskId = json(created).id

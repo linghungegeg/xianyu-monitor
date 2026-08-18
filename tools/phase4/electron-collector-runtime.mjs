@@ -11,7 +11,7 @@ const workspace = join(import.meta.dirname, '..', '..')
 const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase4-desktop-cloud-${process.pid}-${Date.now()}`)
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase4-desktop-'))
-const password = 'phase4-runtime-password-123'
+const password = 'p4-runtime-123456'
 const email = 'phase4-runtime@example.test'
 const domains = {
   user: { issuer: 'https://user.runtime.test', audience: 'user-api', secret: 'user-phase4-runtime-secret-012345678901234567890' },
@@ -196,7 +196,7 @@ async function run() {
           keyword: 'MacBook', categoryPath: ['数码', '笔记本', 'Apple'], sort: 'newly_published', minPrice: 50, maxPrice: 500,
           region: '上海', filters: { condition: '二手' }, includeWords: ['MacBook'], excludeWords: ['故障'], pageLimit: 2
         },
-        intervalSeconds: 60
+        intervalSeconds: 1800
       }
     })
     assert(createTask.statusCode === 200, `监控任务创建失败：${createTask.statusCode} ${createTask.body}`)

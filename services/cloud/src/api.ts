@@ -1,12 +1,16 @@
 import Fastify from 'fastify'
 import type { FastifyInstance } from 'fastify'
-import { createHash, createHmac, randomUUID, timingSafeEqual, verify } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomUUID, timingSafeEqual, verify } from 'node:crypto'
 import type { TokenDomain, SubjectKind } from './security.ts'
 import { createRefreshToken, hashPassword, signAccessToken, verifyAccessToken, verifyPassword } from './security.ts'
 
 export type Sql = { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>> }> }
 export type Domains = Record<SubjectKind, TokenDomain>
-export type ApiOptions = { allowedOrigins?: readonly string[]; sellerProfileHosts?: readonly string[] }
+export type ApiOptions = {
+  allowedOrigins?: readonly string[]
+  sellerProfileHosts?: readonly string[]
+  modelListProxy?: (input: { baseUrl: string; modelReference: string; apiKeyCiphertext: string | null }) => Promise<unknown>
+}
 
 type UserRow = { id: string; email_normalized: string; password_hash: string; status: string }
 type SessionRow = { id: string; subject_type: SubjectKind; subject_id: string; family_id: string | null; revoked_at: string | null; expires_at: string }
@@ -19,6 +23,22 @@ type CursorPayload = { v: 1; resource: string; filterHash: string; sort: string;
 type SnapshotPayload = { v: 1; resource: string; at: string }
 type ListContext = ParsedListQuery & { snapshot: string; snapshotAt: string; cursorKey?: [string, string] }
 type ListQuerySpec = { text: string; values: unknown[] }
+
+function providerSecret(secret: string): Buffer { return createHash('sha256').update(`${secret}:provider-config`).digest() }
+function encryptProviderKey(value: string, secret: string): string {
+  const iv = Buffer.from(randomUUID().replaceAll('-', ''), 'hex').subarray(0, 12)
+  const cipher = createCipheriv('aes-256-gcm', providerSecret(secret), iv)
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()])
+  return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64')
+}
+function decryptProviderKey(value: string | null, secret: string): string | null {
+  if (!value) return null
+  try {
+    const bytes = Buffer.from(value, 'base64'); const decipher = createDecipheriv('aes-256-gcm', providerSecret(secret), bytes.subarray(0, 12)); decipher.setAuthTag(bytes.subarray(12, 28))
+    return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8')
+  } catch { return null }
+}
+function credentialValid(value: unknown): value is string { return typeof value === 'string' && value.length >= 6 && value.length <= 20 }
 type ListPlan = { resource: string; page: (context: ListContext, subjectId: string) => ListQuerySpec; count: (context: ListContext, subjectId: string) => ListQuerySpec }
 type ListPlanBuilder = (context: ListContext, subjectId: string) => ListPlan
 type MonitorTaskStatus = 'active' | 'paused'
@@ -157,7 +177,7 @@ function parseMonitorTaskInput(value: unknown, creating: boolean): MonitorTaskIn
   if (creating && source.rule === undefined) throw new MonitorTaskRequestError('rule 必填')
   if (creating && source.intervalSeconds === undefined) throw new MonitorTaskRequestError('intervalSeconds 必填')
   const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
-  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 60 到 86400 的整数')
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 1_800 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 1800 到 86400 的整数')
   const status = source.status === undefined ? undefined : source.status
   if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
   return {
@@ -234,7 +254,7 @@ function parseSellerMonitorTaskInput(value: unknown, creating: boolean, allowedH
     ? sanitizeSellerProfileUrl(suppliedProfileUrl, profileSellerId)
     : (platformSellerId ? canonicalSellerProfileUrl(platform ?? 'goofish', platformSellerId) : undefined)
   const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
-  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 60 到 86400 的整数')
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 1_800 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 1800 到 86400 的整数')
   const status = source.status === undefined ? undefined : source.status
   if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
 
@@ -562,6 +582,14 @@ const adminAiJobsListConfig: ListConfig = {
   allowedFilters: ['q', 'status', 'requesting_user_id', 'capability_id', 'failure_reason', 'from', 'to']
 }
 
+const adminAnnouncementsListConfig: ListConfig = {
+  resource: 'admin.announcements',
+  defaultSort: 'updated_at',
+  sortAliases: { updated_at: 'updated_at', created_at: 'created_at', recent: 'updated_at', status: 'enabled', title: 'title', id: 'id' },
+  filterAliases: { userId: 'user_id' },
+  allowedFilters: ['q', 'enabled', 'scope', 'user_id']
+}
+
 const adminCapacityListConfig: ListConfig = {
   resource: 'admin.capacity',
   defaultSort: 'id',
@@ -771,8 +799,8 @@ const adminQualityPlan = tablePlan({
 
 const adminUploadsPlan = tablePlan({
   resource: adminUploadsListConfig.resource,
-  select: 'b.id, b.client_id AS "clientId", c.user_id AS "userId", b.idempotency_key AS "idempotencyKey", b.schema_version AS "schemaVersion", b.batch_sequence AS "batchSequence", b.cursor_start AS "cursorStart", b.cursor_end AS "cursorEnd", b.status, b.accepted_count AS "acceptedCount", b.rejected_count AS "rejectedCount", b.received_count AS "receivedCount", b.deduplicated_count AS "deduplicatedCount", b.inserted_count AS "insertedCount", b.failed_count AS "failedCount", b.retry_count AS "retryCount", b.quality_status AS "qualityStatus", b.quality_result AS "qualityResult", b.last_error AS "lastError", b.received_at AS "receivedAt", b.completed_at AS "completedAt"',
-  from: 'ops.ingest_batches b JOIN identity.collector_clients c ON c.id = b.client_id',
+  select: 'b.id, b.client_id AS "clientId", c.user_id AS "userId", u.email_normalized AS "userAccount", b.idempotency_key AS "idempotencyKey", b.schema_version AS "schemaVersion", b.batch_sequence AS "batchSequence", b.cursor_start AS "cursorStart", b.cursor_end AS "cursorEnd", b.status, b.accepted_count AS "acceptedCount", b.rejected_count AS "rejectedCount", b.received_count AS "receivedCount", b.deduplicated_count AS "deduplicatedCount", b.inserted_count AS "insertedCount", b.failed_count AS "failedCount", b.retry_count AS "retryCount", b.quality_status AS "qualityStatus", b.quality_result AS "qualityResult", b.last_error AS "lastError", b.received_at AS "receivedAt", b.completed_at AS "completedAt"',
+  from: 'ops.ingest_batches b JOIN identity.collector_clients c ON c.id = b.client_id JOIN identity.users u ON u.id = c.user_id',
   idExpression: 'b.id::text',
   sortExpressions: { received_at: 'b.received_at', status: 'b.status', idempotency_key: 'b.idempotency_key', batch_sequence: 'b.batch_sequence', quality_status: 'b.quality_status', id: 'b.id::text' },
   conditions: (context, values) => {
@@ -796,8 +824,8 @@ const adminUploadsPlan = tablePlan({
 
 const adminAiJobsPlan = tablePlan({
   resource: adminAiJobsListConfig.resource,
-  from: 'ai.jobs j',
-  select: 'j.id, j.requesting_user_id AS "requestingUserId", j.idempotency_key AS "idempotencyKey", j.capability_id AS "capabilityId", j.prompt_version_id AS "promptVersionId", j.input_object_key AS "inputObjectKey", j.status, j.retry_count AS "retryCount", j.last_error AS "lastError", j.cost_quantity AS "costQuantity", j.queued_at AS "queuedAt", j.started_at AS "startedAt", j.finished_at AS "finishedAt", j.billing_reference AS "billingReference", j.created_at AS "createdAt"',
+  from: 'ai.jobs j JOIN identity.users u ON u.id = j.requesting_user_id JOIN ai.prompt_versions p ON p.id = j.prompt_version_id LEFT JOIN ai.provider_configs cfg ON cfg.provider_code = p.provider_reference',
+  select: 'j.id, j.requesting_user_id AS "requestingUserId", u.email_normalized AS "requestingUserAccount", j.idempotency_key AS "idempotencyKey", j.capability_id AS "capabilityId", j.prompt_version_id AS "promptVersionId", j.scope, p.provider_reference AS "provider", COALESCE(cfg.model_reference, p.model_reference) AS "model", j.input_object_key AS "inputObjectKey", j.status, j.retry_count AS "retryCount", j.last_error AS "lastError", j.cost_quantity AS "costQuantity", j.queued_at AS "queuedAt", j.started_at AS "startedAt", j.finished_at AS "finishedAt", j.billing_reference AS "billingReference", j.created_at AS "createdAt"',
   idExpression: 'j.id::text',
   sortExpressions: { created_at: 'j.created_at', status: 'j.status', billing_reference: "COALESCE(j.billing_reference, '')", id: 'j.id::text' },
   conditions: (context, values) => {
@@ -809,6 +837,22 @@ const adminAiJobsPlan = tablePlan({
     if (context.filters.failure_reason) { values.push(`%${context.filters.failure_reason}%`); conditions.push(`j.last_error ILIKE $${values.length}`) }
     if (context.filters.from) { values.push(context.filters.from); conditions.push(`j.created_at >= $${values.length}::timestamptz`) }
     if (context.filters.to) { values.push(context.filters.to); conditions.push(`j.created_at < $${values.length}::timestamptz`) }
+    return conditions
+  }
+})
+
+const adminAnnouncementsPlan = tablePlan({
+  resource: adminAnnouncementsListConfig.resource,
+  from: 'ops.announcements a LEFT JOIN identity.users u ON u.id = a.user_id',
+  select: 'a.id, a.title, a.body, a.scope, a.user_id AS "userId", u.email_normalized AS "userAccount", a.enabled, a.starts_at AS "startsAt", a.ends_at AS "endsAt", a.created_at AS "createdAt", a.updated_at AS "updatedAt"',
+  idExpression: 'a.id::text',
+  sortExpressions: { updated_at: 'a.updated_at', created_at: 'a.created_at', enabled: 'a.enabled::text', title: 'a.title', id: 'a.id::text' },
+  conditions: (context, values) => {
+    const conditions = ['a.updated_at <= $1']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`(LOWER(a.title) LIKE LOWER($${values.length}) OR LOWER(a.body) LIKE LOWER($${values.length}))`) }
+    if (context.filters.enabled) { values.push(context.filters.enabled); conditions.push(`a.enabled = $${values.length}::boolean`) }
+    if (context.filters.scope) { values.push(context.filters.scope); conditions.push(`a.scope = $${values.length}`) }
+    if (context.filters.user_id) { values.push(context.filters.user_id); conditions.push(`a.user_id = $${values.length}`) }
     return conditions
   }
 })
@@ -958,8 +1002,15 @@ async function listAdminUsers(sql: Sql, context: ListContext, secret: string) {
   const sortExpression = ({ created_at: 'u.created_at', email: 'u.email_normalized', status: 'u.status', id: 'u.id::text' } as Record<string, string>)[context.sort]
   const pageValues: unknown[] = [context.snapshotAt]
   const pageWhere = adminUsersConditions(context, pageValues, true).join(' AND ')
-  const rows = await sql.query(`SELECT u.id, u.email_normalized AS email, u.status, u.created_at AS "createdAt", ${sortExpression} AS cursor_sort_value, u.id::text AS cursor_id
-    FROM identity.users u WHERE ${pageWhere}
+  const rows = await sql.query(`SELECT u.id, u.email_normalized AS email, u.email_normalized AS account, u.status, (u.status = 'active') AS enabled,
+    COALESCE(points.balance, 0) AS points,
+    jsonb_build_object(
+      'monitorCount', (SELECT COUNT(*)::int FROM ops.monitor_tasks t WHERE t.user_id = u.id),
+      'sellerMonitorCount', (SELECT COUNT(*)::int FROM ops.seller_monitor_tasks t WHERE t.user_id = u.id),
+      'deviceCount', (SELECT COUNT(*)::int FROM identity.collector_clients c WHERE c.user_id = u.id),
+      'uploadBatchCount', (SELECT COUNT(*)::int FROM ops.ingest_batches b JOIN identity.collector_clients c ON c.id = b.client_id WHERE c.user_id = u.id)
+    ) AS "userData", u.created_at AS "createdAt", ${sortExpression} AS cursor_sort_value, u.id::text AS cursor_id
+    FROM identity.users u LEFT JOIN billing.user_points points ON points.user_id = u.id WHERE ${pageWhere}
     ORDER BY ${sortExpression} ${context.order.toUpperCase()}, u.id ${context.order.toUpperCase()} LIMIT ${context.limit + 1}`, pageValues)
   const countValues: unknown[] = [context.snapshotAt]
   const countWhere = adminUsersConditions(context, countValues, false).join(' AND ')
@@ -1010,11 +1061,23 @@ async function collectorEntitlements(sql: Sql, userId: string) {
   return { items: grants.rows, allowed: taskLimit > 0, taskLimit }
 }
 
+async function requireCollectorEntitlement(sql: Sql, userId: string) {
+  const entitlements = await collectorEntitlements(sql, userId)
+  if (!entitlements.allowed) throw new Error('当前账号没有可用采集权益')
+  return entitlements
+}
+
 async function authenticateToken(sql: Sql, domain: TokenDomain, kind: SubjectKind, token: string) {
   const claims = await verifyAccessToken(domain, kind, token)
   const session = (await sql.query('SELECT id, subject_type, subject_id, revoked_at, expires_at FROM identity.auth_refresh_sessions WHERE id = $1', [claims.sessionId])).rows[0] as SessionRow | undefined
   if (!session || session.subject_type !== kind || session.subject_id !== claims.sub || session.revoked_at || new Date(String(session.expires_at)) <= new Date()) throw new Error('会话已失效')
-  if (kind === 'collector') await activeCollector(sql, String(claims.sub))
+  if (kind === 'collector') {
+    await activeCollector(sql, String(claims.sub))
+  }
+  if (kind === 'user') {
+    const user = (await sql.query('SELECT status FROM identity.users WHERE id=$1', [claims.sub])).rows[0] as { status?: string } | undefined
+    if (!user || user.status !== 'active') throw new Error('账号已禁用')
+  }
   return claims
 }
 
@@ -1030,7 +1093,14 @@ async function refresh(sql: Sql, domain: TokenDomain, kind: SubjectKind, refresh
     await sql.query('UPDATE identity.auth_refresh_sessions SET replay_detected_at = now(), revoked_at = now() WHERE (family_id = $1 OR id = $1) AND revoked_at IS NULL', [familyId])
     throw new Error('刷新令牌重放')
   }
-  if (kind === 'collector') await activeCollector(sql, session.subject_id)
+  if (kind === 'collector') {
+    const client = await activeCollector(sql, session.subject_id)
+    await requireCollectorEntitlement(sql, client.user_id)
+  }
+  if (kind === 'user') {
+    const user = (await sql.query('SELECT status FROM identity.users WHERE id=$1', [session.subject_id])).rows[0] as { status?: string } | undefined
+    if (!user || user.status !== 'active') throw new Error('账号已禁用')
+  }
   return rotateRefresh(sql, domain, kind, session, clientId ?? (kind === 'collector' ? session.subject_id : undefined))
 }
 
@@ -1118,25 +1188,37 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   app.get('/health', async () => ({ service: 'user-api', ok: true }))
   app.post('/v1/auth/register', async (request, reply) => {
     const input = body<{ email?: string; password?: string }>(request.body); const email = input.email?.trim().toLowerCase()
-    if (!email || !input.password) return fail(reply, 400, '邮箱和密码必填')
+    if (!email || !credentialValid(input.password)) return fail(reply, 400, '账号和密码均需为 6 到 20 个字符')
     try { const id = randomUUID(); await sql.query('INSERT INTO identity.users (id,email_normalized,password_hash,status,created_at) VALUES ($1,$2,$3,\'active\',now())', [id, email, await hashPassword(input.password)]); return issue(sql, domains.user, 'user', id) } catch { return fail(reply, 409, '用户已存在') }
   })
   app.post('/v1/auth/login', async (request, reply) => {
     const input = body<{ email?: string; password?: string }>(request.body); const email = input.email?.trim().toLowerCase()
     const found = await sql.query('SELECT id,email_normalized,password_hash,status FROM identity.users WHERE email_normalized=$1', [email]); const user = found.rows[0] as UserRow | undefined
-    if (!user || user.status !== 'active' || !input.password || !(await verifyPassword(input.password, user.password_hash))) return fail(reply, 401, '账号或密码错误')
+    if (!user || user.status !== 'active' || !credentialValid(input.password) || !(await verifyPassword(input.password, user.password_hash))) return fail(reply, 401, '账号或密码错误')
     return issue(sql, domains.user, 'user', user.id)
   })
   app.post('/v1/auth/refresh', async (request, reply) => { try { return await refresh(sql, domains.user, 'user', body<{ refreshToken: string }>(request.body).refreshToken) } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') } })
   app.get('/v1/me', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); return { id: claims.sub } } catch { return fail(reply, 401, '未授权') } })
   app.get('/v1/me/entitlements', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); const rows = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [claims.sub]); return { items: rows.rows } } catch { return fail(reply, 401, '未授权') } })
+  app.get('/v1/announcements', async (request, reply) => {
+    try {
+      const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization)
+      const result = await sql.query(`SELECT id,title,body,starts_at AS "startsAt",ends_at AS "endsAt",updated_at AS "updatedAt"
+        FROM ops.announcements
+        WHERE enabled=true AND starts_at<=now() AND (ends_at IS NULL OR ends_at>now()) AND (scope='global' OR user_id=$1)
+        ORDER BY starts_at DESC, id DESC`, [claims.sub])
+      return { items: result.rows }
+    } catch { return fail(reply, 401, '未授权') }
+  })
   app.post('/v1/ai/jobs', async (request, reply) => {
     let claims: Awaited<ReturnType<typeof authenticate>>
     try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
     try {
-      const input = body<{ capabilityCode?: string; input?: unknown; idempotencyKey?: string; promptVersion?: number }>(request.body)
+      const input = body<{ capabilityCode?: string; input?: unknown; idempotencyKey?: string; promptVersion?: number; scope?: string }>(request.body)
       const code = input.capabilityCode?.trim(); const key = input.idempotencyKey?.trim()
       if (!code || !key || key.length > 256) return fail(reply, 400, 'AI 任务参数无效')
+      const scope = input.scope ?? 'personal'
+      if (scope !== 'personal' && scope !== 'global') return fail(reply, 400, 'AI 任务范围无效')
       const capability = (await sql.query(`SELECT id, published_version, entitlement FROM ai.capabilities WHERE code=$1 AND published_version IS NOT NULL`, [code])).rows[0]
       if (!capability) return fail(reply, 404, 'AI 能力未发布')
       const entitlement = await sql.query(`SELECT 1 FROM billing.entitlement_grants WHERE user_id=$1 AND capability=$2 AND limit_value > 0 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now()) LIMIT 1`, [claims.sub, capability.entitlement])
@@ -1148,16 +1230,17 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
           INSERT INTO ai.job_idempotency (requesting_user_id,idempotency_key,job_id,created_at)
           VALUES ($1,$2,$3,now()) ON CONFLICT DO NOTHING RETURNING job_id
         ), created AS (
-          INSERT INTO ai.jobs (id,created_at,requesting_user_id,idempotency_key,capability_id,prompt_version_id,input_payload,status,queued_at)
-          SELECT job_id,now(),$1,$2,$4,$5,$6::jsonb,'queued',now() FROM claim RETURNING id
+          INSERT INTO ai.jobs (id,created_at,requesting_user_id,idempotency_key,capability_id,prompt_version_id,input_payload,scope,status,queued_at)
+          SELECT job_id,now(),$1,$2,$4,$5,$6::jsonb,$7,'queued',now() FROM claim RETURNING id
         )
         SELECT id,false AS duplicate FROM created
         UNION ALL
         SELECT job_id,true AS duplicate FROM ai.job_idempotency WHERE requesting_user_id=$1 AND idempotency_key=$2 AND NOT EXISTS (SELECT 1 FROM claim)
-        LIMIT 1`, [claims.sub, key, id, capability.id, prompt.id, JSON.stringify(input.input ?? {})])
+        LIMIT 1`, [claims.sub, key, id, capability.id, prompt.id, JSON.stringify(input.input ?? {}), scope])
       const job = claimed.rows[0]
       if (!job) throw new Error('AI 任务幂等声明失败')
-      return reply.code(202).send({ id: job.id, status: 'queued', duplicate: Boolean(job.duplicate) })
+      const canonicalScope = (await sql.query('SELECT scope FROM ai.jobs WHERE id=$1', [job.id])).rows[0]?.scope ?? scope
+      return reply.code(202).send({ id: job.id, status: 'queued', scope: canonicalScope, duplicate: Boolean(job.duplicate) })
     } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : 'AI 任务创建失败') }
   })
   app.post('/v1/collector-devices/:clientId/revoke', async (request, reply) => {
@@ -1361,7 +1444,7 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
   app.get('/health', async () => ({ service: 'admin-api', ok: true }))
   app.post('/v1/auth/login', async (request, reply) => {
     const input = body<{ email?: string; password?: string }>(request.body); const found = await sql.query('SELECT id,email_normalized,password_hash,status,role,mfa_state FROM identity.admin_users WHERE email_normalized=$1', [input.email?.trim().toLowerCase()]); const admin = found.rows[0] as (UserRow & { role: string; mfa_state: string }) | undefined
-    if (!admin || admin.status !== 'active' || admin.mfa_state !== 'enrolled' || !input.password || !(await verifyPassword(input.password, admin.password_hash))) return fail(reply, 401, '管理员认证失败')
+    if (!admin || admin.status !== 'active' || admin.mfa_state !== 'enrolled' || !credentialValid(input.password) || !(await verifyPassword(input.password, admin.password_hash))) return fail(reply, 401, '管理员认证失败')
     return issue(sql, domains.admin, 'admin', admin.id)
   })
   app.post('/v1/auth/refresh', async (request, reply) => {
@@ -1371,22 +1454,114 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
     } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') }
   })
   app.get('/v1/me', async (request, reply) => { try { const claims = await authenticate(sql, domains.admin, 'admin', request.headers.authorization); const rows = await sql.query('SELECT role FROM identity.admin_users WHERE id=$1', [claims.sub]); return { id: claims.sub, role: rows.rows[0]?.role } } catch { return fail(reply, 403, '管理员权限不足') } })
+  app.patch('/v1/admin/users/:id/status', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    const input = body<{ enabled?: boolean }>(request.body)
+    if (typeof input.enabled !== 'boolean') return fail(reply, 400, '用户状态参数无效')
+    const status = input.enabled ? 'active' : 'disabled'
+    const userId = String((request.params as { id?: string }).id ?? '')
+    const result = await sql.query(`UPDATE identity.users SET status=$2,disabled_at=CASE WHEN $2='disabled' THEN now() ELSE NULL END
+      WHERE id=$1 RETURNING id,email_normalized AS account,status,(status='active') AS enabled,disabled_at AS "disabledAt"`, [userId, status])
+    if (result.rows[0] && status === 'disabled') await sql.query("UPDATE identity.auth_refresh_sessions SET revoked_at=now() WHERE subject_type='user' AND subject_id=$1 AND revoked_at IS NULL", [userId])
+    return result.rows[0] ?? fail(reply, 404, '用户不存在')
+  })
+  app.patch('/v1/admin/users/:id/points', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    const input = body<{ delta?: number }>(request.body)
+    if (!Number.isInteger(input.delta) || input.delta === 0 || Math.abs(Number(input.delta)) > 1_000_000) return fail(reply, 400, '积分调整值无效')
+    const userId = String((request.params as { id?: string }).id ?? '')
+    const current = await sql.query(`SELECT u.id,COALESCE(points.balance,0)::int AS balance
+      FROM identity.users u LEFT JOIN billing.user_points points ON points.user_id=u.id WHERE u.id=$1`, [userId])
+    if (!current.rows[0]) return fail(reply, 404, '用户不存在')
+    const next = Number(current.rows[0].balance) + Number(input.delta)
+    if (next < 0) return fail(reply, 400, '积分余额不能小于 0')
+    const result = await sql.query(`INSERT INTO billing.user_points (user_id,balance,updated_at)
+      VALUES ($1,$2,now()) ON CONFLICT (user_id) DO UPDATE SET balance=$2,updated_at=now()
+      RETURNING user_id AS id,balance AS points,$3::int AS delta`, [userId, next, input.delta])
+    return result.rows[0]
+  })
+  app.post('/v1/admin/announcements', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    try {
+      const input = body<{ title?: string; body?: string; scope?: string; userId?: string; enabled?: boolean; startsAt?: string; endsAt?: string }>(request.body)
+      const title = input.title?.trim(); const message = input.body?.trim(); const scope = input.scope ?? 'global'
+      if (!title || !message || title.length > 160 || message.length > 8_000 || (scope !== 'global' && scope !== 'personal') || (scope === 'personal' && !input.userId) || (scope === 'global' && input.userId)) return fail(reply, 400, '公告参数无效')
+      const result = await sql.query(`INSERT INTO ops.announcements (id,title,body,scope,user_id,enabled,starts_at,ends_at,created_by,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::timestamptz,now()),$8::timestamptz,$9,now(),now())
+        RETURNING id,title,body,scope,user_id AS "userId",enabled,starts_at AS "startsAt",ends_at AS "endsAt",created_at AS "createdAt",updated_at AS "updatedAt"`, [randomUUID(), title, message, scope, input.userId ?? null, input.enabled === true, input.startsAt ?? null, input.endsAt ?? null, claims.sub])
+      return result.rows[0]
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '公告创建失败') }
+  })
+  app.patch('/v1/admin/announcements/:id', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    try {
+      const input = body<{ title?: string; body?: string; enabled?: boolean; startsAt?: string | null; endsAt?: string | null }>(request.body)
+      const values: unknown[] = [String((request.params as { id?: string }).id ?? '')]
+      const updates = ['updated_at=now()']
+      if (input.title !== undefined) { if (!input.title.trim() || input.title.length > 160) return fail(reply, 400, '公告标题无效'); values.push(input.title.trim()); updates.push(`title=$${values.length}`) }
+      if (input.body !== undefined) { if (!input.body.trim() || input.body.length > 8_000) return fail(reply, 400, '公告内容无效'); values.push(input.body.trim()); updates.push(`body=$${values.length}`) }
+      if (input.enabled !== undefined) { values.push(input.enabled); updates.push(`enabled=$${values.length}`) }
+      if (input.startsAt !== undefined) { values.push(input.startsAt); updates.push(`starts_at=$${values.length}::timestamptz`) }
+      if (input.endsAt !== undefined) { values.push(input.endsAt); updates.push(`ends_at=$${values.length}::timestamptz`) }
+      const result = await sql.query(`UPDATE ops.announcements SET ${updates.join(',')} WHERE id=$1 RETURNING id,title,body,scope,user_id AS "userId",enabled,starts_at AS "startsAt",ends_at AS "endsAt",updated_at AS "updatedAt"`, values)
+      return result.rows[0] ?? fail(reply, 404, '公告不存在')
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '公告更新失败') }
+  })
   app.post('/v1/admin/ai/providers', async (request, reply) => {
     try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
     try {
-      const input = body<{ providerCode?: string; modelReference?: string; apiKeyCiphertext?: string; apiKey?: string; settings?: unknown; status?: string }>(request.body)
-      if (input.apiKey !== undefined || !input.providerCode?.trim() || !input.modelReference?.trim()) return fail(reply, 400, 'AI 提供方参数无效')
+      const input = body<{ providerCode?: string; modelReference?: string; baseUrl?: string; apiKeyCiphertext?: string; apiKey?: string; stream?: boolean; reasoning?: boolean; settings?: unknown; status?: string }>(request.body)
+      if (!input.providerCode?.trim() || !input.modelReference?.trim() || !input.baseUrl?.trim() || (input.apiKey !== undefined && typeof input.apiKey !== 'string')) return fail(reply, 400, 'AI 提供方参数无效')
+      let baseUrl: string
+      try { const parsed = new URL(input.baseUrl.trim()); if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error(); baseUrl = parsed.toString().replace(/\/$/, '') } catch { return fail(reply, 400, 'AI 提供方地址无效') }
       const settings = input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {}
-      const result = await sql.query(`INSERT INTO ai.provider_configs (id,provider_code,model_reference,api_key_ciphertext,settings,status,created_at,updated_at)
-        VALUES ($1,$2,$3,$4,$5::jsonb,$6,now(),now())
-        RETURNING id,provider_code AS "providerCode",model_reference AS "modelReference",settings,status,created_at AS "createdAt",updated_at AS "updatedAt"`, [randomUUID(), input.providerCode.trim(), input.modelReference.trim(), input.apiKeyCiphertext ?? null, JSON.stringify(settings), input.status === 'active' ? 'active' : 'draft'])
+      const apiKeyCiphertext = input.apiKey ? encryptProviderKey(input.apiKey, domains.admin.secret) : input.apiKeyCiphertext ?? null
+      const result = await sql.query(`INSERT INTO ai.provider_configs (id,provider_code,model_reference,base_url,api_key_ciphertext,stream_enabled,reasoning_enabled,settings,status,api_key_updated_at,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5::text,$6,$7,$8::jsonb,$9,CASE WHEN $5::text IS NULL THEN NULL ELSE now() END,now(),now())
+        RETURNING id,provider_code AS "providerCode",model_reference AS "modelReference",base_url AS "baseUrl",stream_enabled AS stream,reasoning_enabled AS reasoning,settings,status,created_at AS "createdAt",updated_at AS "updatedAt"`, [randomUUID(), input.providerCode.trim(), input.modelReference.trim(), baseUrl, apiKeyCiphertext, input.stream === true, input.reasoning === true, JSON.stringify(settings), input.status === 'active' ? 'active' : 'draft'])
       return result.rows[0]
     } catch (error) { return fail(reply, isUniqueViolation(error) ? 409 : 400, isUniqueViolation(error) ? 'AI 提供方已存在' : (error instanceof Error ? error.message : 'AI 提供方创建失败')) }
   })
   app.get('/v1/admin/ai/providers', async (request, reply) => {
     try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
-    const result = await sql.query('SELECT id,provider_code AS "providerCode",model_reference AS "modelReference",settings,status,created_at AS "createdAt",updated_at AS "updatedAt" FROM ai.provider_configs ORDER BY created_at DESC, id DESC')
+    const result = await sql.query('SELECT id,provider_code AS "providerCode",model_reference AS "modelReference",base_url AS "baseUrl",stream_enabled AS stream,reasoning_enabled AS reasoning,settings,status,created_at AS "createdAt",updated_at AS "updatedAt" FROM ai.provider_configs ORDER BY created_at DESC, id DESC')
     return { items: result.rows }
+  })
+  app.get('/v1/admin/ai/providers/:id/models', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    const id = String((request.params as { id?: string }).id ?? '')
+    const found = (await sql.query('SELECT base_url AS "baseUrl",model_reference AS "modelReference",api_key_ciphertext AS "apiKeyCiphertext" FROM ai.provider_configs WHERE id=$1 AND status=\'active\'', [id])).rows[0] as { baseUrl?: string; modelReference?: string; apiKeyCiphertext?: string | null } | undefined
+    if (!found?.baseUrl) return fail(reply, 404, 'AI 提供方不存在或未启用')
+    try {
+      const proxy = options.modelListProxy ?? (async (input: { baseUrl: string; apiKeyCiphertext: string | null }) => {
+        const key = decryptProviderKey(input.apiKeyCiphertext, domains.admin.secret)
+        const response = await fetch(`${input.baseUrl.replace(/\/$/, '')}/models`, { headers: { accept: 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) }, redirect: 'error' })
+        if (!response.ok) throw new Error(`模型列表请求失败 (${response.status})`)
+        return response.json()
+      })
+      const payload = await proxy({ baseUrl: String(found.baseUrl), modelReference: String(found.modelReference ?? ''), apiKeyCiphertext: found.apiKeyCiphertext ?? null })
+      return { items: Array.isArray(payload) ? payload : (payload && typeof payload === 'object' && Array.isArray((payload as { data?: unknown }).data) ? (payload as { data: unknown[] }).data : []) }
+    } catch (error) { return fail(reply, 502, error instanceof Error ? error.message : '模型列表请求失败') }
+  })
+  app.patch('/v1/admin/ai/providers/:id', async (request, reply) => {
+    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
+    try {
+      const input = body<{ modelReference?: string; baseUrl?: string; apiKeyCiphertext?: string; apiKey?: string; stream?: boolean; reasoning?: boolean; settings?: unknown; status?: string }>(request.body)
+      if (input.apiKey !== undefined && typeof input.apiKey !== 'string') return fail(reply, 400, 'AI 提供方参数无效')
+      const values: unknown[] = [String((request.params as { id?: string }).id ?? '')]
+      const updates: string[] = ['updated_at=now()']
+      if (input.modelReference !== undefined) { if (!input.modelReference.trim()) return fail(reply, 400, '模型不能为空'); values.push(input.modelReference.trim()); updates.push(`model_reference=$${values.length}`) }
+      if (input.baseUrl !== undefined) { let parsed: URL; try { parsed = new URL(input.baseUrl.trim()); if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error() } catch { return fail(reply, 400, 'AI 提供方地址无效') }; values.push(parsed.toString().replace(/\/$/, '')); updates.push(`base_url=$${values.length}`) }
+      if (input.apiKey !== undefined) { values.push(encryptProviderKey(input.apiKey, domains.admin.secret)); updates.push(`api_key_ciphertext=$${values.length},api_key_updated_at=now()`) }
+      else if (input.apiKeyCiphertext !== undefined) { values.push(input.apiKeyCiphertext); updates.push(`api_key_ciphertext=$${values.length},api_key_updated_at=now()`) }
+      if (input.stream !== undefined) { values.push(input.stream === true); updates.push(`stream_enabled=$${values.length}`) }
+      if (input.reasoning !== undefined) { values.push(input.reasoning === true); updates.push(`reasoning_enabled=$${values.length}`) }
+      if (input.settings !== undefined) { values.push(JSON.stringify(input.settings && typeof input.settings === 'object' && !Array.isArray(input.settings) ? input.settings : {})); updates.push(`settings=$${values.length}::jsonb`) }
+      if (input.status !== undefined) { if (!['draft', 'active', 'retired'].includes(input.status)) return fail(reply, 400, 'AI 提供方状态无效'); values.push(input.status); updates.push(`status=$${values.length}`) }
+      const result = await sql.query(`UPDATE ai.provider_configs SET ${updates.join(',')} WHERE id=$1 RETURNING id,provider_code AS "providerCode",model_reference AS "modelReference",base_url AS "baseUrl",stream_enabled AS stream,reasoning_enabled AS reasoning,settings,status,created_at AS "createdAt",updated_at AS "updatedAt"`, values)
+      return result.rows[0] ?? fail(reply, 404, 'AI 提供方不存在')
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : 'AI 提供方更新失败') }
   })
   app.post('/v1/admin/ai/capabilities', async (request, reply) => {
     try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
@@ -1435,17 +1610,22 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
   registerListEndpoint(app, ['/v1/quality', '/v1/quality/categories', '/v1/admin/quality'], sql, domains.admin, 'admin', adminQualityListConfig, adminQualityPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/uploads', '/v1/ingest/batches', '/v1/admin/uploads'], sql, domains.admin, 'admin', adminUploadsListConfig, adminUploadsPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/ai', '/v1/ai/jobs', '/v1/admin/ai', '/v1/admin/ai/jobs'], sql, domains.admin, 'admin', adminAiJobsListConfig, adminAiJobsPlan, 403, '管理员权限不足')
+  registerListEndpoint(app, ['/v1/admin/announcements'], sql, domains.admin, 'admin', adminAnnouncementsListConfig, adminAnnouncementsPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/capacity', '/v1/admin/capacity'], sql, domains.admin, 'admin', adminCapacityListConfig, adminCapacityPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/audit', '/v1/audit/logs', '/v1/admin/audit'], sql, domains.admin, 'admin', adminAuditListConfig, adminAuditPlan, 403, '管理员权限不足')
   return app
 }
 
-const phase6SensitiveKeys = new Set(['cookie', 'cookies', 'token', 'accesstoken', 'refreshtoken', 'authorization', 'profile', 'profilepath', 'chromeprofile', 'loginstate', 'accountstate', 'scanloginstate'])
+const phase6SensitiveKeys = ['cookie', 'token', 'authorization', 'profile', 'loginstate', 'accountstate']
 
 function phase6ContainsSensitive(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(phase6ContainsSensitive)
   if (!value || typeof value !== 'object') return false
-  return Object.entries(value as Record<string, unknown>).some(([key, child]) => phase6SensitiveKeys.has(key.toLowerCase()) || phase6ContainsSensitive(child))
+  return Object.entries(value as Record<string, unknown>).some(([key, child]) => {
+    const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+    const profileState = normalized !== 'publicprofile' && (normalized === 'profile' || normalized.endsWith('profilepath') || normalized.includes('chromeprofile') || normalized.includes('browserprofile') || normalized.includes('profiledir'))
+    return phase6SensitiveKeys.some((sensitive) => normalized.includes(sensitive) && sensitive !== 'profile') || profileState || phase6ContainsSensitive(child)
+  })
 }
 
 function phase6Record(value: unknown, name: string): Record<string, unknown> {
@@ -1627,8 +1807,14 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
   app.post('/v1/ingest', async (request, reply) => {
     let claims: Awaited<ReturnType<typeof authenticate>>
     try { claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization) } catch (error) { return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足') }
+    let client: { user_id: string }
     try {
-      const client = await activeCollector(sql, String(claims.sub))
+      client = await activeCollector(sql, String(claims.sub))
+      await requireCollectorEntitlement(sql, client.user_id)
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '当前账号没有可用采集权益')
+    }
+    try {
       const input = parsePhase6Batch(request.body)
       if (input.deviceId !== String(claims.sub)) throw new Error('deviceId 与授权设备不匹配')
       const payloadHash = createHash('sha256').update(JSON.stringify(input)).digest('hex')
@@ -1677,8 +1863,15 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
     }
   })
   app.post('/v1/ingest/media', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
     try {
-      const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      const client = await activeCollector(sql, String(claims.sub))
+      await requireCollectorEntitlement(sql, client.user_id)
+    } catch (error) {
+      return fail(reply, 403, error instanceof Error ? error.message : '当前账号没有可用采集权益')
+    }
+    try {
       const input = phase6Record(request.body, '媒体请求')
       const batchId = phase6Text(input.batchId, 'batchId', 128)
       const batch = (await sql.query('SELECT id FROM ops.ingest_batches WHERE id=$1 AND client_id=$2', [batchId, claims.sub])).rows[0]

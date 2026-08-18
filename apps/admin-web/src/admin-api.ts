@@ -1,4 +1,6 @@
 export type AdminResource = 'users' | 'billing' | 'market' | 'quality' | 'uploads' | 'ai' | 'capacity' | 'audit'
+export type AdminProvider = { id: string; providerCode: string; modelReference: string; baseUrl: string; stream: boolean; reasoning: boolean; settings: unknown; status: string }
+export type AdminAnnouncement = { id: string; title: string; body: string; scope: 'global' | 'personal'; userId?: string | null; enabled: boolean; startsAt: string; endsAt?: string | null }
 export type AdminIdentity = { id: string; role?: string }
 export type AdminSession = { accessToken: string; refreshToken: string; identity: AdminIdentity }
 export type CursorListQuery = { limit: 20 | 50 | 100; cursor?: string; sort: string; order: 'asc' | 'desc'; filters?: Record<string, string | undefined> }
@@ -97,6 +99,24 @@ export class AdminApi {
     return assertPage<T>(await this.request<unknown>(`${resources[resource]}?${params.toString()}`, { method: 'GET', authorized: true }))
   }
 
+  async providers(): Promise<AdminProvider[]> { return (await this.request<{ items: AdminProvider[] }>('/v1/admin/ai/providers', { method: 'GET', authorized: true })).items }
+  async createProvider(input: { providerCode: string; modelReference: string; baseUrl: string; apiKey?: string; apiKeyCiphertext?: string; stream: boolean; reasoning: boolean; settings?: unknown; status: string }): Promise<AdminProvider> {
+    return this.request<AdminProvider>('/v1/admin/ai/providers', { method: 'POST', authorized: true, body: JSON.stringify(input) })
+  }
+  async fetchProviderModels(id: string): Promise<unknown[]> { return (await this.request<{ items: unknown[] }>(`/v1/admin/ai/providers/${encodeURIComponent(id)}/models`, { method: 'GET', authorized: true })).items }
+  async updateProvider(id: string, input: { modelReference: string; baseUrl: string; apiKey?: string; stream: boolean; reasoning: boolean; settings?: unknown; status: string }): Promise<AdminProvider> {
+    return this.request<AdminProvider>(`/v1/admin/ai/providers/${encodeURIComponent(id)}`, { method: 'PATCH', authorized: true, body: JSON.stringify(input) })
+  }
+  async createAnnouncement(input: { title: string; body: string; enabled: boolean }): Promise<AdminAnnouncement> {
+    return this.request<AdminAnnouncement>('/v1/admin/announcements', { method: 'POST', authorized: true, body: JSON.stringify(input) })
+  }
+  async updateUserStatus(id: string, enabled: boolean): Promise<{ id: string; enabled: boolean; status: string }> {
+    return this.request<{ id: string; enabled: boolean; status: string }>(`/v1/admin/users/${encodeURIComponent(id)}/status`, { method: 'PATCH', authorized: true, body: JSON.stringify({ enabled }) })
+  }
+  async adjustUserPoints(id: string, delta: number): Promise<{ id: string; points: number; delta: number }> {
+    return this.request<{ id: string; points: number; delta: number }>(`/v1/admin/users/${encodeURIComponent(id)}/points`, { method: 'PATCH', authorized: true, body: JSON.stringify({ delta }) })
+  }
+
   logout(): void {
     this.session = null
     sessionStorage.removeItem(sessionKey)
@@ -110,7 +130,7 @@ export class AdminApi {
     if (this.session) sessionStorage.setItem(sessionKey, JSON.stringify({ accessToken: this.session.accessToken, refreshToken: this.session.refreshToken }))
   }
 
-  private async request<T>(path: string, options: { method: 'GET' | 'POST'; body?: string; authorized?: boolean; accessToken?: string }): Promise<T> {
+  private async request<T>(path: string, options: { method: 'GET' | 'POST' | 'PATCH'; body?: string; authorized?: boolean; accessToken?: string }): Promise<T> {
     if (!this.baseUrl) throw new AdminApiError('未配置 VITE_ADMIN_API_BASE_URL，无法连接独立 Admin API')
     const headers = new Headers({ Accept: 'application/json' })
     if (options.body) headers.set('Content-Type', 'application/json')

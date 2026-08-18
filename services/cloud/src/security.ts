@@ -35,7 +35,7 @@ function decode(value: string): Buffer {
 }
 
 export async function hashPassword(password: string): Promise<string> {
-  if (password.length < 12) throw new Error('密码至少需要 12 个字符')
+  if (password.length < 6 || password.length > 20) throw new Error('密码需要 6 到 20 个字符')
   const salt = randomBytes(16)
   const derived = await new Promise<Buffer>((resolve, reject) => {
     argon2('argon2id', { message: password, nonce: salt, memory: argon2Memory, passes: argon2Passes, parallelism: argon2Parallelism, tagLength: argon2TagLength }, (error, key) => error ? reject(error) : resolve(Buffer.from(key)))

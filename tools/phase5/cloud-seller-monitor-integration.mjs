@@ -35,7 +35,7 @@ async function applyMigrations(db) {
 }
 
 async function registerUser(userApi, email) {
-  const response = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password: 'phase5-seller-password-123' } })
+  const response = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password: 'p5-seller-123456' } })
   assert(response.statusCode === 200, `用户注册失败：${response.statusCode} ${response.body}`)
   return json(response).accessToken
 }
@@ -70,7 +70,7 @@ async function bindCollector(collectorApi, userAccess, userId) {
 }
 
 async function createSellerTask(userApi, token, payload) {
-  const response = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(token), payload: { intervalSeconds: 600, ...payload } })
+  const response = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(token), payload: { intervalSeconds: 1800, ...payload } })
   assert(response.statusCode === 200, `卖家任务创建失败：${response.statusCode} ${response.body}`)
   return json(response)
 }
@@ -95,14 +95,14 @@ async function run() {
       method: 'POST',
       url: '/v1/seller-monitors',
       headers: auth(userAAccess),
-      payload: { platformSellerId: 'seller-invalid', profileUrl: 'https://www.goofish.com/personal?userId=seller-invalid', cookie: 'forbidden', intervalSeconds: 600 }
+      payload: { platformSellerId: 'seller-invalid', profileUrl: 'https://www.goofish.com/personal?userId=seller-invalid', cookie: 'forbidden', intervalSeconds: 1800 }
     })
     assert(invalidUnknownField.statusCode === 400, '卖家任务白名单未拒绝敏感未知字段')
-    const invalidUrl = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { profileUrl: 'not-a-url', intervalSeconds: 600 } })
+    const invalidUrl = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { profileUrl: 'not-a-url', intervalSeconds: 1800 } })
     assert(invalidUrl.statusCode === 400, '无效公开主页地址未被拒绝')
-    const invalidHost = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { profileUrl: 'https://evil.example/personal?userId=evil', intervalSeconds: 600 } })
+    const invalidHost = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { profileUrl: 'https://evil.example/personal?userId=evil', intervalSeconds: 1800 } })
     assert(invalidHost.statusCode === 400, '非闲鱼域名公开主页未被拒绝')
-    const invalidProfileId = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { profileUrl: 'https://www.goofish.com/personal?foo=bar', intervalSeconds: 600 } })
+    const invalidProfileId = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { profileUrl: 'https://www.goofish.com/personal?foo=bar', intervalSeconds: 1800 } })
     assert(invalidProfileId.statusCode === 400, '无法提取卖家 ID 的主页未被拒绝')
     const missingInterval = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { platformSellerId: 'seller-no-interval' } })
     assert(missingInterval.statusCode === 400, '缺少采集间隔的卖家任务未被拒绝')
@@ -116,12 +116,12 @@ async function run() {
     assert(sanitizedTask.profileUrl === 'https://www.goofish.com/personal?userId=seller-sanitized', '公开主页地址未清除敏感 query/hash')
     const mismatchedProfile = await userApi.inject({ method: 'PATCH', url: `/v1/seller-monitors/${firstTask.id}`, headers: auth(userAAccess), payload: { profileUrl: 'https://www.goofish.com/personal?userId=other-seller' } })
     assert(mismatchedProfile.statusCode === 400, '更新时错配卖家主页未被拒绝')
-    const duplicate = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { platformSellerId: 'seller-id-only', profileUrl: firstTask.profileUrl, intervalSeconds: 600 } })
+    const duplicate = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { platformSellerId: 'seller-id-only', profileUrl: firstTask.profileUrl, intervalSeconds: 1800 } })
     assert(duplicate.statusCode === 409, '同一用户重复关注卖家未被唯一约束拒绝')
 
     const capTasks = []
     for (let index = 0; index < 2; index += 1) capTasks.push(await createSellerTask(userApi, userAAccess, { platformSellerId: `seller-cap-${index}` }))
-    const activeOverflow = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { platformSellerId: 'seller-active-overflow', intervalSeconds: 600 } })
+    const activeOverflow = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { platformSellerId: 'seller-active-overflow', intervalSeconds: 1800 } })
     assert(activeOverflow.statusCode === 403, '第 6 个活动竞品商家未被 5 个槽位限制')
     const pausedOverflow = await createSellerTask(userApi, userAAccess, { platformSellerId: 'seller-paused-overflow', status: 'paused' })
     assert(pausedOverflow.status === 'paused', '活动槽位满时暂停任务不能保存')
@@ -150,7 +150,7 @@ async function run() {
       assert(response.statusCode === 404, `其他用户可${method}卖家任务：${response.statusCode}`)
     }
 
-    const searchTask = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: 'phase5-search', pageLimit: 1 }, intervalSeconds: 600, status: 'paused' } })
+    const searchTask = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: 'phase5-search', pageLimit: 1 }, intervalSeconds: 1800, status: 'paused' } })
     assert(searchTask.statusCode === 200, `搜索任务夹具创建失败：${searchTask.statusCode} ${searchTask.body}`)
     const collectorSession = await bindCollector(collectorApi, userAAccess, userAId)
     const taskSnapshot = await collectorApi.inject({ method: 'GET', url: '/v1/tasks', headers: auth(collectorSession.accessToken) })

@@ -43,7 +43,7 @@ async function applyMigrations(db) {
 }
 
 async function registerUser(userApi, email) {
-  const response = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password: 'phase4-task-password-123' } })
+  const response = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password: 'p4-task-123456' } })
   assert(response.statusCode === 200, `用户注册失败：${response.statusCode} ${response.body}`)
   return json(response).accessToken
 }
@@ -100,21 +100,21 @@ async function run() {
     })
     assert(cors.statusCode === 204 && String(cors.headers['access-control-allow-methods']).includes('PATCH') && String(cors.headers['access-control-allow-methods']).includes('DELETE'), '任务 CRUD CORS 方法未开放')
 
-    const invalidMissingScope = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: {}, intervalSeconds: 600 } })
+    const invalidMissingScope = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: {}, intervalSeconds: 1800 } })
     assert(invalidMissingScope.statusCode === 400, '缺少关键词和类目的规则未被拒绝')
-    const invalidUnknownField = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', cookie: 'forbidden' }, intervalSeconds: 600 } })
+    const invalidUnknownField = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', cookie: 'forbidden' }, intervalSeconds: 1800 } })
     assert(invalidUnknownField.statusCode === 400, '规则白名单未拒绝未知字段')
-    const invalidFilter = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', filters: { token: 'forbidden' } }, intervalSeconds: 600 } })
+    const invalidFilter = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', filters: { token: 'forbidden' } }, intervalSeconds: 1800 } })
     assert(invalidFilter.statusCode === 400, '页面筛选白名单未拒绝未知字段')
     const invalidInterval = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机' }, intervalSeconds: 59 } })
     assert(invalidInterval.statusCode === 400, '过短频率未被拒绝')
-    const invalidPrice = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', minPrice: 100, maxPrice: 99 }, intervalSeconds: 600 } })
+    const invalidPrice = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', minPrice: 100, maxPrice: 99 }, intervalSeconds: 1800 } })
     assert(invalidPrice.statusCode === 400, '反向价格区间未被拒绝')
 
     const concurrentTasks = await Promise.all([
-      userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userCAccess), payload: { rule: { keyword: '并发任务 A', pageLimit: 1 }, intervalSeconds: 600 } }),
-      userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userCAccess), payload: { rule: { keyword: '并发任务 B', pageLimit: 1 }, intervalSeconds: 600 } }),
-      userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userCAccess), payload: { rule: { keyword: '并发任务 C', pageLimit: 1 }, intervalSeconds: 600 } })
+      userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userCAccess), payload: { rule: { keyword: '并发任务 A', pageLimit: 1 }, intervalSeconds: 1800 } }),
+      userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userCAccess), payload: { rule: { keyword: '并发任务 B', pageLimit: 1 }, intervalSeconds: 1800 } }),
+      userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userCAccess), payload: { rule: { keyword: '并发任务 C', pageLimit: 1 }, intervalSeconds: 1800 } })
     ])
     const concurrentTaskIds = concurrentTasks.filter((response) => response.statusCode === 200).map((response) => json(response).id)
     assert(concurrentTaskIds.length === 2 && concurrentTasks.filter((response) => response.statusCode === 403).length === 1, '并发创建未正确利用或限制启用任务额度')
@@ -140,20 +140,20 @@ async function run() {
           excludeWords: ['维修'],
           pageLimit: 2
         },
-        intervalSeconds: 900
+        intervalSeconds: 1800
       }
     })
     assert(created.statusCode === 200, `任务创建失败：${created.statusCode} ${created.body}`)
     const task = json(created)
-    assert(task.status === 'active' && task.ruleVersion === 1 && task.intervalSeconds === 900, '创建任务返回合同无效')
+    assert(task.status === 'active' && task.ruleVersion === 1 && task.intervalSeconds === 1800, '创建任务返回合同无效')
     assert(task.rule.categoryPath.length === 3 && task.rule.sort === 'newly_published', '任务规则未被规范化返回')
 
-    const userBWithoutEntitlement = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userBAccess), payload: { rule: { keyword: '机械键盘', pageLimit: 1 }, intervalSeconds: 600 } })
+    const userBWithoutEntitlement = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userBAccess), payload: { rule: { keyword: '机械键盘', pageLimit: 1 }, intervalSeconds: 1800 } })
     assert(userBWithoutEntitlement.statusCode === 403, '没有采集权益时仍可启用任务')
-    const userBTask = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userBAccess), payload: { rule: { keyword: '机械键盘', pageLimit: 1 }, intervalSeconds: 600, status: 'paused' } })
+    const userBTask = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userBAccess), payload: { rule: { keyword: '机械键盘', pageLimit: 1 }, intervalSeconds: 1800, status: 'paused' } })
     assert(userBTask.statusCode === 200, '第二用户暂停任务创建失败')
     const otherTaskId = json(userBTask).id
-    const categoryOnlyTask = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userBAccess), payload: { rule: { categoryPath: ['家电', '厨房电器'], pageLimit: 1 }, intervalSeconds: 600, status: 'paused' } })
+    const categoryOnlyTask = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userBAccess), payload: { rule: { categoryPath: ['家电', '厨房电器'], pageLimit: 1 }, intervalSeconds: 1800, status: 'paused' } })
     assert(categoryOnlyTask.statusCode === 200 && json(categoryOnlyTask).rule.categoryPath.length === 2 && !json(categoryOnlyTask).rule.keyword, '仅类目规则不能保存')
     const categoryOnlyTaskId = json(categoryOnlyTask).id
 
@@ -174,8 +174,8 @@ async function run() {
     const pausedTasks = await collectorApi.inject({ method: 'GET', url: '/v1/tasks', headers: auth(collectorSession.accessToken) })
     assert(pausedTasks.statusCode === 200 && json(pausedTasks).taskLimit === 1 && json(pausedTasks).items.length === 1 && json(pausedTasks).items[0].status === 'paused', '采集器任务快照没有保留暂停状态')
 
-    const resumed = await userApi.inject({ method: 'PATCH', url: `/v1/monitors/${task.id}`, headers: auth(userAAccess), payload: { status: 'active', intervalSeconds: 1200 } })
-    assert(resumed.statusCode === 200 && json(resumed).ruleVersion === 3 && json(resumed).intervalSeconds === 1200, '恢复任务未更新版本或频率')
+    const resumed = await userApi.inject({ method: 'PATCH', url: `/v1/monitors/${task.id}`, headers: auth(userAAccess), payload: { status: 'active', intervalSeconds: 3600 } })
+    assert(resumed.statusCode === 200 && json(resumed).ruleVersion === 3 && json(resumed).intervalSeconds === 3600, '恢复任务未更新版本或频率')
     const collectorTasks = await collectorApi.inject({ method: 'GET', url: '/v1/tasks', headers: auth(collectorSession.accessToken) })
     assert(collectorTasks.statusCode === 200, `采集器领取任务失败：${collectorTasks.statusCode} ${collectorTasks.body}`)
     const collectorPage = json(collectorTasks)
@@ -183,7 +183,7 @@ async function run() {
     assert(collectorPage.items[0].id === task.id && collectorPage.items[0].status === 'active' && collectorPage.items[0].rule.keyword === '富士相机' && collectorPage.items[0].createdAt && collectorPage.items[0].updatedAt && collectorPage.items.every((item) => item.id !== otherTaskId), '采集器任务没有按绑定用户隔离或缺少缓存字段')
 
     await db.query("UPDATE billing.entitlement_grants SET limit_value=2 WHERE user_id=$1 AND capability='collector'", [userAId])
-    const secondActive = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '第二条任务', pageLimit: 1 }, intervalSeconds: 600 } })
+    const secondActive = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '第二条任务', pageLimit: 1 }, intervalSeconds: 1800 } })
     assert(secondActive.statusCode === 200, `提升权益后第二条任务创建失败：${secondActive.statusCode} ${secondActive.body}`)
     const secondTaskId = json(secondActive).id
     const expandedCollectorTasks = await collectorApi.inject({ method: 'GET', url: '/v1/tasks', headers: auth(collectorSession.accessToken) })
@@ -192,9 +192,9 @@ async function run() {
     const downgradedCollectorTasks = await collectorApi.inject({ method: 'GET', url: '/v1/tasks', headers: auth(collectorSession.accessToken) })
     assert(downgradedCollectorTasks.statusCode === 200 && json(downgradedCollectorTasks).taskLimit === 1 && json(downgradedCollectorTasks).items.filter((item) => item.status === 'active').length === 1 && json(downgradedCollectorTasks).items.every((item) => item.id !== secondTaskId), '权益降级后仍下发超额启用任务')
 
-    const activeTaskOverLimit = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '超额任务', pageLimit: 1 }, intervalSeconds: 600 } })
+    const activeTaskOverLimit = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '超额任务', pageLimit: 1 }, intervalSeconds: 1800 } })
     assert(activeTaskOverLimit.statusCode === 403, '超过采集权益时仍可启用任务')
-    const pausedOverflow = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '超额任务', pageLimit: 1 }, intervalSeconds: 600, status: 'paused' } })
+    const pausedOverflow = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '超额任务', pageLimit: 1 }, intervalSeconds: 1800, status: 'paused' } })
     assert(pausedOverflow.statusCode === 200, '超额任务不能作为暂停规则保存')
     const pausedOverflowId = json(pausedOverflow).id
     const activateOverflow = await userApi.inject({ method: 'PATCH', url: `/v1/monitors/${pausedOverflowId}`, headers: auth(userAAccess), payload: { status: 'active' } })

@@ -32,6 +32,21 @@ export type UserPage<T> = {
   snapshot?: string | null
 }
 
+export type UserAiJobInput = {
+  capabilityCode: string
+  input: unknown
+  idempotencyKey: string
+  promptVersion?: number
+  scope?: 'personal' | 'global'
+}
+
+export type UserAiJob = {
+  id: string
+  status: string
+  duplicate?: boolean
+}
+export type UserAnnouncement = { id: string; title: string; body: string; startsAt: string; endsAt?: string | null }
+
 export type MonitorTaskSort = 'comprehensive' | 'newly_reduced' | 'newly_published' | 'price_asc' | 'price_desc'
 export type MonitorTaskStatus = 'active' | 'paused'
 
@@ -357,6 +372,15 @@ export class UserApiClient {
     return this.request<UserIdentity>('/v1/me')
   }
 
+  async createAiJob(input: UserAiJobInput): Promise<UserAiJob> {
+    return this.request<UserAiJob>('/v1/ai/jobs', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  async listAnnouncements(signal?: AbortSignal): Promise<UserAnnouncement[]> {
+    const result = await this.request<{ items: UserAnnouncement[] }>('/v1/announcements', { method: 'GET', signal })
+    return result.items
+  }
+
   async list<T>(resource: UserListResource, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<T>> {
     return this.listPath<T>(USER_LIST_PATHS[resource], input, signal)
   }
@@ -431,7 +455,7 @@ export class UserApiClient {
   }
 
   private setTokens(tokens: UserTokens): void {
-    if (!tokens?.accessToken || !tokens?.refreshToken) throw new UserApiError('User API 返回的令牌无效')
+    if (!tokens?.accessToken || !tokens?.refreshToken) throw new UserApiError('登录凭据无效')
     this.tokens = tokens
     storeTokens(tokens)
   }
@@ -459,7 +483,7 @@ export class UserApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}, allowRefresh = true, attachAuth = true): Promise<T> {
-    if (!this.configured) throw new UserApiError('未配置 User API 地址')
+    if (!this.configured) throw new UserApiError('当前无法连接，请稍后再试')
     const headers = new Headers(init.headers)
     if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     if (attachAuth && this.tokens?.accessToken) headers.set('Authorization', `Bearer ${this.tokens.accessToken}`)
@@ -469,7 +493,7 @@ export class UserApiClient {
       await this.refresh()
       return this.request<T>(path, init, false, attachAuth)
     }
-    if (!response.ok) throw new UserApiError(responseMessage(payload, `User API 请求失败（${response.status}）`), response.status, typeof asRecord(payload).code === 'string' ? asRecord(payload).code as string : null)
+    if (!response.ok) throw new UserApiError(responseMessage(payload, `请求失败（${response.status}）`), response.status, typeof asRecord(payload).code === 'string' ? asRecord(payload).code as string : null)
     return payload as T
   }
 }

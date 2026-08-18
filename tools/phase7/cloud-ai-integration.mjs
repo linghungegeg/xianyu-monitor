@@ -45,7 +45,7 @@ async function grantAi(db, id) {
 
 async function createAdmin(db) {
   await db.query(`INSERT INTO identity.admin_users (id,email_normalized,password_hash,role,status,mfa_state,created_at)
-    VALUES ($1,'phase7-admin@example.test',$2,'owner','active','enrolled',now())`, [randomUUID(), await hashPassword('phase7-admin-password-123')])
+    VALUES ($1,'phase7-admin@example.test',$2,'owner','active','enrolled',now())`, [randomUUID(), await hashPassword('p7-admin-123456')])
 }
 
 class DeterministicProvider {
@@ -74,7 +74,10 @@ async function run() {
   const db = new PGlite(databasePath)
   const sql = { query: (text, values) => db.query(text, values) }
   const userApi = createUserApi(sql, domains)
-  const adminApi = createAdminApi(sql, domains)
+  const adminApi = createAdminApi(sql, domains, { modelListProxy: async ({ baseUrl, modelReference, apiKeyCiphertext }) => {
+    assert(baseUrl === 'https://models.phase7.test' && modelReference === 'deterministic-v1' && apiKeyCiphertext === 'ciphertext:phase7-test', '模型列表代理未收到正确配置')
+    return { data: [{ id: 'deterministic-v1' }, { id: 'deterministic-v2' }] }
+  } })
   const migrations = await applyMigrations(db)
   const provider = new DeterministicProvider()
 
@@ -83,12 +86,16 @@ async function run() {
     const user = await userId(db, 'phase7-user@example.test')
     await grantAi(db, user)
     await createAdmin(db)
-    const adminLogin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'phase7-admin@example.test', password: 'phase7-admin-password-123' } })
+    const adminLogin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'phase7-admin@example.test', password: 'p7-admin-123456' } })
     assert(adminLogin.statusCode === 200, `Admin 登录失败: ${adminLogin.body}`)
     const adminAccess = json(adminLogin).accessToken
 
-    const providerConfig = await adminApi.inject({ method: 'POST', url: '/v1/admin/ai/providers', headers: auth(adminAccess), payload: { providerCode: 'test-provider', modelReference: 'deterministic-v1', apiKeyCiphertext: 'ciphertext:phase7-test', settings: { threshold: 0.8, concurrency: 1, budget: 100 }, status: 'active' } })
-    assert(providerConfig.statusCode === 200 && !providerConfig.body.includes('ciphertext:phase7-test'), `AI 提供方配置或密钥脱敏失败: ${providerConfig.body}`)
+    const providerConfig = await adminApi.inject({ method: 'POST', url: '/v1/admin/ai/providers', headers: auth(adminAccess), payload: { providerCode: 'test-provider', baseUrl: 'https://models.phase7.test', modelReference: 'deterministic-v1', apiKeyCiphertext: 'ciphertext:phase7-test', stream: true, reasoning: true, settings: { threshold: 0.8, concurrency: 1, budget: 100 }, status: 'active' } })
+    assert(providerConfig.statusCode === 200 && json(providerConfig).baseUrl === 'https://models.phase7.test' && json(providerConfig).stream === true && json(providerConfig).reasoning === true && !providerConfig.body.includes('ciphertext:phase7-test'), `AI 提供方配置或密钥脱敏失败: ${providerConfig.body}`)
+    const providerUpdate = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/ai/providers/${encodeURIComponent(json(providerConfig).id)}`, headers: auth(adminAccess), payload: { settings: { reasoningLevel: 'deep' }, stream: true, reasoning: true } })
+    assert(providerUpdate.statusCode === 200 && json(providerUpdate).settings?.reasoningLevel === 'deep', `AI 推理等级配置保存失败: ${providerUpdate.body}`)
+    const modelList = await adminApi.inject({ method: 'GET', url: `/v1/admin/ai/providers/${encodeURIComponent(json(providerConfig).id)}/models`, headers: auth(adminAccess) })
+    assert(modelList.statusCode === 200 && json(modelList).items.length === 2 && !modelList.body.includes('ciphertext:phase7-test'), `模型列表代理失败: ${modelList.body}`)
     const rawKey = await adminApi.inject({ method: 'POST', url: '/v1/admin/ai/providers', headers: auth(adminAccess), payload: { providerCode: 'invalid-provider', modelReference: 'invalid', apiKey: 'plain-text-key' } })
     assert(rawKey.statusCode === 400 && !rawKey.body.includes('plain-text-key'), 'AI 提供方接受或回显明文密钥')
 
@@ -112,6 +119,19 @@ async function run() {
     assert(publishCapability.statusCode === 200, `发布 AI 能力失败: ${publishCapability.body}`)
     assert(!publishCapability.body.includes('secret') && !publishCapability.body.includes('apiKey'), '发布响应泄露 provider 密钥字段')
 
+    await db.query(`INSERT INTO billing.user_points (user_id,balance,updated_at) VALUES ($1,42,now())`, [user])
+    const clientId = randomUUID()
+    await db.query(`INSERT INTO identity.collector_clients (id,user_id,device_public_key_fingerprint,device_name,platform,app_version,status,active_slot,created_at)
+      VALUES ($1,$2,'phase7-fingerprint','phase7-device','windows','phase7','active',1,now())`, [clientId, user])
+    await db.query(`INSERT INTO ops.ingest_batches (id,client_id,idempotency_key,payload_hash,status,accepted_count,received_at,schema_version,batch_sequence,cursor_start,cursor_end,received_count,deduplicated_count,inserted_count,failed_count,retry_count,quality_status,quality_result)
+      VALUES ($1,$2,'phase7-upload','phase7-hash','completed',1,now(),1,1,'0','1',1,0,1,0,0,'passed','{}'::jsonb)`, [randomUUID(), clientId])
+    const announcement = await adminApi.inject({ method: 'POST', url: '/v1/admin/announcements', headers: auth(adminAccess), payload: { title: '系统公告', body: '市场数据已更新', scope: 'global', enabled: true } })
+    assert(announcement.statusCode === 200, `创建全局公告失败: ${announcement.body}`)
+    const personalAnnouncement = await adminApi.inject({ method: 'POST', url: '/v1/admin/announcements', headers: auth(adminAccess), payload: { title: '个人公告', body: '仅当前用户可见', scope: 'personal', userId: user, enabled: true } })
+    assert(personalAnnouncement.statusCode === 200, `创建个人公告失败: ${personalAnnouncement.body}`)
+    const announcements = await userApi.inject({ method: 'GET', url: '/v1/announcements', headers: auth(userAccess) })
+    assert(announcements.statusCode === 200 && json(announcements).items.length === 2 && !announcements.body.includes(user), `User 公告读取范围错误: ${announcements.body}`)
+
     const userConfig = await userApi.inject({ method: 'GET', url: '/v1/admin/ai', headers: auth(userAccess) })
     const userAdminConfig = await adminApi.inject({ method: 'GET', url: '/v1/admin/ai', headers: auth(userAccess) })
     assert((userConfig.statusCode === 404 || userConfig.statusCode === 403) && userAdminConfig.statusCode === 403, 'User 可访问 Admin AI 配置')
@@ -123,18 +143,24 @@ async function run() {
     await db.query(`INSERT INTO billing.entitlement_grants (id,user_id,capability,limit_value,effective_from,source,created_at) VALUES ($1,$2,'ai',0,now(),'phase7-test',now())`, [randomUUID(), zeroLimitId])
     const zeroLimitJob = await userApi.inject({ method: 'POST', url: '/v1/ai/jobs', headers: auth(zeroLimitAccess), payload: { capabilityCode: 'price_band', input: {}, idempotencyKey: 'phase7-zero-limit' } })
     assert(zeroLimitJob.statusCode === 403, '零额度 AI 权益可创建任务')
-    const jobPayload = { capabilityCode: 'price_band', input: { itemIds: ['item-phase7'] }, idempotencyKey: 'phase7-job-1' }
+    const jobPayload = { capabilityCode: 'price_band', input: { itemIds: ['item-phase7'] }, idempotencyKey: 'phase7-job-1', scope: 'personal' }
     const firstJob = await userApi.inject({ method: 'POST', url: '/v1/ai/jobs', headers: auth(userAccess), payload: jobPayload })
     assert(firstJob.statusCode === 200 || firstJob.statusCode === 202, `User 创建 AI 任务失败: ${firstJob.body}`)
     const firstJobBody = json(firstJob)
     const duplicateJob = await userApi.inject({ method: 'POST', url: '/v1/ai/jobs', headers: auth(userAccess), payload: jobPayload })
     assert((duplicateJob.statusCode === 200 || duplicateJob.statusCode === 202) && json(duplicateJob).id === firstJobBody.id, '重复 AI 任务未幂等')
+    const conflictingScopeJob = await userApi.inject({ method: 'POST', url: '/v1/ai/jobs', headers: auth(userAccess), payload: { ...jobPayload, scope: 'global' } })
+    assert((conflictingScopeJob.statusCode === 200 || conflictingScopeJob.statusCode === 202) && json(conflictingScopeJob).id === firstJobBody.id && json(conflictingScopeJob).scope === 'personal' && json(conflictingScopeJob).duplicate === true, '重复幂等键未返回数据库中的规范范围')
 
     await runWorker(sql, provider)
     const failedInsights = await db.query('SELECT COUNT(*)::int AS total FROM ai.insights WHERE ai_job_id=$1', [firstJobBody.id])
     const failedLedger = await db.query("SELECT COUNT(*)::int AS total FROM billing.usage_ledger_dedup WHERE subject_type='user' AND subject_id=$1 AND idempotency_key=$2", [user, `ai:${firstJobBody.id}`])
     const firstState = await db.query('SELECT status,last_error FROM ai.jobs WHERE id=$1', [firstJobBody.id])
     assert(Number(failedInsights.rows[0].total) === 1 && Number(failedLedger.rows[0].total) === 1, `首次 worker 未生成结构化结论或用量账本: ${JSON.stringify(firstState.rows[0])}`)
+
+    const globalJob = await userApi.inject({ method: 'POST', url: '/v1/ai/jobs', headers: auth(userAccess), payload: { ...jobPayload, idempotencyKey: 'phase7-job-global', scope: 'global' } })
+    assert(globalJob.statusCode === 202 && json(globalJob).scope === 'global', `全局 AI 任务创建失败: ${globalJob.body}`)
+    await runWorker(sql, provider)
 
     provider.failNext = true
     const retryJob = await userApi.inject({ method: 'POST', url: '/v1/ai/jobs', headers: auth(userAccess), payload: { ...jobPayload, idempotencyKey: 'phase7-job-2' } })
@@ -152,12 +178,34 @@ async function run() {
     assert(concurrent.every((response) => response.statusCode === 200 || response.statusCode === 202) && concurrentIds.size === 1, '并发重复 AI 任务未幂等')
 
     const userInsights = await userApi.inject({ method: 'GET', url: '/v1/ai/insights?limit=20&sort=created_at&order=desc', headers: auth(userAccess) })
-    assert(userInsights.statusCode === 200 && json(userInsights).items.length === 2, `User 读取已发布结果失败: ${userInsights.body}`)
+    assert(userInsights.statusCode === 200 && json(userInsights).items.length === 3, `User 读取已发布结果失败: ${userInsights.body}`)
     const adminJobs = await adminApi.inject({ method: 'GET', url: `/v1/admin/ai/jobs?limit=20&requesting_user_id=${encodeURIComponent(user)}&sort=created_at&order=desc`, headers: auth(adminAccess) })
-    assert(adminJobs.statusCode === 200 && json(adminJobs).page.total === 3 && json(adminJobs).items.some((job) => job.retryCount === 1 && job.costQuantity === 1), `Admin 任务审计字段或筛选失败: ${adminJobs.body}`)
-    assert(!adminJobs.body.includes('test-provider') && !adminJobs.body.includes('promptBody'), 'Admin 任务列表泄露提示正文或 provider 密钥')
+    assert(adminJobs.statusCode === 200 && json(adminJobs).page.total === 4 && json(adminJobs).items.some((job) => job.retryCount === 1 && job.costQuantity === 1 && job.requestingUserAccount === 'phase7-user@example.test' && job.provider === 'test-provider' && job.model === 'deterministic-v1'), `Admin 任务审计字段或筛选失败: ${adminJobs.body}`)
+    const adminUsers = await adminApi.inject({ method: 'GET', url: `/v1/users?limit=20&q=phase7-user@example.test`, headers: auth(adminAccess) })
+    assert(adminUsers.statusCode === 200 && json(adminUsers).items.some((item) => item.account === 'phase7-user@example.test' && item.points === 42 && item.userData?.deviceCount === 1 && item.userData?.uploadBatchCount === 1), `Admin 用户资料字段缺失: ${adminUsers.body}`)
+    const pointsAdded = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/users/${encodeURIComponent(user)}/points`, headers: auth(adminAccess), payload: { delta: 8 } })
+    const pointsRemoved = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/users/${encodeURIComponent(user)}/points`, headers: auth(adminAccess), payload: { delta: -8 } })
+    assert(pointsAdded.statusCode === 200 && json(pointsAdded).points === 50 && pointsRemoved.statusCode === 200 && json(pointsRemoved).points === 42, `Admin 积分调整失败: ${pointsAdded.body} ${pointsRemoved.body}`)
+    const adminUploads = await adminApi.inject({ method: 'GET', url: `/v1/admin/uploads?limit=20&user_id=${encodeURIComponent(user)}`, headers: auth(adminAccess) })
+    assert(adminUploads.statusCode === 200 && json(adminUploads).items.some((item) => item.userAccount === 'phase7-user@example.test' && item.userId === user), `Admin 上传批次用户字段缺失: ${adminUploads.body}`)
+    const adminAnnouncements = await adminApi.inject({ method: 'GET', url: '/v1/admin/announcements?limit=20&enabled=true', headers: auth(adminAccess) })
+    assert(adminAnnouncements.statusCode === 200 && json(adminAnnouncements).page.total === 2, `Admin 公告查询失败: ${adminAnnouncements.body}`)
+    const announcementUpdate = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/announcements/${json(announcement).id}`, headers: auth(adminAccess), payload: { title: '系统公告（已更新）' } })
+    assert(announcementUpdate.statusCode === 200 && json(announcementUpdate).title === '系统公告（已更新）', `Admin 公告更新失败: ${announcementUpdate.body}`)
+    const disabledUser = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/users/${encodeURIComponent(user)}/status`, headers: auth(adminAccess), payload: { enabled: false } })
+    assert(disabledUser.statusCode === 200 && json(disabledUser).enabled === false, `Admin 禁用用户失败: ${disabledUser.body}`)
+    const enabledUser = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/users/${encodeURIComponent(user)}/status`, headers: auth(adminAccess), payload: { enabled: true } })
+    assert(enabledUser.statusCode === 200 && json(enabledUser).enabled === true, `Admin 启用用户失败: ${enabledUser.body}`)
+    const sessionUser = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'phase7-session@example.test', password: 'phase7-session-123' } })
+    assert(sessionUser.statusCode === 200, `会话用户注册失败: ${sessionUser.body}`)
+    const sessionUserId = await userId(db, 'phase7-session@example.test')
+    const disabledSessionUser = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/users/${encodeURIComponent(sessionUserId)}/status`, headers: auth(adminAccess), payload: { enabled: false } })
+    const disabledAccess = await userApi.inject({ method: 'GET', url: '/v1/me', headers: auth(json(sessionUser).accessToken) })
+    const disabledRefresh = await userApi.inject({ method: 'POST', url: '/v1/auth/refresh', payload: { refreshToken: json(sessionUser).refreshToken } })
+    assert(disabledSessionUser.statusCode === 200 && disabledAccess.statusCode === 401 && disabledRefresh.statusCode === 401, 'Admin 停用用户后旧会话仍可访问或刷新')
+    assert(adminJobs.body.includes('test-provider') && adminJobs.body.includes('deterministic-v1') && !adminJobs.body.includes('promptBody') && !adminJobs.body.includes('ciphertext:phase7-test'), 'Admin 任务 provider/model 或敏感字段边界错误')
 
-    console.log(JSON.stringify({ scenario: 'phase7-cloud-ai', migrations, assertions: { migrationRepeatable: true, capabilityAndPromptPublish: true, userPublishedOnly: true, jobIdempotency: true, concurrentJobIdempotency: true, workerProviderFixture: true, retryWithoutDuplicateBillingOrInsight: true, userAdminIsolation: true, adminCursorAudit: true } }, null, 2))
+    console.log(JSON.stringify({ scenario: 'phase7-cloud-ai', migrations, assertions: { migrationRepeatable: true, capabilityAndPromptPublish: true, providerSettingsUpdate: true, userPublishedOnly: true, jobIdempotency: true, idempotentScopeCanonical: true, concurrentJobIdempotency: true, workerProviderFixture: true, retryWithoutDuplicateBillingOrInsight: true, userAdminIsolation: true, adminCursorAudit: true, adminPointsAdjustment: true, disabledSessionRevoked: true } }, null, 2))
   } finally {
     await Promise.allSettled([userApi.close(), adminApi.close()])
     await db.close()

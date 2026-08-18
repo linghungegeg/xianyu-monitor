@@ -59,7 +59,7 @@ async function run() {
   const sql = { query: (text, values) => db.query(text, values) }
   const userApi = createUserApi(sql, domains, { allowedOrigins: ['http://localhost:5174'] })
   const adminApi = createAdminApi(sql, domains, { allowedOrigins: ['http://localhost:5175'] })
-  const passwordHash = await hashPassword('phase2-test-password-123')
+  const passwordHash = await hashPassword('p2-test-123456')
   const baseTime = new Date(Date.now() - 120_000).toISOString()
   const migrations = await applyMigrations(db)
 
@@ -74,7 +74,7 @@ async function run() {
         VALUES ($1,'goofish',$2,'active',$3,$4)`, [marketId(index), `seed-item-${String(index).padStart(2, '0')}`, createdAt, new Date(Date.parse(createdAt) + index * 100).toISOString()])
     }
 
-    const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'reader@example.test', password: 'phase2-reader-password-123' } })
+  const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'reader@example.test', password: 'p2-reader-123456' } })
     assert(registered.statusCode === 200, `用户注册失败：${registered.statusCode} ${registered.body}`)
     const userToken = json(registered).accessToken
     const readerId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='reader@example.test'")).rows[0].id)
@@ -96,7 +96,7 @@ async function run() {
     await db.query(`INSERT INTO market.observations (id,collected_at,received_at,collection_run_id,item_id,platform_item_id,payload_hash)
       VALUES ($1,$2,$2,$3,$4,'other-user-item','other-payload')`, [marketId(1088), baseTime, otherRunId, marketId(88)])
 
-    const adminLogin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin@example.test', password: 'phase2-test-password-123' } })
+  const adminLogin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin@example.test', password: 'p2-test-123456' } })
     assert(adminLogin.statusCode === 200, `Admin 登录失败：${adminLogin.statusCode} ${adminLogin.body}`)
     let adminToken = json(adminLogin).accessToken
 
@@ -135,7 +135,7 @@ async function run() {
     assert(replayedAdminRefresh.statusCode === 401, 'Admin refresh token 重放未拒绝')
     const revokedDescendantRefresh = await adminApi.inject({ method: 'POST', url: '/v1/auth/refresh', payload: { refreshToken: json(refreshedAdmin).refreshToken } })
     assert(revokedDescendantRefresh.statusCode === 401, 'Admin refresh token 重放后后代令牌未撤销')
-    const reauthenticatedAdmin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin@example.test', password: 'phase2-test-password-123' } })
+  const reauthenticatedAdmin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin@example.test', password: 'p2-test-123456' } })
     assert(reauthenticatedAdmin.statusCode === 200, `Admin 重登失败：${reauthenticatedAdmin.statusCode} ${reauthenticatedAdmin.body}`)
     adminToken = json(reauthenticatedAdmin).accessToken
 

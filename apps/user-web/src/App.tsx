@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity, Bell, Bot, ChevronLeft, ChevronRight, ClipboardList,
   ExternalLink, FileSearch, Filter, Fish, Gauge, LayoutDashboard, LogOut, Menu, MoreHorizontal, PanelLeft, PanelLeftClose,
-  PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, SlidersHorizontal, Store, Trash2, X
+  PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, SlidersHorizontal, Store, Trash2, X
 } from 'lucide-react'
 import {
   UserApiClient, UserApiError, readUserRuntimeConfig, type UserIdentity, type UserListRequest,
   type UserListResource, type UserPage, type MonitorTask, type MonitorTaskInput, type MonitorTaskRule,
   type MonitorTaskSort, type MonitorTaskStatus, type SellerEvent, type SellerItem, type SellerItemState,
-  type SellerMonitor, type SellerMonitorInput, type SellerMonitorProfile, type SellerMonitorStatus, type SellerProfile
+  type SellerMonitor, type SellerMonitorInput, type SellerMonitorProfile, type SellerMonitorStatus, type SellerProfile, type UserAnnouncement
 } from './api'
 
 type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai' | 'settings'
@@ -75,7 +75,7 @@ const pageCopy: Record<RowKind, { title: string; description: string; primary: s
   sellers: { title: '竞品商家', description: '跟踪已关注商家的公开商品与经营动态。', primary: '添加商家', columns: ['商家', '公开商品', '动态摘要', '状态'] },
   pool: { title: '市场商品池', description: '按条件查询已进入公共市场范围的商品快照。', primary: '保存筛选', columns: ['商品', '当前价格', '市场信号', '状态'] },
   discoveries: { title: '市场发现', description: '浏览按筛选条件整理出的近期市场机会。', primary: '新建筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
-  events: { title: '事件中心', description: '统一处理价格、上架、下架和卖家变化事件。', primary: '标为已读', columns: ['事件', '关联对象', '变化内容', '状态'] },
+  events: { title: '事件中心', description: '统一处理价格、上架、下架和卖家变化事件。', primary: '筛选事件', columns: ['事件', '关联对象', '变化内容', '状态'] },
   logs: { title: '动态日志', description: '按对象、类型和时间筛选工作台可见的业务动态。', primary: '导出当前页', columns: ['动态', '对象', '记录内容', '状态'] },
   ai: { title: 'AI 分析', description: '阅读已发布的市场解读与竞品分析结果。', primary: '创建分析请求', columns: ['分析主题', '数据范围', '结论摘要', '状态'] }
 }
@@ -98,7 +98,7 @@ const sortOptions: Array<{ value: SortKey; label: string }> = [
 
 const bases: Record<RowKind, Omit<TableRow, 'id' | 'updatedAt'>[]> = {
   monitors: [
-    { title: 'MacBook Air M2 16G', subtitle: '全国 · 3500-5500 元 · 每 15 分钟', metric: '新增 8 条，降价 3 条', status: '正常', tag: '关键词' },
+    { title: 'MacBook Air M2 16G', subtitle: '全国 · 3500-5500 元 · 每 30 分钟', metric: '新增 8 条，降价 3 条', status: '正常', tag: '关键词' },
     { title: '索尼 A7M4 机身', subtitle: '上海 / 杭州 · 9000-14000 元 · 每 30 分钟', metric: '新增 2 条，降价 1 条', status: '关注', tag: '价格区间' },
     { title: '任天堂 Switch OLED', subtitle: '全国 · 1200-1900 元 · 每 30 分钟', metric: '新增 11 条，降价 0 条', status: '正常', tag: '关键词' }
   ],
@@ -210,7 +210,7 @@ const demoMonitorTasks: MonitorTask[] = [
     id: 'demo-monitor-1',
     rule: { keyword: 'MacBook Air M2', categoryPath: ['数码', '电脑'], sort: 'newly_reduced', minPrice: 3500, maxPrice: 5500, region: '全国', includeWords: ['16G'], excludeWords: ['维修'], pageLimit: 3 },
     ruleVersion: 1,
-    intervalSeconds: 900,
+    intervalSeconds: 1800,
     status: 'active',
     nextRunAt: '',
     createdAt: '2026-08-18T09:00:00.000Z',
@@ -230,7 +230,7 @@ const demoMonitorTasks: MonitorTask[] = [
 
 const demoSellerMonitors: SellerMonitor[] = [
   {
-    id: 'demo-seller-monitor-1', sellerId: 'demo-seller-1', platform: 'goofish', platformSellerId: 'haifeng-digital', profileUrl: 'https://www.goofish.com/user/haifeng-digital', publicName: '海风数码回收店', region: '杭州', ruleVersion: 1, intervalSeconds: 900, status: 'active', nextRunAt: '', createdAt: '2026-08-18T09:00:00.000Z', updatedAt: '2026-08-18T09:00:00.000Z'
+    id: 'demo-seller-monitor-1', sellerId: 'demo-seller-1', platform: 'goofish', platformSellerId: 'haifeng-digital', profileUrl: 'https://www.goofish.com/user/haifeng-digital', publicName: '海风数码回收店', region: '杭州', ruleVersion: 1, intervalSeconds: 1800, status: 'active', nextRunAt: '', createdAt: '2026-08-18T09:00:00.000Z', updatedAt: '2026-08-18T09:00:00.000Z'
   },
   {
     id: 'demo-seller-monitor-2', sellerId: 'demo-seller-2', platform: 'goofish', platformSellerId: 'chen-camera', profileUrl: 'https://www.goofish.com/user/chen-camera', publicName: '小陈的相机柜', region: '上海', ruleVersion: 1, intervalSeconds: 1800, status: 'paused', nextRunAt: '', createdAt: '2026-08-17T09:00:00.000Z', updatedAt: '2026-08-17T09:00:00.000Z'
@@ -265,12 +265,12 @@ function emptyMonitorForm(): MonitorForm {
   return {
     keyword: '', categoryPath: '', sort: 'comprehensive', minPrice: '', maxPrice: '', region: '',
     condition: '', delivery: '', shipping: '', guarantee: '', newOnly: '', includeWords: '', excludeWords: '',
-    pageLimit: '2', intervalSeconds: '900', status: 'active'
+    pageLimit: '2', intervalSeconds: '30', status: 'active'
   }
 }
 
 function emptySellerMonitorForm(): SellerMonitorForm {
-  return { target: '', intervalSeconds: '900', status: 'active' }
+  return { target: '', intervalSeconds: '30', status: 'active' }
 }
 
 function monitorFormFromTask(task: MonitorTask): MonitorForm {
@@ -290,7 +290,7 @@ function monitorFormFromTask(task: MonitorTask): MonitorForm {
     includeWords: task.rule.includeWords?.join('，') ?? '',
     excludeWords: task.rule.excludeWords?.join('，') ?? '',
     pageLimit: String(task.rule.pageLimit),
-    intervalSeconds: String(task.intervalSeconds),
+    intervalSeconds: String(Math.max(30, Math.ceil(task.intervalSeconds / 60))),
     status: task.status
   }
 }
@@ -344,13 +344,13 @@ function monitorInputFromForm(form: MonitorForm): MonitorTaskInput {
     ...(excludeWords.length ? { excludeWords } : {}),
     pageLimit: monitorPositiveInteger(form.pageLimit, 1, 10, '页数上限')
   }
-  return { rule, intervalSeconds: monitorPositiveInteger(form.intervalSeconds, 60, 86400, '采集间隔'), status: form.status }
+  return { rule, intervalSeconds: monitorPositiveInteger(form.intervalSeconds, 30, 1440, '采集间隔（分钟）') * 60, status: form.status }
 }
 
 function sellerMonitorInputFromForm(form: SellerMonitorForm): SellerMonitorInput {
   const target = form.target.trim()
   if (!target) throw new Error('请输入公开卖家主页或卖家 ID')
-  const intervalSeconds = monitorPositiveInteger(form.intervalSeconds, 60, 86_400, '采集间隔')
+  const intervalSeconds = monitorPositiveInteger(form.intervalSeconds, 30, 1_440, '采集间隔（分钟）') * 60
   try {
     const url = new URL(target)
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error()
@@ -424,6 +424,16 @@ function monitorRuleFilters(rule: MonitorTaskRule): string {
 
 type AuthView = { status: 'checking' | 'signed-out' | 'ready'; user: UserIdentity | null; error: string | null }
 
+const rememberedLoginKey = 'xianyu-user-web.remembered-credentials.v1'
+
+function readRememberedLogin(): { account: string; password: string } {
+  try {
+    const value = JSON.parse(localStorage.getItem(rememberedLoginKey) ?? '{}') as Partial<{ account: string; password: string }>
+    if (typeof value.account === 'string' && typeof value.password === 'string') return { account: value.account, password: value.password }
+  } catch { localStorage.removeItem(rememberedLoginKey) }
+  return { account: '', password: '' }
+}
+
 function App(): ReactNode {
   const api = useMemo(() => new UserApiClient(runtime.baseUrl), [])
   const [auth, setAuth] = useState<AuthView>({ status: runtime.mode === 'demo' ? 'ready' : 'checking', user: runtime.mode === 'demo' ? { id: 'local-demo' } : null, error: null })
@@ -442,15 +452,22 @@ function App(): ReactNode {
 }
 
 function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: AuthView; onAuthenticated: (user: UserIdentity) => void }): ReactNode {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const [remembered] = useState(readRememberedLogin)
+  const [email, setEmail] = useState(remembered.account)
+  const [password, setPassword] = useState(remembered.password)
+  const [rememberPassword, setRememberPassword] = useState(Boolean(remembered.account && remembered.password))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(auth.error)
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setSubmitting(true); setError(null)
-    try { onAuthenticated(await api.login(email.trim(), password)) } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '登录失败，请稍后重试') } finally { setSubmitting(false) }
+    if (email.trim().length < 6 || email.trim().length > 20 || password.length < 6 || password.length > 20) { setError('账号和密码均需为 6-20 个字符'); setSubmitting(false); return }
+    try {
+      onAuthenticated(await api.login(email.trim(), password))
+      if (rememberPassword) localStorage.setItem(rememberedLoginKey, JSON.stringify({ account: email.trim(), password }))
+      else localStorage.removeItem(rememberedLoginKey)
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '登录失败，请稍后重试') } finally { setSubmitting(false) }
   }
-  return <main className="auth-shell"><section className="auth-panel"><div className="auth-brand"><span className="brand-mark">鱼</span><strong>闲鱼数据台</strong></div><div className="auth-heading"><h1>登录工作台</h1><p className="auth-copy">查看关注商品、市场变化和分析结果。</p></div>{!api.configured && <div className="auth-alert"><strong>暂时无法登录</strong><span>请稍后再试。</span></div>}<form onSubmit={(event) => void submit(event)}><label><span>邮箱</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" required /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" minLength={12} required /></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>{submitting ? '正在登录…' : '登录'}</button></form></section></main>
+  return <main className="auth-shell"><section className="auth-panel"><div className="auth-brand"><span className="brand-mark">鱼</span><strong>闲鱼数据台</strong></div><div className="auth-heading"><h1>登录工作台</h1><p className="auth-copy">查看关注商品、市场变化和分析结果。</p></div>{!api.configured && <div className="auth-alert"><strong>暂时无法登录</strong><span>请稍后再试。</span></div>}<form onSubmit={(event) => void submit(event)}><label><span>账号</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" minLength={6} maxLength={20} required /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" minLength={6} maxLength={20} required /></label><label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} /><span>记住账号和密码</span></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>{submitting ? '正在登录…' : '登录'}</button></form></section></main>
 }
 
 function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIdentity; onLogout: () => void }): ReactNode {
@@ -498,9 +515,24 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
     <section className="main-shell"><header className="workspace-header"><div className="header-context"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{activePage.label}</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header>
-      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
+      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
     {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />}
+    <AnnouncementModal api={api} mode={runtime.mode} />
   </div>
+}
+
+function AnnouncementModal({ api, mode }: { api: UserApiClient; mode: 'demo' | 'api' }): ReactNode {
+  const [items, setItems] = useState<UserAnnouncement[]>([])
+  const [open, setOpen] = useState(false)
+  const todayKey = `xianyu-user-web.announcement-dismissed.${new Date().toISOString().slice(0, 10)}`
+  useEffect(() => {
+    if (mode === 'demo' || localStorage.getItem(todayKey)) return
+    const controller = new AbortController()
+    void api.listAnnouncements(controller.signal).then((result) => { if (result.length) { setItems(result); setOpen(true) } }).catch(() => undefined)
+    return () => controller.abort()
+  }, [api, mode, todayKey])
+  if (!open || !items.length) return null
+  return <div className="modal-layer announcement-layer"><button className="modal-backdrop" aria-label="关闭公告" onClick={() => setOpen(false)} /><section className="modal-shell announcement-modal" role="dialog" aria-modal="true" aria-labelledby="announcement-title"><header><div><p className="eyebrow">系统公告</p><h2 id="announcement-title">{items[0].title}</h2></div><button className="icon-button" title="关闭" onClick={() => setOpen(false)}><X size={18} /></button></header><div className="modal-body announcement-body">{items.map((item) => <article key={item.id}><h3>{item.title}</h3><p>{item.body}</p></article>)}</div><footer><label className="remember-password"><input type="checkbox" onChange={(event) => { if (event.target.checked) localStorage.setItem(todayKey, '1') }} /><span>今日不再查看</span></label><button className="primary" onClick={() => setOpen(false)}>我知道了</button></footer></section></div>
 }
 
 function Dashboard({ mode, onNavigate }: { mode: 'demo' | 'api'; onNavigate: (key: PageKey) => void }): ReactNode {
@@ -633,7 +665,7 @@ function MonitorPage({ api, mode }: { api: UserApiClient; mode: 'demo' | 'api' }
 
 function MonitorEditor({ editing, form, saving, error, onChange, onClose, onSubmit }: { editing: MonitorTask | null; form: MonitorForm; saving: boolean; error: string | null; onChange: (field: keyof MonitorForm, value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void }): ReactNode {
   const setValue = (field: keyof MonitorForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange(field, event.target.value)
-  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭监控编辑器" onClick={onClose} /><section className="monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="monitor-editor-title"><header><div><p className="eyebrow">监控规则</p><h2 id="monitor-editor-title">{editing ? '编辑监控' : '新建监控'}</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>关键词</span><input value={form.keyword} onChange={setValue('keyword')} maxLength={80} required={!form.categoryPath.trim()} placeholder="例如 MacBook Air M2" autoFocus /></label><label className="monitor-field monitor-field-wide"><span>类目路径</span><input value={form.categoryPath} onChange={setValue('categoryPath')} required={!form.keyword.trim()} placeholder="用 / 分隔，最多 3 级，例如 数码 / 电脑 / 笔记本" /></label><label className="monitor-field"><span>排序</span><select value={form.sort} onChange={setValue('sort')}>{monitorSortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="monitor-field"><span>地区</span><input value={form.region} onChange={setValue('region')} maxLength={64} placeholder="例如 全国、杭州" /></label><label className="monitor-field"><span>最低价（元）</span><input type="number" min="0" value={form.minPrice} onChange={setValue('minPrice')} placeholder="不限" /></label><label className="monitor-field"><span>最高价（元）</span><input type="number" min="0" value={form.maxPrice} onChange={setValue('maxPrice')} placeholder="不限" /></label></div><section className="monitor-form-section"><h3>公开筛选</h3><div className="monitor-form-grid"><label className="monitor-field"><span>成色</span><input value={form.condition} onChange={setValue('condition')} maxLength={40} placeholder="例如 全新" /></label><label className="monitor-field"><span>发货方式</span><input value={form.delivery} onChange={setValue('delivery')} maxLength={40} placeholder="例如 同城自提" /></label><label className="monitor-field"><span>配送</span><input value={form.shipping} onChange={setValue('shipping')} maxLength={40} placeholder="例如 包邮" /></label><label className="monitor-field"><span>保障</span><input value={form.guarantee} onChange={setValue('guarantee')} maxLength={40} placeholder="例如 验货宝" /></label><label className="monitor-field"><span>仅看全新</span><select value={form.newOnly} onChange={setValue('newOnly')}><option value="">不限</option><option value="是">是</option><option value="否">否</option></select></label></div></section><section className="monitor-form-section"><h3>匹配与频率</h3><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>包含词</span><input value={form.includeWords} onChange={setValue('includeWords')} placeholder="用逗号分隔，例如 16G，国行" /></label><label className="monitor-field monitor-field-wide"><span>排除词</span><input value={form.excludeWords} onChange={setValue('excludeWords')} placeholder="用逗号分隔，例如 维修，配件" /></label><label className="monitor-field"><span>页数上限</span><input type="number" min="1" max="10" step="1" value={form.pageLimit} onChange={setValue('pageLimit')} /></label><label className="monitor-field"><span>采集间隔（秒）</span><input type="number" min="60" max="86400" step="60" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用采集</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用采集" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div></section>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '保存监控'}</button></footer></form></section></div>
+  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭监控编辑器" onClick={onClose} /><section className="monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="monitor-editor-title"><header><div><p className="eyebrow">监控规则</p><h2 id="monitor-editor-title">{editing ? '编辑监控' : '新建监控'}</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>关键词</span><input value={form.keyword} onChange={setValue('keyword')} maxLength={80} required={!form.categoryPath.trim()} placeholder="例如 MacBook Air M2" autoFocus /></label><label className="monitor-field monitor-field-wide"><span>类目路径</span><input value={form.categoryPath} onChange={setValue('categoryPath')} required={!form.keyword.trim()} placeholder="用 / 分隔，最多 3 级，例如 数码 / 电脑 / 笔记本" /></label><label className="monitor-field"><span>排序</span><select value={form.sort} onChange={setValue('sort')}>{monitorSortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="monitor-field"><span>地区</span><input value={form.region} onChange={setValue('region')} maxLength={64} placeholder="例如 全国、杭州" /></label><label className="monitor-field"><span>最低价（元）</span><input type="number" min="0" value={form.minPrice} onChange={setValue('minPrice')} placeholder="不限" /></label><label className="monitor-field"><span>最高价（元）</span><input type="number" min="0" value={form.maxPrice} onChange={setValue('maxPrice')} placeholder="不限" /></label></div><section className="monitor-form-section"><h3>公开筛选</h3><div className="monitor-form-grid"><label className="monitor-field"><span>成色</span><input value={form.condition} onChange={setValue('condition')} maxLength={40} placeholder="例如 全新" /></label><label className="monitor-field"><span>发货方式</span><input value={form.delivery} onChange={setValue('delivery')} maxLength={40} placeholder="例如 同城自提" /></label><label className="monitor-field"><span>配送</span><input value={form.shipping} onChange={setValue('shipping')} maxLength={40} placeholder="例如 包邮" /></label><label className="monitor-field"><span>保障</span><input value={form.guarantee} onChange={setValue('guarantee')} maxLength={40} placeholder="例如 验货宝" /></label><label className="monitor-field"><span>仅看全新</span><select value={form.newOnly} onChange={setValue('newOnly')}><option value="">不限</option><option value="是">是</option><option value="否">否</option></select></label></div></section><section className="monitor-form-section"><h3>匹配与频率</h3><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>包含词</span><input value={form.includeWords} onChange={setValue('includeWords')} placeholder="用逗号分隔，例如 16G，国行" /></label><label className="monitor-field monitor-field-wide"><span>排除词</span><input value={form.excludeWords} onChange={setValue('excludeWords')} placeholder="用逗号分隔，例如 维修，配件" /></label><label className="monitor-field"><span>页数上限</span><input type="number" min="1" max="10" step="1" value={form.pageLimit} onChange={setValue('pageLimit')} /></label><label className="monitor-field"><span>采集间隔（分钟）</span><input type="number" min="30" max="1440" step="1" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用采集</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用采集" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div></section>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '保存监控'}</button></footer></form></section></div>
 }
 
 function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }: { api: UserApiClient; mode: 'demo' | 'api'; initialTarget?: SellerTarget | null; onInitialTargetConsumed?: () => void }): ReactNode {
@@ -782,7 +814,7 @@ function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }
 
 function SellerMonitorEditor({ form, saving, error, onChange, onClose, onSubmit }: { form: SellerMonitorForm; saving: boolean; error: string | null; onChange: (field: keyof SellerMonitorForm, value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void }): ReactNode {
   const setValue = (field: keyof SellerMonitorForm) => (event: React.ChangeEvent<HTMLInputElement>) => onChange(field, event.target.value)
-  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭竞品商家编辑器" onClick={onClose} /><section className="monitor-dialog seller-monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="seller-monitor-editor-title"><header><div><p className="eyebrow">竞品商家</p><h2 id="seller-monitor-editor-title">添加商家</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>公开卖家主页或卖家 ID</span><input value={form.target} onChange={setValue('target')} maxLength={2048} placeholder="粘贴公开主页" autoFocus required /></label><label className="monitor-field"><span>采集间隔（秒）</span><input type="number" min="60" max="86400" step="60" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用监控</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用监控" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '添加商家'}</button></footer></form></section></div>
+  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭竞品商家编辑器" onClick={onClose} /><section className="monitor-dialog seller-monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="seller-monitor-editor-title"><header><div><p className="eyebrow">竞品商家</p><h2 id="seller-monitor-editor-title">添加商家</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>公开卖家主页或卖家 ID</span><input value={form.target} onChange={setValue('target')} maxLength={2048} placeholder="粘贴公开主页" autoFocus required /></label><label className="monitor-field"><span>采集间隔（分钟）</span><input type="number" min="30" max="1440" step="1" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用监控</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用监控" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '添加商家'}</button></footer></form></section></div>
 }
 
 type SellerDetailTab = 'items' | 'events'
@@ -1009,9 +1041,47 @@ function ApiState({ title, description }: { title: string; description: string }
   return <div className="state-box api-state"><Activity size={27} /><strong>{title}</strong><p>{description}</p></div>
 }
 
-function ListPage(props: { copy: { title: string; description: string; primary: string; columns: [string, string, string, string] }; rows: TableRow[]; total: number; pageIndex: number; pageSize: number; query: string; status: string; sort: SortKey; loading: boolean; error: string | null; canGoBack: boolean; canGoForward: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onPageSize: (value: number) => void; onPrev: () => void; onNext: () => void; onReload: () => void; onRetry: () => void; onOpen: (row: TableRow) => void }): ReactNode {
+function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; copy: { title: string; description: string; primary: string; columns: [string, string, string, string] }; rows: TableRow[]; total: number; pageIndex: number; pageSize: number; query: string; status: string; sort: SortKey; loading: boolean; error: string | null; canGoBack: boolean; canGoForward: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onPageSize: (value: number) => void; onPrev: () => void; onNext: () => void; onReload: () => void; onRetry: () => void; onOpen: (row: TableRow) => void }): ReactNode {
   const { copy, rows, total, pageIndex, pageSize, query, status, sort, loading, error } = props
-  return <><div className="page-heading"><div><p className="eyebrow">数据中心</p><h1>{copy.title}</h1><p>{copy.description}</p></div><button className="primary"><Plus size={16} />{copy.primary}</button></div><section className="filter-bar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索名称、对象或变化内容" /></label><label><span>状态</span><select value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label><span>排序</span><select value={sort} onChange={(event) => props.onSort(event.target.value)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><button className="filter-button" title="更多筛选"><SlidersHorizontal size={17} />更多筛选</button><div className="filter-spacer" /><button className="icon-button" title="刷新" onClick={props.onReload}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></section><section className="table-panel"><div className="table-summary"><span>共 <strong>{total}</strong> 条</span><span>已按当前筛选加载</span></div>{error ? <div className="state-box"><Activity size={27} /><strong>列表加载失败</strong><p>{error}</p><button className="primary small" onClick={props.onRetry}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载数据</strong><p>请稍候。</p></div> : rows.length === 0 ? <div className="state-box"><Filter size={27} /><strong>没有匹配的数据</strong><p>调整关键词或状态后重试。</p></div> : <div className="table-wrap"><table><thead><tr><th>{copy.columns[0]}</th><th>{copy.columns[1]}</th><th>{copy.columns[2]}</th><th>{copy.columns[3]}</th><th aria-label="操作" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><span className="row-tag">{row.tag}</span><strong>{row.title}</strong><small>{row.subtitle}</small></td><td>{row.metric}</td><td><span className="time">{row.updatedAt}</span></td><td><span className={`status ${statusClass[row.status]}`}>{row.status}</span></td><td><button className="row-action" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={19} /></button></td></tr>)}</tbody></table></div>}<CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={props.canGoBack} canGoForward={props.canGoForward} onPrev={props.onPrev} onNext={props.onNext} onPageSize={props.onPageSize} /></section></>
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
+  const exportCurrentPage = () => {
+    const escape = (value: string) => `"${value.replace(/"/g, '""')}"`
+    const lines = [copy.columns, ...rows.map((row) => [row.title, row.metric, row.updatedAt, row.status])]
+    const blob = new Blob([`\ufeff${lines.map((line) => line.map(escape).join(',')).join('\r\n')}`], { type: 'text/csv;charset=utf-8' })
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${copy.title}-${new Date().toISOString().slice(0, 10)}.csv`; link.click(); URL.revokeObjectURL(link.href)
+  }
+  const handlePrimary = () => {
+    if (props.resource === 'logs') return exportCurrentPage()
+    if (props.resource === 'ai') return setAiOpen(true)
+    setFilterOpen(true)
+  }
+  return <><div className="page-heading"><div><p className="eyebrow">数据中心</p><h1>{copy.title}</h1><p>{copy.description}</p></div><button className="primary" onClick={handlePrimary}>{props.resource === 'logs' ? <ExternalLink size={16} /> : props.resource === 'ai' ? <Bot size={16} /> : <Plus size={16} />}{copy.primary}</button></div><section className="filter-bar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索名称、对象或变化内容" /></label><label><span>状态</span><select value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label><span>排序</span><select value={sort} onChange={(event) => props.onSort(event.target.value)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><button className="filter-button" title="更多筛选" onClick={() => setFilterOpen(true)}><SlidersHorizontal size={17} />更多筛选</button><div className="filter-spacer" /><button className="icon-button" title="刷新" onClick={props.onReload}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></section><section className="table-panel"><div className="table-summary"><span>共 <strong>{total}</strong> 条</span><span>已按当前筛选加载</span></div>{error ? <div className="state-box"><Activity size={27} /><strong>列表加载失败</strong><p>{error}</p><button className="primary small" onClick={props.onRetry}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载数据</strong><p>请稍候。</p></div> : rows.length === 0 ? <div className="state-box"><Filter size={27} /><strong>没有匹配的数据</strong><p>调整关键词或状态后重试。</p></div> : <div className="table-wrap"><table><thead><tr><th>{copy.columns[0]}</th><th>{copy.columns[1]}</th><th>{copy.columns[2]}</th><th>{copy.columns[3]}</th><th aria-label="操作" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><span className="row-tag">{row.tag}</span><strong>{row.title}</strong><small>{row.subtitle}</small></td><td>{row.metric}</td><td><span className="time">{row.updatedAt}</span></td><td><span className={`status ${statusClass[row.status]}`}>{row.status}</span></td><td><button className="row-action" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={19} /></button></td></tr>)}</tbody></table></div>}<CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={props.canGoBack} canGoForward={props.canGoForward} onPrev={props.onPrev} onNext={props.onNext} onPageSize={props.onPageSize} /></section>{filterOpen && <FilterPanel query={query} status={status} sort={sort} onQuery={props.onQuery} onStatus={props.onStatus} onSort={props.onSort} onClose={() => setFilterOpen(false)} />}{aiOpen && <AiRequestModal api={props.api} mode={props.mode} resource={props.resource} query={query} status={status} sort={sort} rows={rows} onClose={() => setAiOpen(false)} />}</>
+}
+
+function FilterPanel({ query, status, sort, onQuery, onStatus, onSort, onClose }: { query: string; status: string; sort: SortKey; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onClose: () => void }): ReactNode {
+  const [draftQuery, setDraftQuery] = useState(query)
+  const [draftStatus, setDraftStatus] = useState(status)
+  const [draftSort, setDraftSort] = useState(sort)
+  const apply = () => { onQuery(draftQuery); onStatus(draftStatus); onSort(draftSort); onClose() }
+  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭筛选" onClick={onClose} /><section className="modal-shell filter-modal" role="dialog" aria-modal="true" aria-labelledby="filter-modal-title"><header><div><p className="eyebrow">筛选条件</p><h2 id="filter-modal-title">调整列表范围</h2></div><button className="icon-button" title="关闭" onClick={onClose}><X size={18} /></button></header><div className="modal-body"><label className="modal-field"><span>关键词</span><input value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} placeholder="名称、对象或变化内容" /></label><label className="modal-field"><span>状态</span><select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label className="modal-field"><span>排序</span><select value={draftSort} onChange={(event) => setDraftSort(event.target.value as SortKey)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label></div><footer><button className="secondary" onClick={onClose}>取消</button><button className="primary" onClick={apply}>应用筛选</button></footer></section></div>
+}
+
+function AiRequestModal({ api, mode, resource, query, status, sort, rows, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; query: string; status: string; sort: SortKey; rows: TableRow[]; onClose: () => void }): ReactNode {
+  const [scope, setScope] = useState<'personal' | 'global'>('personal')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [submitted, setSubmitted] = useState<string | null>(null)
+  const submit = async () => {
+    setSubmitting(true); setError(null)
+    try {
+      if (mode === 'demo') { setSubmitted(`demo-ai-${Date.now()}`); return }
+      const key = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
+      const job = await api.createAiJob({ capabilityCode: 'price_band', scope, input: { resource, query, status, sort, itemIds: scope === 'personal' ? rows.map((row) => row.id) : [] }, idempotencyKey: `user-ai:${resource}:${scope}:${key}` })
+      setSubmitted(job.id)
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '分析请求提交失败') } finally { setSubmitting(false) }
+  }
+  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭分析请求" onClick={onClose} /><section className="modal-shell ai-request-modal" role="dialog" aria-modal="true" aria-labelledby="ai-request-title"><header><div><p className="eyebrow">AI 分析</p><h2 id="ai-request-title">选择分析范围</h2></div><button className="icon-button" title="关闭" onClick={onClose}><X size={18} /></button></header><div className="modal-body">{submitted ? <div className="submit-success"><Bot size={23} /><strong>分析请求已提交</strong><p>结果生成后会出现在 AI 分析列表。</p></div> : <><label className="scope-option"><input type="radio" name="ai-scope" checked={scope === 'personal'} onChange={() => setScope('personal')} /><span><strong>个人数据</strong><small>分析当前账户已关注的公开市场数据。</small></span></label><label className="scope-option"><input type="radio" name="ai-scope" checked={scope === 'global'} onChange={() => setScope('global')} /><span><strong>全局市场</strong><small>分析共享市场中的公开数据。</small></span></label>{error && <p className="form-error" role="alert">{error}</p>}</>}</div><footer>{submitted ? <button className="primary" onClick={onClose}>完成</button> : <><button className="secondary" onClick={onClose} disabled={submitting}>取消</button><button className="primary" onClick={() => void submit()} disabled={submitting}>{submitting ? '正在提交…' : '开始分析'}</button></>}</footer></section></div>
 }
 
 function CursorPagination({ total, pageIndex, pageSize, canGoBack, canGoForward, onPrev, onNext, onPageSize }: { total: number; pageIndex: number; pageSize: number; canGoBack: boolean; canGoForward: boolean; onPrev: () => void; onNext: () => void; onPageSize: (value: number) => void }): ReactNode {
@@ -1021,7 +1091,8 @@ function CursorPagination({ total, pageIndex, pageSize, canGoBack, canGoForward,
 }
 
 function DetailDrawer({ row, onClose, onAddSeller }: { row: TableRow; onClose: () => void; onAddSeller: (target: SellerTarget) => void }): ReactNode {
-  return <><button className="drawer-backdrop" aria-label="关闭详情" onClick={onClose} /><aside className="drawer"><header><div><span className="eyebrow">详情</span><h2>数据详情</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="drawer-body"><span className="row-tag">{row.tag}</span><h3>{row.title}</h3><p>{row.subtitle}</p><dl><div><dt>最新信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div></dl><div className="drawer-note"><ShieldCheck size={18} /><span>仅展示当前账户可见的数据。</span></div></div><footer><button className="secondary" onClick={onClose}>关闭</button>{row.sellerTarget ? <button className="primary small" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />添加卖家监控</button> : <button className="primary small"><ExternalLink size={15} />查看关联对象</button>}</footer></aside></>
+  const [relatedOpen, setRelatedOpen] = useState(false)
+  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭详情" onClick={onClose} /><section className="modal-shell detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-modal-title"><header><div><span className="eyebrow">详情</span><h2 id="detail-modal-title">{row.title}</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="modal-body"><span className="row-tag">{row.tag}</span><p className="detail-summary">{row.subtitle}</p><dl><div><dt>最新信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div></dl>{relatedOpen && <section className="related-content"><h3>关联内容</h3><p>{row.title}</p><span>{row.subtitle}</span><strong>{row.metric}</strong></section>}</div><footer><button className="secondary" onClick={onClose}>关闭</button>{row.sellerTarget ? <button className="primary small" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />添加卖家监控</button> : <button className="primary small" onClick={() => setRelatedOpen((value) => !value)}><ExternalLink size={15} />{relatedOpen ? '收起关联内容' : '查看关联对象'}</button>}</footer></section></div>
 }
 
 function SettingsPage(): ReactNode {

@@ -48,7 +48,7 @@ async function run() {
   const migrations = await applyMigrations(db)
 
   try {
-    const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'collector@example.test', password: 'phase3-collector-password-123' } })
+    const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'collector@example.test', password: 'p3-collector-123456' } })
     assert(registered.statusCode === 200, `用户注册失败：${registered.statusCode} ${registered.body}`)
     const userAccess = json(registered).accessToken
     const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='collector@example.test'")).rows[0].id)
@@ -186,7 +186,7 @@ async function run() {
     const blockedState = (await db.query('SELECT status FROM identity.collector_clients WHERE id=$1', [suspendedId])).rows[0]
     assert(blockedState.status === 'blocked', '被封禁设备解绑后状态发生变化')
 
-    const otherRegistered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'other@example.test', password: 'phase3-other-password-123' } })
+    const otherRegistered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email: 'other@example.test', password: 'p3-other-123456' } })
     const crossUserRevoke = await userApi.inject({ method: 'POST', url: `/v1/collector-devices/${bound.clientId}/revoke`, headers: auth(json(otherRegistered).accessToken) })
     assert(crossUserRevoke.statusCode === 404, '其他用户可以解绑非自身设备')
     await db.query('UPDATE billing.entitlement_grants SET limit_value=0 WHERE user_id=$1', [userId])
