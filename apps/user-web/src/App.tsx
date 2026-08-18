@@ -81,7 +81,7 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
   { key: 'monitors', label: '我的监控', icon: Gauge },
   { key: 'sellers', label: '竞品商家', icon: Store },
-  { key: 'market', label: '市场趋势', icon: PackageSearch },
+  { key: 'market', label: '市场动态', icon: PackageSearch },
   { key: 'dynamic', label: '动态趋势', icon: Bell },
   { key: 'ai', label: 'AI 分析', icon: Bot },
   { key: 'xianyuSupply', label: '咸鱼搬家', icon: PackageSearch },
@@ -92,8 +92,8 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
 const pageCopy: Record<RowKind, { title: string; description: string; primary: string; columns: [string, string, string, string] }> = {
   monitors: { title: '我的监控', description: '查看关键词、分类和价格区间产生的市场变化。', primary: '新建监控', columns: ['监控条件', '最新命中', '本次变化', '状态'] },
   sellers: { title: '竞品商家', description: '跟踪已关注商家的公开商品与经营动态。', primary: '添加商家', columns: ['商家', '公开商品', '动态摘要', '状态'] },
-  pool: { title: '市场趋势', description: '查看市场商品、价格变化和近期机会。', primary: '保存筛选', columns: ['商品', '当前价格', '最近更新', '状态'] },
-  discoveries: { title: '市场趋势', description: '浏览按筛选条件整理出的近期市场机会。', primary: '查看筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
+  pool: { title: '市场动态', description: '查看市场商品、价格变化和近期机会。', primary: '保存筛选', columns: ['商品', '当前价格', '最近更新', '状态'] },
+  discoveries: { title: '市场动态', description: '浏览按筛选条件整理出的近期市场机会。', primary: '查看筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
   events: { title: '动态趋势', description: '统一查看价格、上架、下架和卖家变化。', primary: '查看筛选', columns: ['事件', '关联对象', '变化内容', '状态'] },
   logs: { title: '动态趋势', description: '按对象、类型和时间筛选工作台可见的业务动态。', primary: '导出当前页', columns: ['动态', '对象', '记录内容', '状态'] },
   ai: { title: 'AI 分析', description: '阅读已发布的市场解读与竞品分析结果。', primary: '创建分析请求', columns: ['分析主题', '数据范围', '结论摘要', '状态'] }
@@ -1318,6 +1318,36 @@ function SupplyPage({ api, mode, sourceType }: { api: UserApiClient; mode: 'demo
   </>
 }
 
+function publishImageUrls(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : typeof value === 'string' ? [value] : []
+  return values.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).slice(0, 5)
+}
+
+function xianyuPublishSnapshot(value: unknown, sourceType: SupplySourceType): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('导入记录必须是对象')
+  const source = value as Record<string, unknown>
+  const images = publishImageUrls(source.mainImages ?? source.images ?? source.imageUrls ?? source.image_urls)
+  const sourcePlatform = typeof source.sourcePlatform === 'string' ? source.sourcePlatform : typeof source.platform === 'string' ? source.platform : 'external'
+  const sourceItemId = typeof source.sourceItemId === 'string' ? source.sourceItemId : typeof source.itemId === 'string' ? source.itemId : typeof source.id === 'string' ? source.id : ''
+  const sourceUrl = typeof source.sourceUrl === 'string' ? source.sourceUrl : typeof source.url === 'string' ? source.url : typeof source.productUrl === 'string' ? source.productUrl : ''
+  const price = Number(source.price ?? source.salePrice ?? source.currentPrice)
+  const attributes = source.attributes && typeof source.attributes === 'object' && !Array.isArray(source.attributes) ? source.attributes as Record<string, unknown> : {}
+  const originalPrice = Number(source.originalPrice ?? source.listPrice ?? source.marketPrice)
+  return {
+    sourceType,
+    sourcePlatform,
+    sourceItemId,
+    sourceUrl,
+    title: typeof source.title === 'string' ? source.title : typeof source.name === 'string' ? source.name : '',
+    description: typeof source.description === 'string' ? source.description : typeof source.content === 'string' ? source.content : '',
+    price,
+    mainImages: images,
+    detailImages: [],
+    sku: source.sku ?? source.skuConfig ?? null,
+    attributes: { ...attributes, publishTarget: 'goofish', ...(Number.isFinite(originalPrice) ? { originalPrice } : {}) }
+  }
+}
+
 function SupplyImportModal({ api, mode, sourceType, onClose, onImported }: { api: UserApiClient; mode: 'demo' | 'api'; sourceType: SupplySourceType; onClose: () => void; onImported: () => void }): ReactNode {
   const [file, setFile] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
@@ -1328,13 +1358,14 @@ function SupplyImportModal({ api, mode, sourceType, onClose, onImported }: { api
     setSaving(true); setError(null)
     try {
       const text = await file.text()
-      const snapshots = file.name.toLowerCase().endsWith('.jsonl') ? text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line)) : (() => { const value = JSON.parse(text); return Array.isArray(value) ? value : [value] })()
+      const rawSnapshots = file.name.toLowerCase().endsWith('.jsonl') ? text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line)) : (() => { const value = JSON.parse(text); return Array.isArray(value) ? value : [value] })()
+      const snapshots = rawSnapshots.map((snapshot) => xianyuPublishSnapshot(snapshot, sourceType))
       if (!snapshots.length || snapshots.length > 100) throw new Error('每次导入仅支持 1 到 100 条已解析快照')
       const imported = mode === 'demo' ? { batchId: `demo-${newSupplyKey()}`, receivedCount: snapshots.length, insertedCount: snapshots.length, deduplicatedCount: 0, failedCount: 0, rejections: [], duplicate: false } : await api.importSupplySnapshots({ schemaVersion: 1, sourceType, sourceFormat: file.name.toLowerCase().endsWith('.jsonl') ? 'parsed_snapshot_jsonl' : 'parsed_snapshot_json', idempotencyKey: newSupplyKey(), snapshots })
       setResult(imported); onImported()
     } catch (caught) { setError(caught instanceof UserApiError ? caught.message : caught instanceof Error ? caught.message : '素材导入失败') } finally { setSaving(false) }
   }
-  return <Modal title="导入素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在导入…' : '开始导入'}</button></>}><label className="modal-field"><input type="file" accept=".json,.jsonl,.txt,application/json,application/x-ndjson,text/plain" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label><p className="supply-hint">支持已解析商品快照导入：JSON、JSONL 或 JSON 内容 TXT。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>导入完成</strong><span>接收 {result.receivedCount}，新增 {result.insertedCount}，去重 {result.deduplicatedCount}，失败 {result.failedCount}</span>{result.rejections.length > 0 && <small>失败记录：{result.rejections.map((item) => `${item.recordIndex + 1} (${item.reasonCode})`).join('，')}</small>}</div>}</Modal>
+  return <Modal title="导入发布素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在导入…' : '开始导入'}</button></>}><label className="modal-field file-picker"><span>素材文件</span><input type="file" accept=".json,.jsonl,.txt,application/json,application/x-ndjson,text/plain" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label><p className="supply-hint">导入已提取的商品数据后，会统一转换为闲鱼发布素材；仅保留最多 5 张发布主图。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>导入完成</strong><span>接收 {result.receivedCount}，新增 {result.insertedCount}，去重 {result.deduplicatedCount}，失败 {result.failedCount}</span>{result.rejections.length > 0 && <small>失败记录：{result.rejections.map((item) => `${item.recordIndex + 1} (${item.reasonCode})`).join('，')}</small>}</div>}</Modal>
 }
 
 function SupplyMigrationModal({ api, mode, sourceKind, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; sourceKind: 'public_url' | 'published_item'; onClose: () => void }): ReactNode {
@@ -1416,8 +1447,8 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
   const [shipping, setShipping] = useState(String(material.attributes.shipping ?? ''))
   const [postage, setPostage] = useState(String(material.attributes.postage ?? ''))
   const [region, setRegion] = useState(String(material.attributes.region ?? ''))
-  const [publishAddressMode, setPublishAddressMode] = useState(String(material.attributes.publishAddressMode ?? 'default'))
-  const [publishAddressPool, setPublishAddressPool] = useState(Array.isArray(material.attributes.publishAddressPool) ? material.attributes.publishAddressPool.filter((item): item is string => typeof item === 'string').join('\n') : '')
+  const [publishAddressMode, setPublishAddressMode] = useState('default')
+  const [publishAddressPool, setPublishAddressPool] = useState('')
   const [originalPrice] = useState(String(material.attributes.originalPrice ?? ''))
   const [skuGroups, setSkuGroups] = useState<SupplySkuGroup[]>(() => supplySkuConfig(material.sku, String(material.price)).groups)
   const [skuCombinations, setSkuCombinations] = useState<SupplySkuCombination[]>(() => supplySkuConfig(material.sku, String(material.price)).combinations)
@@ -1426,7 +1457,10 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
     const nextRows = updater(skuRows)
     const nextGroups = nextRows.reduce<SupplySkuGroup[]>((groups, row) => {
       const name = row.key.trim()
-      if (!name) return groups
+      if (!name) {
+        if (groups.length < 2) groups.push({ name: '', values: [row.value] })
+        return groups
+      }
       const existing = groups.find((group) => group.name === name)
       if (existing) existing.values.push(row.value)
       else if (groups.length < 2) groups.push({ name, values: [row.value] })
@@ -1466,10 +1500,11 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
     try {
       const groups = skuGroups.map((group) => ({ name: group.name.trim(), values: group.values.map((value) => value.trim()).filter(Boolean) })).filter((group) => group.name && group.values.length)
       const sku = groups.length ? { groups, combinations: skuCombinations.map((item) => ({ values: item.values, price: Number(item.price), stock: Number(item.stock) })) } : null
-      const attributes = { ...material.attributes, category: category.trim(), categoryPath: category.trim(), condition: condition.trim(), conditionText: condition.trim(), brand: brand.trim(), delivery: delivery.trim(), shipping: shipping.trim(), postage: postage.trim(), region: region.trim(), publishAddressMode, publishAddressPool: publishAddressPool.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) }
+      const { publishAddressMode: _addressMode, publishAddressPool: _addressPool, ...existingAttributes } = material.attributes
+      const attributes = { ...existingAttributes, category: category.trim(), categoryPath: category.trim(), condition: condition.trim(), conditionText: condition.trim(), brand: brand.trim(), delivery: delivery.trim(), shipping: shipping.trim(), postage: postage.trim(), region: region.trim(), publishAddressStrategy: 'local_random_pool' }
       const patch: SupplyMaterialPatch = {
         title: title.trim(), description: description.trim() || null, price: numericPrice, status: status as SupplyMaterial['status'],
-        mainImages: parseImageUrls(mainImages, '主图', 1, 10), detailImages: parseImageUrls(detailImages, '详情图', 0, 120),
+        mainImages: parseImageUrls(mainImages, '发布主图', 1, 5), detailImages: parseImageUrls(detailImages, '详情图', 0, 120),
         sku, attributes
       }
       setSaving(true); setError(null)

@@ -401,4 +401,7 @@ td strong { color: #2f3b43; }
 .supply-sku-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 8px; margin-top: 8px; }
 .supply-sku-row input { width: 100%; height: 36px; min-width: 0; padding: 0 10px; border: 1px solid #d8dfe2; border-radius: 5px; outline: 0; color: #27313b; background: #fff; font-size: 13px; }
 .supply-sku-row input:focus { border-color: #d8842d; box-shadow: 0 0 0 3px #fff1df; }
+.supply-edit-grid > label:nth-of-type(11), .supply-edit-grid > label:nth-of-type(12) { display: none; }
+.file-picker { align-items: center; min-height: 72px; justify-content: center; }
+.file-picker input { width: auto; max-width: 100%; }
 @media (max-width: 720px) { .supply-edit-grid { grid-template-columns: 1fr; }.supply-edit-wide { grid-column: auto; } }
