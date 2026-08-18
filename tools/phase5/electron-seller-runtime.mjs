@@ -98,7 +98,7 @@ function readOutboxState(databasePath) {
 
 function baseItems() {
   return {
-    '501': { title: 'MacBook Air 13', price: 100, want: 8, description: '公开商品详情 A', condition: '95新', imageKeys: ['501-a', '501-b'], tags: ['数码', '原装'] },
+    '501': { title: 'MacBook Air 13', price: 100, want: 8, description: '公开商品详情 A', condition: '95新', imageKeys: ['501-a', '501-b'], tags: ['数码', '原装'], sku: { groups: [{ name: '颜色', values: ['深空灰', '银色'] }, { name: '内存', values: ['8G', '16G'] }], combinations: [{ values: ['深空灰', '8G'], price: 100, stock: 1 }, { values: ['深空灰', '16G'], price: 120, stock: 2 }, { values: ['银色', '8G'], price: 100, stock: 1 }, { values: ['银色', '16G'], price: 120, stock: 2 }] } },
     '502': { title: 'MacBook Pro 14', price: 200, want: 12, description: '公开商品详情 B', condition: '9成新', imageKeys: ['502-a'], tags: ['数码', '笔记本'] },
     '503': { title: 'MacBook Pro 16', price: 300, want: 5, description: '公开商品详情 C', condition: '95新', imageKeys: ['503-a'], tags: ['数码', '高配'] },
     '504': { title: 'Mac mini M2', price: 40, want: 3, description: '公开商品详情 D', condition: '9成新', imageKeys: ['504-a'], tags: ['数码', '台式机'] },
@@ -207,6 +207,8 @@ function detailFixture(itemId, snapshot, revision) {
   if (!item) return '<!doctype html><meta charset="utf-8"><title>商品不存在</title>'
   const tags = item.tags.map((tag) => `<span data-xianyu-tag>${tag}</span>`).join('')
   const images = item.imageKeys.map((key) => `<img data-xianyu-image src="/asset/${key}.gif">`).join('')
+  const skuGroups = item.sku ? item.sku.groups.map((group) => `<section data-xianyu-sku-group data-xianyu-sku-name="${group.name}">${group.values.map((value) => `<span data-xianyu-sku-value="${value}">${value}</span>`).join('')}</section>`).join('') : ''
+  const skuCombinations = item.sku ? item.sku.combinations.map((combination) => `<span data-xianyu-sku-combination data-xianyu-sku-values="${JSON.stringify(combination.values).replace(/"/g, '&quot;')}" data-xianyu-sku-price="${combination.price}" data-xianyu-sku-stock="${combination.stock}"></span>`).join('') : ''
   return `<!doctype html><meta charset="utf-8"><title>${item.title}</title>
   <section data-xianyu-detail data-seller-id="${sellerId}" data-xianyu-published-state="${itemId === publishedItemId ? publishedItemState(revision) : 'active'}">
     <h1 data-xianyu-title>${item.title}</h1>
@@ -216,7 +218,7 @@ function detailFixture(itemId, snapshot, revision) {
     <p data-xianyu-want>${item.want}人想要</p>
     <p data-xianyu-description>${item.description}</p>
     <p data-xianyu-condition>${item.condition}</p>
-    ${tags}${images}
+    ${tags}${images}${skuGroups}${skuCombinations}
   </section>`
 }
 
@@ -366,8 +368,9 @@ async function run() {
     await runAndPause(1)
     const migrated = (await db.query('SELECT status,material_id,last_error FROM supply.migration_requests WHERE id=$1', [migrationId])).rows[0]
     assert(migrated?.status === 'succeeded' && migrated.material_id && migrated.last_error === null, `本机 Chrome 未完成公开链接搬家：${JSON.stringify(migrated)}`)
-    const migratedMaterial = (await db.query('SELECT source_type,source_platform,source_item_id,title,main_images FROM supply.materials WHERE id=$1', [migrated.material_id])).rows[0]
+    const migratedMaterial = (await db.query('SELECT source_type,source_platform,source_item_id,title,main_images,sku FROM supply.materials WHERE id=$1', [migrated.material_id])).rows[0]
     assert(migratedMaterial?.source_type === 'xianyu' && migratedMaterial.source_platform === 'goofish' && migratedMaterial.source_item_id === '501' && migratedMaterial.title === 'MacBook Air 13', `搬家素材内容错误：${JSON.stringify(migratedMaterial)}`)
+    assert(migratedMaterial?.sku?.groups?.length === 2 && migratedMaterial.sku.groups[0].name === '颜色' && migratedMaterial.sku.groups[0].values.includes('深空灰') && migratedMaterial.sku.combinations.length === 4 && migratedMaterial.sku.combinations.some((item) => item.values.join('/') === '银色/16G' && item.price === 120 && item.stock === 2), `搬家素材 SKU 未保留：${JSON.stringify(migratedMaterial?.sku)}`)
     assert(heartbeatFailures > 0, '断网夹具没有让首次 heartbeat 进入 Outbox')
 
     heartbeatOnline = true
@@ -499,6 +502,7 @@ async function run() {
         inFlightRevokeStopsNextDetail: true,
         localCredentialCookieAndProfileBoundary: true,
         publicLinkMigrationUsesLocalChromeAndOutbox: true,
+        publicStructuredSkuMigratesToMaterial: true,
         noIngestUploadCall: true
       }
     }, null, 2))

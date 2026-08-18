@@ -111,6 +111,24 @@ export type UserPage<T> = {
   snapshot?: string | null
 }
 
+export type MarketCategory = {
+  id: string
+  platform: string
+  platformCategoryId: string
+  parentId?: string | null
+  name: string
+  path: string
+  depth: number
+  active: boolean
+  observedAt: string
+}
+
+export type MarketRegion = {
+  name: string
+  region: string
+  platform: string
+}
+
 export type UserAiJobInput = {
   capabilityCode: string
   input: unknown
@@ -210,9 +228,17 @@ export type SellerItem = {
   state: SellerItemState
   title?: string
   price?: string
+  previousPrice?: string
+  currentPrice?: string
   region?: string
   conditionText?: string
   wantCount?: number
+  images: string[]
+  categoryPath?: string[]
+  description?: string
+  tags?: string[]
+  sku?: unknown
+  sourceUrl?: string
   firstSeenAt: string
   lastSeenAt: string
 }
@@ -372,9 +398,12 @@ function sellerItem(value: unknown): SellerItem {
   const record = asRecord(value)
   const stringValue = (key: string) => typeof record[key] === 'string' ? record[key] as string : ''
   const numberValue = (key: string) => typeof record[key] === 'number' && Number.isFinite(record[key]) ? record[key] as number : undefined
+  const stringArrayValue = (key: string) => Array.isArray(record[key]) ? record[key].filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : []
   const stateValue = stringValue('state') || stringValue('lifecycleState') || stringValue('lifecycle_state')
   const state: SellerItemState = stateValue === 'active' || stateValue === 'sold' || stateValue === 'offline' ? stateValue : 'unknown'
   const wantCount = numberValue('wantCount') ?? numberValue('want_count')
+  const images = stringArrayValue('images').length ? stringArrayValue('images') : stringArrayValue('imageUrls')
+  const categoryPath = stringArrayValue('categoryPath').length ? stringArrayValue('categoryPath') : stringArrayValue('category_path')
   return {
     id: stringValue('id'),
     platform: 'goofish',
@@ -382,9 +411,17 @@ function sellerItem(value: unknown): SellerItem {
     state,
     ...(stringValue('title') ? { title: stringValue('title') } : {}),
     ...(typeof record.price === 'number' || typeof record.price === 'string' ? { price: String(record.price) } : {}),
+    ...(typeof record.previousPrice === 'number' || typeof record.previousPrice === 'string' ? { previousPrice: String(record.previousPrice) } : {}),
+    ...(typeof record.currentPrice === 'number' || typeof record.currentPrice === 'string' ? { currentPrice: String(record.currentPrice) } : {}),
     ...(stringValue('region') ? { region: stringValue('region') } : {}),
     ...(stringValue('conditionText') || stringValue('condition_text') ? { conditionText: stringValue('conditionText') || stringValue('condition_text') } : {}),
     ...(wantCount === undefined ? {} : { wantCount }),
+    images,
+    ...(categoryPath.length ? { categoryPath } : {}),
+    ...(typeof record.description === 'string' && record.description ? { description: record.description } : {}),
+    ...(stringArrayValue('tags').length ? { tags: stringArrayValue('tags') } : {}),
+    ...(record.sku !== undefined && record.sku !== null ? { sku: record.sku } : {}),
+    ...(typeof record.sourceUrl === 'string' && record.sourceUrl ? { sourceUrl: record.sourceUrl } : {}),
     firstSeenAt: stringValue('firstSeenAt') || stringValue('first_seen_at'),
     lastSeenAt: stringValue('lastSeenAt') || stringValue('last_seen_at')
   }
@@ -462,6 +499,14 @@ export class UserApiClient {
 
   async list<T>(resource: UserListResource, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<T>> {
     return this.listPath<T>(USER_LIST_PATHS[resource], input, signal)
+  }
+
+  async listMarketCategories(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<MarketCategory>> {
+    return this.listPath<MarketCategory>('/v1/market/categories', input, signal)
+  }
+
+  async listMarketRegions(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<MarketRegion>> {
+    return this.listPath<MarketRegion>('/v1/market/regions', input, signal)
   }
 
   async importSupplySnapshots(input: SupplyImportInput): Promise<SupplyImportResult> {

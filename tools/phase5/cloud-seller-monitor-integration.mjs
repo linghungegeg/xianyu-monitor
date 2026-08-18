@@ -174,7 +174,13 @@ async function run() {
     const currentVersionId = randomUUID()
     await db.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
       VALUES ($1,$2,'phase5 seller item',99,'上海','95新',6,'{"cookie":"local-only"}'::jsonb,'phase5-seller-item-version-previous',now() - interval '1 minute'),
-             ($3,$2,'phase5 seller item',123.45,'上海','95新',7,'{"imageUrls":["https://img.example/public.jpg"],"chromeProfilePath":"C:\\\\local-only"}'::jsonb,'phase5-seller-item-version-current',now())`, [previousVersionId, itemIds[0], currentVersionId])
+             ($3,$2,'phase5 seller item',123.45,'上海','95新',7,'{"imageUrls":["https://img.example/public.jpg"],"categoryPath":["数码","相机"],"sku":{"groups":[{"name":"颜色","values":["黑色"]}]},"description":"公开商品描述","chromeProfilePath":"C:\\\\local-only"}'::jsonb,'phase5-seller-item-version-current',now())`, [previousVersionId, itemIds[0], currentVersionId])
+    await db.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
+      VALUES ($1,$2,'phase5 second region',88,'杭州','95新',2,'{}'::jsonb,'phase5-seller-item-version-hangzhou',now())`, [randomUUID(), itemIds[1]])
+    for (let index = 2; index < 21; index += 1) {
+      await db.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
+        VALUES ($1,$2,$3,66,$4,'95新',1,'{}'::jsonb,$5,now())`, [randomUUID(), itemIds[index], `phase5 region ${index}`, `phase5-region-${String(index).padStart(2, '0')}`, `phase5-seller-item-version-region-${index}`])
+    }
     const userARunId = randomUUID()
     await db.query(`INSERT INTO ops.collection_runs (id,client_id,client_run_id,task_reference,kind,status,started_at,finished_at,result_counts)
       VALUES ($1,$2,$3,$4,'seller','completed',now(),now(),'{}'::jsonb)`, [userARunId, collectorSession.clientId, `phase5-user-a-${userARunId}`, firstTask.id])
@@ -189,7 +195,7 @@ async function run() {
     const itemPage = json(itemPageResponse)
     assert(itemPage.items.length === 20 && itemPage.page.total === 21 && itemPage.page.hasMore && itemPage.page.nextCursor, '卖家商品分页合同错误')
     const detailedItem = itemPage.items.find((item) => item.platformItemId === 'phase5-item-0')
-    assert(detailedItem?.title === 'phase5 seller item' && Number(detailedItem.price) === 123.45 && Number(detailedItem.previousPrice) === 99 && Number(detailedItem.currentPrice) === 123.45 && detailedItem.region === '上海' && detailedItem.conditionText === '95新' && detailedItem.wantCount === 7, `卖家商品详情未返回公开版本价格投影：${JSON.stringify(detailedItem)}`)
+    assert(detailedItem?.title === 'phase5 seller item' && Number(detailedItem.price) === 123.45 && Number(detailedItem.previousPrice) === 99 && Number(detailedItem.currentPrice) === 123.45 && detailedItem.region === '上海' && detailedItem.conditionText === '95新' && detailedItem.wantCount === 7 && detailedItem.images?.[0] === 'https://img.example/public.jpg' && detailedItem.categoryPath?.join('/') === '数码/相机' && detailedItem.sku?.groups?.[0]?.name === '颜色' && detailedItem.description === '公开商品描述' && !itemPageResponse.body.includes('chromeProfilePath'), `卖家商品详情未返回安全公开字段：${JSON.stringify(detailedItem)}`)
     assert(detailedItem?.sellerId === sellerId && detailedItem.platformSellerId === firstTask.platformSellerId, '卖家商品详情缺少稳定卖家引用')
     const marketItemResponse = await userApi.inject({ method: 'GET', url: '/v1/market/items?limit=20&q=phase5-item-0', headers: auth(userAAccess) })
     assert(marketItemResponse.statusCode === 200, `市场商品读取失败：${marketItemResponse.statusCode} ${marketItemResponse.body}`)
@@ -225,6 +231,8 @@ async function run() {
       VALUES ($1,$2,$3,$4,'seller','completed',now(),now(),'{}'::jsonb)`, [userBRunId, collectorBSession.clientId, `phase5-user-b-${userBRunId}`, userBTask.id])
     await db.query(`INSERT INTO market.observations (id,collected_at,received_at,collection_run_id,item_id,platform_item_id,payload_hash)
       VALUES ($1,now(),now(),$2,$3,$4,$5)`, [randomUUID(), userBRunId, itemIds[21], 'phase5-item-21', 'phase5-user-b-payload'])
+    await db.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
+      VALUES ($1,$2,'phase5 user b region',77,'北京','95新',1,'{}'::jsonb,'phase5-seller-item-version-beijing',now())`, [randomUUID(), itemIds[21]])
     await db.query(`INSERT INTO market.item_events (id,occurred_at,detected_at,item_id,seller_id,event_type,event_key)
       VALUES ($1,now(),now(),$2,$3,'price_changed','phase5-user-b-price-event')`, [randomUUID(), itemIds[21], sellerId])
     const userAItemIsolation = await userApi.inject({ method: 'GET', url: `/v1/seller-monitors/${firstTask.id}/items?limit=20&q=phase5-item-21`, headers: auth(userAAccess) })
@@ -235,6 +243,13 @@ async function run() {
     assert(userAEventIsolation.statusCode === 200 && json(userAEventIsolation).page.total === 1, '卖家事件将其他用户采集结果泄露给当前用户')
     const userBEventVisibility = await userApi.inject({ method: 'GET', url: `/v1/seller-monitors/${userBTask.id}/events?limit=20&eventType=price_changed`, headers: auth(userBAccess) })
     assert(userBEventVisibility.statusCode === 200 && json(userBEventVisibility).page.total === 1 && json(userBEventVisibility).items[0].eventKey === 'phase5-user-b-price-event', '当前用户自己的卖家事件被错误过滤')
+    const userARegions = await userApi.inject({ method: 'GET', url: '/v1/market/regions?limit=20&platform=goofish&sort=name&order=asc', headers: auth(userAAccess) })
+    const userARegionsPage = json(userARegions)
+    const userARegionsNext = await userApi.inject({ method: 'GET', url: `/v1/market/regions?limit=20&platform=goofish&sort=name&order=asc&cursor=${encodeURIComponent(userARegionsPage.page.nextCursor)}`, headers: auth(userAAccess) })
+    const userARegionNames = [...userARegionsPage.items, ...json(userARegionsNext).items].map((item) => item.name)
+    assert(userARegions.statusCode === 200 && userARegionsPage.items.length === 20 && userARegionsPage.page.total === 21 && userARegionsPage.page.hasMore && userARegionsNext.statusCode === 200 && json(userARegionsNext).items.length === 1 && !json(userARegionsNext).page.hasMore && userARegionNames.includes('上海') && userARegionNames.includes('杭州') && !userARegionNames.includes('北京'), `User 地区列表游标或归属错误：${userARegions.body} ${userARegionsNext.body}`)
+    const userBRegions = await userApi.inject({ method: 'GET', url: '/v1/market/regions?limit=20&platform=goofish&sort=name&order=asc', headers: auth(userBAccess) })
+    assert(userBRegions.statusCode === 200 && JSON.stringify(json(userBRegions).items.map((item) => item.name)) === JSON.stringify(['北京']), `User 地区列表未按采集归属过滤：${userBRegions.body}`)
     const profile = await userApi.inject({ method: 'GET', url: `/v1/seller-monitors/${firstTask.id}/profile`, headers: auth(userAAccess) })
     assert(profile.statusCode === 200 && profile.body.includes(firstTask.platformSellerId), '卖家公开资料详情读取失败')
 
@@ -262,6 +277,7 @@ async function run() {
         marketItemSellerReference: true,
         sellerItemOwnership: true,
         sellerEventOwnership: true,
+        userMarketRegionOwnership: true,
         sellerProfileHostAllowlist: true,
         sellerProfileQuerySanitized: true,
         sellerTaskInputValidation: true,

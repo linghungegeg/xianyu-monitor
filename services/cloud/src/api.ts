@@ -417,7 +417,8 @@ function supplyStableJson(value: unknown): string {
 }
 
 async function persistSupplyMigrationSnapshot(sql: Sql, userId: string, requestId: string, snapshotValue: unknown): Promise<{ materialId: string; duplicate: boolean }> {
-  const material = parseSupplySnapshot(snapshotValue)
+  const parsedMaterial = parseSupplySnapshot(snapshotValue)
+  const material = { ...parsedMaterial, attributes: { ...parsedMaterial.attributes, originalPrice: parsedMaterial.price } }
   if (material.sourceType !== 'xianyu' || material.sourcePlatform !== 'goofish') throw new SupplyImportRequestError('搬家结果必须是闲鱼公开商品快照')
   const request = (await sql.query(`SELECT platform_item_id,item_url FROM supply.migration_requests WHERE id=$1 AND user_id=$2`, [requestId, userId])).rows[0]
   if (!request || material.sourceItemId !== String(request.platform_item_id) || material.sourceUrl !== String(request.item_url)) throw new SupplyImportRequestError('搬家结果与请求商品不匹配')
@@ -446,6 +447,58 @@ async function persistSupplyMigrationSnapshot(sql: Sql, userId: string, requestI
   await sql.query('INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,now())', [randomUUID(), materialId, nextVersion, contentHash, JSON.stringify(canonicalSnapshot), batchId])
   await sql.query("UPDATE supply.import_batches SET inserted_count=1,result=jsonb_build_object('receivedCount',1,'insertedCount',1,'deduplicatedCount',0,'failedCount',0,'duplicate',false) WHERE id=$1", [batchId])
   return { materialId, duplicate: false }
+}
+
+async function syncMigratedMaterialOriginalPrice(sql: Sql, userId: string, platform: string, platformItemId: string, publicPrice: unknown): Promise<void> {
+  if (platform !== 'goofish' || typeof publicPrice !== 'number' || !Number.isFinite(publicPrice) || publicPrice < 0 || publicPrice > 100_000_000) return
+  const originalPrice = Number(publicPrice.toFixed(2))
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = (await sql.query(`SELECT id,source_type,source_platform,source_item_id,source_url,title,description,price::float8 AS price,
+      main_images,detail_images,sku,attributes,import_batch_id,current_version
+      FROM supply.materials
+      WHERE user_id=$1 AND source_type='xianyu' AND source_platform='goofish' AND source_item_id=$2`, [userId, platformItemId])).rows[0]
+    if (!current) return
+    const currentAttributes = current.attributes && typeof current.attributes === 'object' && !Array.isArray(current.attributes) ? current.attributes as Record<string, unknown> : {}
+    const currentOriginalPrice = currentAttributes.originalPrice
+    if ((typeof currentOriginalPrice === 'number' || typeof currentOriginalPrice === 'string') && Number(currentOriginalPrice) === originalPrice) return
+    const snapshot = {
+      schemaVersion: 1,
+      sourceType: String(current.source_type),
+      sourcePlatform: String(current.source_platform),
+      sourceItemId: String(current.source_item_id),
+      sourceUrl: String(current.source_url),
+      title: String(current.title),
+      description: current.description === null ? null : String(current.description),
+      price: Number(current.price),
+      mainImages: current.main_images,
+      detailImages: current.detail_images,
+      sku: current.sku ?? null,
+      attributes: { ...currentAttributes, originalPrice }
+    }
+    const contentHash = createHash('sha256').update(supplyStableJson(snapshot)).digest('hex')
+    const existingVersion = (await sql.query('SELECT version FROM supply.material_versions WHERE material_id=$1 AND content_hash=$2', [current.id, contentHash])).rows[0]
+    if (existingVersion) return
+    const batchKey = `market-original-price:${current.id}:${contentHash}`
+    const insertedBatch = await sql.query(`INSERT INTO supply.import_batches (id,user_id,idempotency_key,source_type,source_format,payload_hash,received_count,inserted_count,deduplicated_count,failed_count,result,created_at,completed_at)
+      VALUES ($1,$2,$3,'xianyu','parsed_snapshot_json',$4,1,1,0,0,'{}'::jsonb,now(),now())
+      ON CONFLICT (user_id,idempotency_key) DO NOTHING RETURNING id`, [randomUUID(), userId, batchKey, contentHash])
+    const batchId = String(insertedBatch.rows[0]?.id ?? (await sql.query('SELECT id FROM supply.import_batches WHERE user_id=$1 AND idempotency_key=$2', [userId, batchKey])).rows[0]?.id ?? '')
+    if (!batchId) throw new Error('素材原价同步批次创建失败')
+    const nextVersion = Number(current.current_version) + 1
+    const synchronized = await sql.query(`WITH updated AS (
+      UPDATE supply.materials
+      SET attributes=$1::jsonb,import_batch_id=$2,current_version=$3,updated_at=now()
+      WHERE id=$4 AND user_id=$5 AND current_version=$6
+      RETURNING id
+    ) INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at)
+      SELECT $7,updated.id,$3,$8,$9::jsonb,$2,now() FROM updated
+      ON CONFLICT (material_id,content_hash) DO NOTHING
+      RETURNING material_id`, [JSON.stringify(snapshot.attributes), batchId, nextVersion, current.id, userId, current.current_version, randomUUID(), contentHash, JSON.stringify(snapshot)])
+    if (!synchronized.rows[0]) continue
+    await sql.query("UPDATE supply.import_batches SET result=jsonb_build_object('receivedCount',1,'insertedCount',1,'deduplicatedCount',0,'failedCount',0,'originalPriceSynchronized',true) WHERE id=$1", [batchId])
+    return
+  }
+  throw new Error('素材原价同步并发冲突')
 }
 
 function supplyMigrationResponse(row: Record<string, unknown>) {
@@ -1225,6 +1278,54 @@ const userMarketCategoriesPlan = tablePlan({
   }
 })
 
+const userMarketRegionsListConfig: ListConfig = {
+  resource: 'user.market_regions',
+  defaultSort: 'name',
+  sortAliases: { name: 'name', id: 'id' },
+  filterAliases: { platform: 'platform' },
+  allowedFilters: ['platform']
+}
+
+function userMarketRegionsPlan(context: ListContext, subjectId: string): ListPlan {
+  const sortExpression = 'v.region'
+  const idExpression = "(i.platform || ':' || v.region)"
+  const build = (includeCursor: boolean): ListQuerySpec & { where: string } => {
+    const values: unknown[] = [context.snapshotAt, subjectId]
+    const conditions = [
+      'i.first_seen_at <= $1',
+      'NULLIF(BTRIM(v.region), \'\') IS NOT NULL',
+      `EXISTS (SELECT 1 FROM market.observations o JOIN ops.collection_runs r ON r.id = o.collection_run_id JOIN identity.collector_clients c ON c.id = r.client_id WHERE o.item_id = i.id AND c.user_id = $2)`
+    ]
+    if (context.filters.platform) { values.push(context.filters.platform); conditions.push(`i.platform = $${values.length}`) }
+    if (includeCursor && context.cursorKey) conditions.push(keyset(values, sortExpression, idExpression, context.order, context.cursorKey))
+    return { text: '', values, where: conditions.join(' AND ') }
+  }
+  return {
+    resource: userMarketRegionsListConfig.resource,
+    page: () => {
+      const query = build(true)
+      return {
+        text: `SELECT v.region AS name, i.platform, v.region AS region, v.region AS cursor_sort_value, ${idExpression} AS cursor_id
+          FROM market.items i
+          JOIN LATERAL (SELECT region FROM market.item_versions WHERE item_id=i.id ORDER BY observed_at DESC,id DESC LIMIT 1) v ON TRUE
+          WHERE ${query.where}
+          GROUP BY i.platform, v.region
+          ORDER BY ${sortExpression} ${context.order.toUpperCase()}, ${idExpression} ${context.order.toUpperCase()}
+          LIMIT ${context.limit + 1}`,
+        values: query.values
+      }
+    },
+    count: () => {
+      const query = build(false)
+      return { text: `SELECT COUNT(*)::int AS total FROM (SELECT i.platform, v.region
+        FROM market.items i
+        JOIN LATERAL (SELECT region FROM market.item_versions WHERE item_id=i.id ORDER BY observed_at DESC,id DESC LIMIT 1) v ON TRUE
+        WHERE ${query.where}
+        GROUP BY i.platform, v.region) regions`, values: query.values }
+    }
+  }
+}
+
 const userSupplyMaterialsPlan = tablePlan({
   resource: userSupplyMaterialsListConfig.resource,
   from: 'supply.materials m',
@@ -1559,11 +1660,11 @@ function sellerItemsPlan(context: ListContext, subjectId: string): ListPlan {
     resource: sellerItemsListConfig.resource,
     page: () => {
       const query = build(true)
-        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, previous_version.price AS "previousPrice", v.price AS "currentPrice", v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
+        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, previous_version.price AS "previousPrice", v.price AS "currentPrice", v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", v.canonical_payload->'imageUrls' AS images, COALESCE(v.canonical_payload->'categoryPath', v.canonical_payload->'category_path') AS "categoryPath", v.canonical_payload->>'description' AS description, v.canonical_payload->'tags' AS tags, v.canonical_payload->'sku' AS sku, v.canonical_payload->>'url' AS "sourceUrl", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
         FROM market.items i
         LEFT JOIN market.seller_profiles s ON s.id = i.seller_id
         LEFT JOIN LATERAL (
-          SELECT title,price,region,condition_text,want_count
+          SELECT title,price,region,condition_text,want_count,canonical_payload
           FROM market.item_versions
           WHERE item_id=i.id
           ORDER BY observed_at DESC,id DESC
@@ -2315,6 +2416,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
   registerListEndpoint(app, ['/v1/market/categories'], sql, domains.user, 'user', userMarketCategoriesListConfig, userMarketCategoriesPlan, 401, '未授权')
+  registerListEndpoint(app, ['/v1/market/regions'], sql, domains.user, 'user', userMarketRegionsListConfig, userMarketRegionsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/materials'], sql, domains.user, 'user', userSupplyMaterialsListConfig, userSupplyMaterialsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/publish-plans'], sql, domains.user, 'user', userSupplyPublishPlansListConfig, userSupplyPublishPlansPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
@@ -2562,7 +2664,7 @@ function parsePhase6Batch(value: unknown): { schemaVersion: number; deviceId: st
   return { schemaVersion, deviceId, batchId, idempotencyKey, batchSequence: Number(batchSequence), cursorStart, cursorEnd, records }
 }
 
-async function phase6IngestRecord(sql: Sql, record: Phase6IngestRecord, runId: string, batchId: string, recordIndex: number): Promise<'inserted' | 'deduplicated'> {
+async function phase6IngestRecord(sql: Sql, record: Phase6IngestRecord, runId: string, batchId: string, recordIndex: number, userId: string): Promise<'inserted' | 'deduplicated'> {
   const now = new Date().toISOString()
   const type = record.type
   if (type === 'seller') {
@@ -2595,6 +2697,7 @@ async function phase6IngestRecord(sql: Sql, record: Phase6IngestRecord, runId: s
     const hash = phase6Text(record.contentHash ?? createHash('sha256').update(phase6Json(payload)).digest('hex'), 'contentHash', 128)
     const version = await sql.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) ON CONFLICT (item_id,content_hash) DO NOTHING RETURNING id`, [randomUUID(), itemId, phase6OptionalText(record.title, 512), record.price ?? null, phase6OptionalText(record.region, 128), phase6OptionalText(record.conditionText, 128), record.wantCount ?? null, phase6Json(payload), hash, record.observedAt ?? now])
+    await syncMigratedMaterialOriginalPrice(sql, userId, platform, itemKey, record.price)
     return version.rows[0] ? 'inserted' : 'deduplicated'
   }
   if (type === 'snapshot') {
@@ -2919,7 +3022,7 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
               VALUES ($1,$2,$3,$4,$5,$6,now(),'accepted',false,now()) ON CONFLICT (batch_id,record_index) DO NOTHING`, [batchId, index, record.idempotencyKey, record.type, String(record.type === 'event' ? (record.eventKey ?? record.idempotencyKey) : (record.platformItemId ?? record.platformSellerId ?? '')), recordHash])
             continue
           }
-          const result = await phase6IngestRecord(sql, record, runId, batchId, index)
+          const result = await phase6IngestRecord(sql, record, runId, batchId, index, client.user_id)
           await sql.query(`INSERT INTO ops.ingest_record_dedup (batch_id,record_index,idempotency_key,entity_type,entity_id,payload_hash,accepted_at,status,inserted,processed_at)
             VALUES ($1,$2,$3,$4,$5,$6,now(),'accepted',$7,now()) ON CONFLICT (batch_id,record_index) DO NOTHING`, [batchId, index, record.idempotencyKey, record.type, String(record.type === 'event' ? (record.eventKey ?? record.idempotencyKey) : (record.platformItemId ?? record.platformSellerId ?? '')), recordHash, result === 'inserted'])
           if (result === 'inserted') insertedCount += 1

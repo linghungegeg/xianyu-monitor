@@ -45,7 +45,10 @@ type TaskResponse = { items?: unknown[]; snapshotAt?: string }
 type SupplyPublishSnapshot = { title: string; description: string; price: number; mainImages: string[]; sku: unknown; attributes: Record<string, unknown>; address?: string }
 type SupplyClaimResponse = { claimBatchId?: string; items?: Array<{ id?: string; status?: string; materialSnapshot?: unknown }> }
 type SupplyMigrationClaimResponse = { items?: Array<{ id?: string; platformItemId?: string; itemUrl?: string }> }
+type SupplySkuConfig = { groups: Array<{ name: string; values: string[] }>; combinations: Array<{ values: string[]; price: number; stock: number }> }
 type DeviceKey = { publicKey: string; privateKey: ReturnType<typeof createPrivateKey> }
+
+const XIANYU_PRESET_SKU_TYPES = new Set(['颜色', '尺码', '容量', '份数', '大小', '高度', '总量'])
 
 class CloudRequestError extends Error {
   constructor(readonly status: number, message: string) {
@@ -154,41 +157,49 @@ function supplySnapshot(value: unknown): SupplyPublishSnapshot {
   return { title, description, price: Number(price.toFixed(2)), mainImages: images, sku: source.sku ?? null, attributes, ...(address ? { address } : {}) }
 }
 
-function supplySkuLines(value: unknown): string[] {
-  if (!value) return []
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => supplySkuLines(entry)).filter(Boolean)
-  }
-  if (typeof value !== 'object') return [compact(String(value))].filter(Boolean)
+function supplySkuConfig(value: unknown): SupplySkuConfig | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const source = value as Record<string, unknown>
-  const specs = Array.isArray(source.specifications) ? source.specifications : Array.isArray(source.specs) ? source.specs : null
-  if (specs) {
-    const headers = specs.map((spec) => {
-      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return ''
-      const row = spec as Record<string, unknown>
-      const name = compact(typeof row.name === 'string' ? row.name : '')
-      const values = Array.isArray(row.values) ? row.values.map((item) => compact(typeof item === 'string' ? item : String(item))).filter(Boolean).join(' / ') : ''
-      return name && values ? `${name}: ${values}` : name || values
-    }).filter(Boolean)
-    const variants = Array.isArray(source.skus) ? source.skus : Array.isArray(source.variants) ? source.variants : []
-    const rows = variants.flatMap((variant) => {
-      if (!variant || typeof variant !== 'object' || Array.isArray(variant)) return []
-      const row = variant as Record<string, unknown>
-      const values = Array.isArray(row.values) ? row.values.map((item) => compact(typeof item === 'string' ? item : String(item))).filter(Boolean).join(' / ') : compact(typeof row.label === 'string' ? row.label : '')
-      const price = typeof row.price === 'number' || typeof row.price === 'string' ? Number(row.price) : NaN
-      const stock = typeof row.stock === 'number' || typeof row.stock === 'string' ? Number(row.stock) : NaN
-      const details = [values, Number.isFinite(price) ? `¥${price.toFixed(2)}` : '', Number.isFinite(stock) ? `库存 ${Math.max(0, Math.trunc(stock))}` : ''].filter(Boolean).join(' · ')
-      return details ? [details] : []
-    })
-    return [...headers, ...rows]
-  }
-  return Object.entries(source).flatMap(([key, raw]) => {
-    if (['skus', 'variants', 'specifications', 'specs'].includes(key)) return []
-    const name = compact(key)
-    if (!name) return []
-    const values = Array.isArray(raw) ? raw.map((item) => compact(typeof item === 'string' ? item : String(item))).filter(Boolean).join(' / ') : raw && typeof raw === 'object' ? '' : compact(raw === undefined || raw === null ? '' : String(raw))
-    return values ? [`${name}: ${values}`] : []
+  const rawGroups = Array.isArray(source.groups)
+    ? source.groups
+    : Array.isArray(source.specifications)
+      ? source.specifications
+      : Array.isArray(source.specs)
+        ? source.specs
+        : []
+  const groups = rawGroups.slice(0, 2).flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+    const row = entry as Record<string, unknown>
+    const name = compact(typeof row.name === 'string' ? row.name : '').slice(0, 80)
+    const values = Array.isArray(row.values)
+      ? [...new Set(row.values.map((item) => compact(typeof item === 'string' ? item : item && typeof item === 'object' && typeof (item as Record<string, unknown>).name === 'string' ? (item as Record<string, unknown>).name as string : '')).filter(Boolean))].slice(0, 30)
+      : []
+    return name && values.length ? [{ name, values }] : []
   })
+  if (!groups.length) return null
+  const rawCombinations = Array.isArray(source.combinations)
+    ? source.combinations
+    : Array.isArray(source.skus)
+      ? source.skus
+      : Array.isArray(source.variants)
+        ? source.variants
+        : []
+  const combinations = rawCombinations.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return []
+    const row = entry as Record<string, unknown>
+    const values = Array.isArray(row.values)
+      ? row.values.map((item) => compact(typeof item === 'string' ? item : '')).filter(Boolean)
+      : Array.isArray(row.specs)
+        ? row.specs.map((item) => compact(typeof item === 'string' ? item : '')).filter(Boolean)
+        : []
+    const price = Number(row.price)
+    const stock = Number(row.stock)
+    const valuesMatchGroups = values.length === groups.length && values.every((value, index) => groups[index]?.values.includes(value))
+    return valuesMatchGroups && Number.isFinite(price) && price >= 0 && price <= 100_000_000 && Number.isInteger(stock) && stock >= 0
+      ? [{ values, price: Number(price.toFixed(2)), stock }]
+      : []
+  })
+  return { groups, combinations }
 }
 
 function escapedText(value: string): RegExp {
@@ -437,7 +448,8 @@ export class XianyuMonitor {
         const message = this.safeMessage(error, '发布页未能确认提交，请在本机 Chrome 检查后处理')
         this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message })
         this.db.enqueueSupplyPublishResult({ id: `supply-result:${attemptId}`, planId: plan.id, claimBatchId: claim.claimBatchId, attemptKey: `attempt:${attemptId}`, status: 'needs_attention', errorMessage: message })
-        this.db.addLog('error', `发布计划 ${plan.id} 需要人工处理`)
+        const localReason = error instanceof Error ? compact(error.message).slice(0, 240) : '本机发布流程异常'
+        this.db.addLog('error', `发布计划 ${plan.id} 未提交：${localReason}`)
       }
     }
   }
@@ -462,14 +474,15 @@ export class XianyuMonitor {
       try {
         const item = await this.readItemDetail({ platformItemId, url: itemUrl, title: platformItemId, price: null, region: null, publishedText: null, wantCount: null, imageUrls: [], tags: [] })
         if (item.price === null || !item.imageUrls.length) throw new SearchPageError('structure', '公开商品详情缺少价格或主图')
+        const sku = await this.readSupplyMigrationSku()
         this.db.enqueueSupplyMigrationResult({
           requestId,
           attemptKey,
           status: 'succeeded',
           snapshot: {
             sourcePlatform: 'goofish', sourceItemId: item.platformItemId, sourceUrl: item.url, title: item.title, description: item.description,
-            price: item.price, mainImages: item.imageUrls, detailImages: [], sku: null,
-            attributes: { region: item.region, condition: item.conditionText, wantCount: item.wantCount, tags: item.tags }
+            price: item.price, mainImages: item.imageUrls, detailImages: [], sku,
+            attributes: { region: item.region, condition: item.conditionText, wantCount: item.wantCount, tags: item.tags, originalPrice: item.price }
           }
         })
         this.db.addLog('success', `搬家商品 ${platformItemId} 已读取，等待同步素材库`)
@@ -563,12 +576,7 @@ export class XianyuMonitor {
       await description.fill(material.description)
       await price.fill(String(material.price))
       await imageInput.setInputFiles(imageFiles.files)
-      const skuLines = supplySkuLines(material.sku)
-      if (skuLines.length) {
-        const sku = await this.firstVisible(page, ['[data-xianyu-publish-sku]', 'textarea[name="sku"]'])
-        if (!sku) throw new Error('发布页缺少 SKU 输入项')
-        await sku.fill(skuLines.join('\n'))
-      }
+      await this.fillSupplySku(page, material.sku, material.price)
       const address = this.localPublishAddress(material)
       if (address) {
         const addressInput = await this.firstVisible(page, ['[data-xianyu-publish-address]', 'select[name="address"]', 'input[name="address"]'])
@@ -589,6 +597,89 @@ export class XianyuMonitor {
       return { itemId, url: itemUrl }
     } finally {
       rmSync(imageFiles.directory, { recursive: true, force: true })
+    }
+  }
+
+  private async fillSupplySku(page: Page, rawSku: unknown, defaultPrice: number): Promise<void> {
+    const sku = supplySkuConfig(rawSku)
+    if (!sku) return
+
+    const addType = await this.firstVisible(page, [
+      '[data-xianyu-publish-add-sku-type]',
+      'button:has-text("添加规格类型")'
+    ])
+    if (!addType) throw new Error('发布页缺少商品规格入口')
+    for (const _group of sku.groups) await addType.click()
+
+    for (const [groupIndex, group] of sku.groups.entries()) {
+      const typeControl = await this.firstVisible(page, [
+        `[data-xianyu-publish-sku-type="${groupIndex}"]`,
+        `#itemProperties_${groupIndex}_propertyName`
+      ])
+      if (!typeControl) throw new Error(`发布页缺少第 ${groupIndex + 1} 组规格类型`)
+      const tagName = await typeControl.evaluate((node) => node.tagName.toLowerCase())
+      const selectedFromNativeControl = tagName === 'select'
+        ? await typeControl.selectOption({ label: group.name }).then(() => true).catch(() => typeControl.selectOption(group.name).then(() => true).catch(() => false))
+        : false
+      if (!selectedFromNativeControl) {
+        await typeControl.click()
+        if (XIANYU_PRESET_SKU_TYPES.has(group.name)) {
+          const option = page.locator('.ant-select-dropdown:visible .ant-select-item-option, .ant-select-dropdown:visible [role="option"], [data-xianyu-publish-sku-option]').filter({ hasText: escapedText(group.name) }).first()
+          if (!(await option.isVisible().catch(() => false))) throw new Error(`发布页未提供规格类型「${group.name}」`)
+          await option.click()
+        } else {
+          const customOption = page.locator('.ant-select-dropdown:visible .ant-select-item-option, .ant-select-dropdown:visible [role="option"], [data-xianyu-publish-sku-option]').filter({ hasText: /自定义类型|输入自定义/ }).first()
+          if (!(await customOption.isVisible().catch(() => false))) throw new Error(`发布页未提供自定义规格类型入口，无法填写「${group.name}」`)
+          await customOption.click()
+          const customInput = await this.firstVisible(page, [
+            `[data-xianyu-publish-sku-type="${groupIndex}"]`,
+            `#itemProperties_${groupIndex}_propertyName`,
+            `input[name="itemProperties_${groupIndex}_propertyName"]`
+          ])
+          if (!customInput) throw new Error(`发布页缺少自定义规格类型「${group.name}」输入项`)
+          await customInput.fill(group.name)
+          const writtenType = compact(await customInput.inputValue().catch(() => ''))
+          if (writtenType !== group.name) throw new Error(`自定义规格类型「${group.name}」写入未确认`)
+        }
+      }
+
+      for (const [valueIndex, value] of group.values.entries()) {
+        const valueControl = await this.firstVisible(page, [
+          `[data-xianyu-publish-sku-value="${groupIndex}:${valueIndex}"]`,
+          `#itemProperties_${groupIndex}_propertyValues_${valueIndex}_propertyValue`
+        ])
+        if (!valueControl) throw new Error(`发布页缺少规格值「${value}」输入项`)
+        await valueControl.fill(value)
+      }
+    }
+
+    const rows = page.locator('tbody.ant-table-tbody tr.ant-table-row, [data-xianyu-publish-sku-row]')
+    await rows.first().waitFor({ state: 'visible', timeout: PAGE_TIMEOUT_MS }).catch(() => undefined)
+    const rowCount = await rows.count()
+    if (!rowCount) throw new Error('发布页未生成 SKU 价格库存表')
+    for (const [rowIndex, combination] of sku.combinations.entries()) {
+      const key = combination.values.join('-')
+      let row: Locator | undefined
+      for (let index = 0; index < rowCount; index += 1) {
+        const candidate = rows.nth(index)
+        const rowKey = await candidate.getAttribute('data-row-key').catch(() => null)
+        const rowText = compact(await candidate.innerText().catch(() => ''))
+        if (rowKey === key || rowKey === combination.values.join('') || combination.values.every((value) => rowText.includes(value))) {
+          row = candidate
+          break
+        }
+      }
+      row ??= rows.nth(rowIndex)
+      if (!row || !(await row.isVisible().catch(() => false))) throw new Error(`发布页缺少 SKU 组合「${key}」`)
+      const priceControl = row.locator('input[placeholder="0.00"], [data-xianyu-publish-sku-price]').first()
+      const stockControl = row.locator('input[placeholder="0"], [data-xianyu-publish-sku-stock]').first()
+      if (!(await priceControl.isVisible().catch(() => false)) || !(await stockControl.isVisible().catch(() => false))) throw new Error(`发布页缺少 SKU 组合「${key}」的价格或库存`)
+      const combinationPrice = combination.price > 0 ? combination.price : defaultPrice
+      const combinationStock = combination.stock
+      await priceControl.fill(String(combinationPrice))
+      await stockControl.fill(String(combinationStock))
+      const [writtenPrice, writtenStock] = await Promise.all([priceControl.inputValue(), stockControl.inputValue()])
+      if (Number(writtenPrice) !== combinationPrice || Number(writtenStock) !== combinationStock) throw new Error(`SKU 组合「${key}」写入未确认`)
     }
   }
 
@@ -1032,6 +1123,29 @@ export class XianyuMonitor {
           tags: await page.locator('[class*="tag"]').allTextContents()
         }
     return mergeSearchDetail(card, source)
+  }
+
+  private async readSupplyMigrationSku(): Promise<SupplySkuConfig | null> {
+    const detail = this.detailPage?.locator('[data-xianyu-detail]').first()
+    if (!detail || !(await detail.count())) return null
+    const raw = await detail.evaluate((root) => {
+      const compactText = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim()
+      const groups = Array.from(root.querySelectorAll('[data-xianyu-sku-group]')).map((group) => ({
+        name: compactText(group.getAttribute('data-xianyu-sku-name') ?? group.querySelector('[data-xianyu-sku-name]')?.textContent),
+        values: Array.from(group.querySelectorAll('[data-xianyu-sku-value]')).map((value) => compactText(value.getAttribute('data-xianyu-sku-value') ?? value.textContent)).filter(Boolean)
+      }))
+      const combinations = Array.from(root.querySelectorAll('[data-xianyu-sku-combination]')).map((combination) => {
+        let values: unknown = []
+        try { values = JSON.parse(combination.getAttribute('data-xianyu-sku-values') ?? '[]') } catch { values = [] }
+        return {
+          values,
+          price: combination.getAttribute('data-xianyu-sku-price'),
+          stock: combination.getAttribute('data-xianyu-sku-stock')
+        }
+      })
+      return { groups, combinations }
+    })
+    return supplySkuConfig(raw)
   }
 
   private async nextSearchPage(page: Page): Promise<boolean> {
