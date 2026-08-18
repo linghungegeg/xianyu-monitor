@@ -205,13 +205,6 @@ const monitorSortOptions: Array<{ value: MonitorTaskSort; label: string }> = [
   { value: 'price_desc', label: '价格从高到低' }
 ]
 
-const pageGroups: Array<{ label: string; keys: PageKey[] }> = [
-  { label: '工作台', keys: ['dashboard', 'monitors'] },
-  { label: '市场', keys: ['sellers', 'pool', 'discoveries', 'events', 'logs'] },
-  { label: '分析', keys: ['ai'] },
-  { label: '账户', keys: ['settings'] }
-]
-
 const demoMonitorTasks: MonitorTask[] = [
   {
     id: 'demo-monitor-1',
@@ -500,7 +493,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   return <div className={`app ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><Fish size={18} /></span>{!collapsed && <span>闲鱼数据台</span>}</div>
-      <nav>{pageGroups.map((group) => <div className="nav-section" key={group.label}>{!collapsed && <p className="nav-caption">{group.label}</p>}{group.keys.map((key) => { const pageItem = pages.find((item) => item.key === key)!; return <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button> })}</div>)}</nav>
+      <nav>{pages.map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}</nav>
       <div className="sidebar-foot"><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开侧边栏' : '收起侧边栏'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}

@@ -25,12 +25,6 @@ const pages: Array<{ key: Page; label: string; icon: typeof Gauge }> = [
   { key: 'audit', label: '操作审计', icon: ShieldCheck }
 ]
 
-const navigation = [
-  { label: '工作台', keys: ['overview', 'users', 'billing'] as Page[] },
-  { label: '市场运营', keys: ['market', 'quality', 'uploads', 'ai'] as Page[] },
-  { label: '管理', keys: ['capacity', 'audit'] as Page[] }
-]
-
 const copy: Record<AdminResource, { title: string; description: string; columns: [string, string, string, string] }> = {
   users: { title: '用户与设备', description: '查看账号状态、已绑定设备与会话风险。', columns: ['主体', '设备或套餐', '最近活动', '状态'] },
   billing: { title: '套餐、订单与用量', description: '查看订单、可用额度与使用记录。', columns: ['账务对象', '金额或额度', '记账时间', '状态'] },
@@ -246,7 +240,7 @@ function Workbench({ identity, onLogout }: { identity: AdminIdentity; onLogout: 
   return <div className={`app ${collapsed ? 'collapsed' : ''}`}>
     <aside className={`sidebar ${mobileOpen ? 'open' : ''}`}>
       <div className="brand"><span><Fish size={18} /></span>{!collapsed && <strong>闲鱼数据台</strong>}</div>
-      <nav>{navigation.map((group) => <section key={group.label}>{!collapsed && <p className="nav-caption">{group.label}</p>}{group.keys.map((key) => { const item = pages.find((page) => page.key === key)!; return <button key={item.key} className={active === item.key ? 'active' : ''} onClick={() => switchPage(item.key)} title={collapsed ? item.label : undefined}><item.icon size={18} /><span>{item.label}</span></button> })}</section>)}</nav>
+      <nav>{pages.map((item) => <button key={item.key} className={active === item.key ? 'active' : ''} onClick={() => switchPage(item.key)} title={collapsed ? item.label : undefined}><item.icon size={18} /><span>{item.label}</span></button>)}</nav>
       <div className="side-foot"><div className="side-account"><span>管</span>{!collapsed && <div><strong>{identity.role ?? '管理员'}</strong><small>{identity.id}</small></div>}</div><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开导航' : '收起导航'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>
     {mobileOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMobileOpen(false)} />}
