@@ -158,7 +158,8 @@ async function run() {
     assert(secondUser.items.length === 2, `User 第二页条数错误：${secondUser.items.length}`)
     assert(secondUser.items.every((item) => !firstIds.has(item.id) && item.id !== marketId(99)), 'User cursor 出现重复或混入快照后的新数据')
 
-    const tamperedCursor = `${firstUser.page.nextCursor.slice(0, -1)}${firstUser.page.nextCursor.endsWith('a') ? 'b' : 'a'}`
+    const [cursorPayload, cursorSignature] = firstUser.page.nextCursor.split('.')
+    const tamperedCursor = `${cursorPayload}.${cursorSignature.startsWith('a') ? 'b' : 'a'}${cursorSignature.slice(1)}`
     const tampered = await userApi.inject({ method: 'GET', url: `/v1/market/items?cursor=${encodeURIComponent(tamperedCursor)}`, headers: auth(userToken) })
     assert(tampered.statusCode === 400 && json(tampered).error.code === 'CURSOR_EXPIRED', `篡改 cursor 未返回明确错误：${tampered.statusCode} ${tampered.body}`)
     const mismatched = await userApi.inject({ method: 'GET', url: `/v1/market/items?state=sold&cursor=${encodeURIComponent(firstUser.page.nextCursor)}`, headers: auth(userToken) })

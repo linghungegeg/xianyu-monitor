@@ -77,6 +77,21 @@ type SupplyMaterial = {
   sku?: unknown
   attributes: Record<string, unknown>
 }
+type SupplyMaterialPatch = {
+  title?: string
+  description?: string | null
+  price?: number
+  mainImages?: string[]
+  detailImages?: string[]
+  sku?: unknown | null
+  attributes?: Record<string, unknown>
+  status?: 'draft' | 'ready' | 'archived'
+}
+type SupplyPublishPlanInput = {
+  materialId: string
+  idempotencyKey: string
+  schedule: { mode: 'immediate' | 'scheduled' | 'random_window'; scheduledAt: string; windowStart?: string; windowEnd?: string }
+}
 
 class ListRequestError extends Error {
   code: string
@@ -107,6 +122,9 @@ const MAX_ACTIVE_SELLER_TASKS = 5
 const sellerMonitorTaskInputKeys = new Set(['platform', 'platformSellerId', 'profileUrl', 'intervalSeconds', 'status'])
 const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com'] as const
 const supplyImportKeys = new Set(['schemaVersion', 'sourceType', 'sourceFormat', 'idempotencyKey', 'snapshots'])
+const supplyMaterialPatchKeys = new Set(['title', 'description', 'price', 'mainImages', 'detailImages', 'sku', 'attributes', 'status'])
+const supplyPublishPlanKeys = new Set(['schemaVersion', 'materialId', 'idempotencyKey', 'schedule'])
+const supplyPublishScheduleKeys = new Set(['mode', 'scheduledAt', 'windowStart', 'windowEnd'])
 const supplySensitiveKey = /(?:cookie|token|authorization|password|session|profile(?:path)?|chrome|qr(?:code)?|credential|secret)/i
 const supplyCredentialQueryKey = /(?:cookie|token|authorization|password|session|profile|chrome|qr|credential|secret)/i
 const supplyPlatforms = new Set(['goofish', 'pdd', 'taobao', 'tmall', '1688', 'douyin', 'jd', 'amazon'])
@@ -232,6 +250,90 @@ function parseSupplyImport(value: unknown): { sourceType: SupplySourceType; sour
   const idempotencyKey = supplyString(input.idempotencyKey, 'idempotencyKey', 256)!
   if (!Array.isArray(input.snapshots) || input.snapshots.length < 1 || input.snapshots.length > 100) throw new SupplyImportRequestError('snapshots 必须是 1 到 100 项的已解析快照数组')
   return { sourceType: input.sourceType, sourceFormat: input.sourceFormat, idempotencyKey, snapshots: input.snapshots }
+}
+
+function parseSupplyMaterialPatch(value: unknown): SupplyMaterialPatch {
+  const input = supplyRecord(value, '素材编辑请求')
+  for (const key of Object.keys(input)) if (!supplyMaterialPatchKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (!Object.keys(input).length) throw new SupplyImportRequestError('至少更新一个素材字段')
+  rejectSupplySensitive(input)
+  const patch: SupplyMaterialPatch = {}
+  if (Object.hasOwn(input, 'title')) patch.title = supplyString(input.title, '标题', 240)!
+  if (Object.hasOwn(input, 'description')) patch.description = input.description === null ? null : supplyString(input.description, '描述', 10_000)!
+  if (Object.hasOwn(input, 'price')) patch.price = supplyPrice(input.price, '价格')
+  if (Object.hasOwn(input, 'mainImages')) {
+    const images = supplyImages(input.mainImages, '主图', 10)
+    if (!images.length) throw new SupplyImportRequestError('主图至少需要一张')
+    patch.mainImages = images
+  }
+  if (Object.hasOwn(input, 'detailImages')) patch.detailImages = supplyImages(input.detailImages, '详情图', 120)
+  if (Object.hasOwn(input, 'sku')) patch.sku = input.sku === null ? null : input.sku
+  if (Object.hasOwn(input, 'attributes')) {
+    if (!input.attributes || Array.isArray(input.attributes) || typeof input.attributes !== 'object') throw new SupplyImportRequestError('属性必须是对象')
+    patch.attributes = input.attributes as Record<string, unknown>
+  }
+  if (Object.hasOwn(input, 'status')) {
+    if (input.status !== 'draft' && input.status !== 'ready' && input.status !== 'archived') throw new SupplyImportRequestError('素材状态无效')
+    patch.status = input.status
+  }
+  return patch
+}
+
+function supplyTimestamp(value: unknown, name: string): string {
+  const raw = supplyString(value, name, 64)!
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) throw new SupplyImportRequestError(`${name} 必须是有效时间`)
+  return date.toISOString()
+}
+
+function parseSupplySchedule(value: unknown): SupplyPublishPlanInput['schedule'] {
+  const scheduleInput = supplyRecord(value, 'schedule')
+  for (const key of Object.keys(scheduleInput)) if (!supplyPublishScheduleKeys.has(key)) throw new SupplyImportRequestError(`schedule 不支持字段 ${key}`)
+  if (scheduleInput.mode !== 'immediate' && scheduleInput.mode !== 'scheduled' && scheduleInput.mode !== 'random_window') throw new SupplyImportRequestError('schedule.mode 无效')
+  if (scheduleInput.mode === 'immediate') {
+    if (scheduleInput.scheduledAt !== undefined || scheduleInput.windowStart !== undefined || scheduleInput.windowEnd !== undefined) throw new SupplyImportRequestError('立即发布不接受计划时间窗口')
+    return { mode: 'immediate', scheduledAt: new Date().toISOString() }
+  }
+  if (scheduleInput.mode === 'scheduled') {
+    if (scheduleInput.windowStart !== undefined || scheduleInput.windowEnd !== undefined) throw new SupplyImportRequestError('定时发布不接受随机时间窗口')
+    return { mode: 'scheduled', scheduledAt: supplyTimestamp(scheduleInput.scheduledAt, 'scheduledAt') }
+  }
+  if (scheduleInput.scheduledAt !== undefined) throw new SupplyImportRequestError('随机时间窗口不接受 scheduledAt')
+  const windowStart = supplyTimestamp(scheduleInput.windowStart, 'windowStart')
+  const windowEnd = supplyTimestamp(scheduleInput.windowEnd, 'windowEnd')
+  const start = Date.parse(windowStart)
+  const end = Date.parse(windowEnd)
+  if (end <= start) throw new SupplyImportRequestError('随机时间窗口结束时间必须晚于开始时间')
+  const scheduledAt = new Date(start + Math.floor(Math.random() * (end - start + 1))).toISOString()
+  return { mode: 'random_window', scheduledAt, windowStart, windowEnd }
+}
+
+function parseSupplyPublishPlan(value: unknown): SupplyPublishPlanInput {
+  const input = supplyRecord(value, '发布计划请求')
+  for (const key of Object.keys(input)) if (!supplyPublishPlanKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (input.schemaVersion !== 1) throw new SupplyImportRequestError('只支持 schemaVersion 1')
+  return {
+    materialId: supplyString(input.materialId, 'materialId', 64)!,
+    idempotencyKey: supplyString(input.idempotencyKey, 'idempotencyKey', 256)!,
+    schedule: parseSupplySchedule(input.schedule)
+  }
+}
+
+function parseSupplyPublishPlanPatch(value: unknown): { schedule?: SupplyPublishPlanInput['schedule']; status?: 'cancelled' } {
+  const input = supplyRecord(value, '发布计划编辑请求')
+  for (const key of Object.keys(input)) if (key !== 'schedule' && key !== 'status') throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (!Object.keys(input).length) throw new SupplyImportRequestError('至少更新一个发布计划字段')
+  if (input.status !== undefined && input.status !== 'cancelled') throw new SupplyImportRequestError('发布计划仅支持取消')
+  return { schedule: input.schedule === undefined ? undefined : parseSupplySchedule(input.schedule), status: input.status as 'cancelled' | undefined }
+}
+
+function supplyStableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(supplyStableJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${supplyStableJson(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 function monitorTaskString(value: unknown, name: string, maxLength: number): string {
@@ -563,7 +665,7 @@ function keyset(values: unknown[], expression: string, idExpression: string, ord
 }
 
 function cursorSortValue(sort: string, value: unknown): string {
-  return ['last_seen_at', 'first_seen_at', 'created_at', 'observed_at', 'occurred_at', 'started_at', 'received_at', 'collected_at', 'queued_at'].includes(sort) ? timestamp(value) : String(value)
+  return ['last_seen_at', 'first_seen_at', 'created_at', 'updated_at', 'observed_at', 'occurred_at', 'started_at', 'received_at', 'collected_at', 'queued_at', 'next_run_at', 'scheduled_at', 'finished_at'].includes(sort) ? timestamp(value) : String(value)
 }
 
 function listResponse(context: ListContext, rows: Array<Record<string, unknown>>, total: number, secret: string, resource: string) {
@@ -677,6 +779,14 @@ const userSupplyMaterialsListConfig: ListConfig = {
   sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', recent: 'updated_at', title: 'title', title_asc: 'title', price: 'price', id: 'id' },
   filterAliases: { search: 'q', sourceType: 'source_type', sourcePlatform: 'source_platform' },
   allowedFilters: ['q', 'source_type', 'source_platform', 'status']
+}
+
+const userSupplyPublishPlansListConfig: ListConfig = {
+  resource: 'user.supply_publish_plans',
+  defaultSort: 'created_at',
+  sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', scheduled_at: 'scheduled_at', status: 'status', title: 'title', id: 'id' },
+  filterAliases: { search: 'q', materialId: 'material_id', scheduleMode: 'schedule_mode' },
+  allowedFilters: ['q', 'material_id', 'schedule_mode', 'status']
 }
 
 const sellerItemsListConfig: ListConfig = { ...marketItemsListConfig, resource: 'user.seller_items' }
@@ -882,6 +992,23 @@ const userSupplyMaterialsPlan = tablePlan({
     if (context.filters.source_type) { values.push(context.filters.source_type); conditions.push(`m.source_type = $${values.length}`) }
     if (context.filters.source_platform) { values.push(context.filters.source_platform); conditions.push(`m.source_platform = $${values.length}`) }
     if (context.filters.status) { values.push(context.filters.status); conditions.push(`m.status = $${values.length}`) }
+    return conditions
+  }
+})
+
+const userSupplyPublishPlansPlan = tablePlan({
+  resource: userSupplyPublishPlansListConfig.resource,
+  from: 'supply.publish_plans p JOIN supply.materials m ON m.id = p.material_id',
+  select: 'p.id, p.material_id AS "materialId", p.material_version_id AS "materialVersionId", p.material_version AS "materialVersion", p.material_snapshot AS "materialSnapshot", p.idempotency_key AS "idempotencyKey", p.schedule_mode AS "scheduleMode", p.scheduled_at AS "scheduledAt", p.window_start AS "windowStart", p.window_end AS "windowEnd", p.status, m.title AS "materialTitle", m.source_platform AS "sourcePlatform", p.created_at AS "createdAt", p.updated_at AS "updatedAt"',
+  idExpression: 'p.id::text',
+  sortExpressions: { created_at: 'p.created_at', updated_at: 'p.updated_at', scheduled_at: 'p.scheduled_at', status: 'p.status', title: 'm.title', id: 'p.id::text' },
+  conditions: (context, values, subjectId) => {
+    values.push(subjectId)
+    const conditions = ['p.created_at <= $1', 'p.user_id = $2']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`(LOWER(m.title) LIKE LOWER($${values.length}) OR LOWER(p.idempotency_key) LIKE LOWER($${values.length}))`) }
+    if (context.filters.material_id) { values.push(context.filters.material_id); conditions.push(`p.material_id = $${values.length}`) }
+    if (context.filters.schedule_mode) { values.push(context.filters.schedule_mode); conditions.push(`p.schedule_mode = $${values.length}`) }
+    if (context.filters.status) { values.push(context.filters.status); conditions.push(`p.status = $${values.length}`) }
     return conditions
   }
 })
@@ -1442,7 +1569,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
         }
         const material = entry.material
         const snapshot = { schemaVersion: 1, ...material, sku: material.sku ?? null }
-        const contentHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')
+        const contentHash = createHash('sha256').update(supplyStableJson(snapshot)).digest('hex')
         const existingMaterial = (await sql.query('SELECT id,current_version FROM supply.materials WHERE user_id=$1 AND source_platform=$2 AND source_item_id=$3', [claims.sub, material.sourcePlatform, material.sourceItemId])).rows[0]
         if (!existingMaterial) {
           const materialId = randomUUID()
@@ -1464,6 +1591,132 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
       await sql.query('UPDATE supply.import_batches SET inserted_count=$1,deduplicated_count=$2,failed_count=$3,result=$4::jsonb,completed_at=now() WHERE id=$5', [insertedCount, deduplicatedCount, rejections.length, JSON.stringify(result), batchId])
       return { batchId, ...result }
     } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '素材导入失败') }
+  })
+  app.get('/v1/supply/materials/:materialId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const materialId = String((request.params as { materialId?: string }).materialId ?? '')
+    const result = await sql.query(`SELECT id,source_type AS "sourceType",source_platform AS "sourcePlatform",source_item_id AS "sourceItemId",source_url AS "sourceUrl",title,description,price::float8 AS price,main_images AS "mainImages",detail_images AS "detailImages",sku,attributes,current_version AS "currentVersion",status,import_batch_id AS "importBatchId",created_at AS "createdAt",updated_at AS "updatedAt"
+      FROM supply.materials WHERE id=$1 AND user_id=$2`, [materialId, claims.sub])
+    if (!result.rows[0]) return fail(reply, 404, '素材不存在')
+    return result.rows[0]
+  })
+  app.patch('/v1/supply/materials/:materialId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const materialId = String((request.params as { materialId?: string }).materialId ?? '')
+    try {
+      const patch = parseSupplyMaterialPatch(request.body)
+      const found = await sql.query(`SELECT m.id,m.user_id,m.source_type,m.source_platform,m.source_item_id,m.source_url,m.import_batch_id,m.current_version,m.status,
+        v.id AS material_version_id,v.canonical_snapshot
+        FROM supply.materials m JOIN supply.material_versions v ON v.material_id=m.id AND v.version=m.current_version
+        WHERE m.id=$1 AND m.user_id=$2`, [materialId, claims.sub])
+      const current = found.rows[0]
+      if (!current) return fail(reply, 404, '素材不存在')
+      const source = supplyRecord(current.canonical_snapshot, '当前素材版本')
+      const nextSnapshot = {
+        ...source,
+        title: patch.title ?? source.title,
+        description: Object.hasOwn(patch, 'description') ? patch.description : source.description ?? null,
+        price: patch.price ?? source.price,
+        mainImages: patch.mainImages ?? source.mainImages,
+        detailImages: patch.detailImages ?? source.detailImages ?? [],
+        sku: Object.hasOwn(patch, 'sku') ? patch.sku : source.sku ?? null,
+        attributes: patch.attributes ?? source.attributes ?? {}
+      }
+      const contentChanged = supplyStableJson(source) !== supplyStableJson(nextSnapshot)
+      const nextStatus = patch.status ?? String(current.status)
+      let currentVersion = Number(current.current_version)
+      if (contentChanged) {
+        const contentHash = createHash('sha256').update(supplyStableJson(nextSnapshot)).digest('hex')
+        const known = await sql.query('SELECT id,version FROM supply.material_versions WHERE material_id=$1 AND content_hash=$2', [materialId, contentHash])
+        if (known.rows[0]) {
+          currentVersion = Number(known.rows[0].version)
+        } else {
+          currentVersion += 1
+          await sql.query(`INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at)
+            VALUES ($1,$2,$3,$4,$5::jsonb,$6,now())`, [randomUUID(), materialId, currentVersion, contentHash, JSON.stringify(nextSnapshot), current.import_batch_id])
+        }
+      }
+      if (contentChanged || nextStatus !== current.status) {
+        await sql.query(`UPDATE supply.materials SET title=$1,description=$2,price=$3,main_images=$4::jsonb,detail_images=$5::jsonb,sku=$6::jsonb,attributes=$7::jsonb,current_version=$8,status=$9,updated_at=now()
+          WHERE id=$10 AND user_id=$11`, [nextSnapshot.title, nextSnapshot.description, nextSnapshot.price, JSON.stringify(nextSnapshot.mainImages), JSON.stringify(nextSnapshot.detailImages), JSON.stringify(nextSnapshot.sku), JSON.stringify(nextSnapshot.attributes), currentVersion, nextStatus, materialId, claims.sub])
+      }
+      const updated = await sql.query(`SELECT id,source_type AS "sourceType",source_platform AS "sourcePlatform",source_item_id AS "sourceItemId",source_url AS "sourceUrl",title,description,price::float8 AS price,main_images AS "mainImages",detail_images AS "detailImages",sku,attributes,current_version AS "currentVersion",status,updated_at AS "updatedAt"
+        FROM supply.materials WHERE id=$1 AND user_id=$2`, [materialId, claims.sub])
+      return { ...updated.rows[0], changed: contentChanged || nextStatus !== current.status }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '素材编辑失败') }
+  })
+  app.delete('/v1/supply/materials/:materialId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const materialId = String((request.params as { materialId?: string }).materialId ?? '')
+    const result = await sql.query(`UPDATE supply.materials SET status='archived',updated_at=now()
+      WHERE id=$1 AND user_id=$2 AND status <> 'archived' RETURNING id,status,updated_at AS "updatedAt"`, [materialId, claims.sub])
+    if (!result.rows[0]) {
+      const exists = await sql.query('SELECT 1 FROM supply.materials WHERE id=$1 AND user_id=$2', [materialId, claims.sub])
+      return exists.rows[0] ? { id: materialId, status: 'archived', archived: true, duplicate: true } : fail(reply, 404, '素材不存在')
+    }
+    return { ...result.rows[0], archived: true, duplicate: false }
+  })
+  app.post('/v1/supply/publish-plans', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = parseSupplyPublishPlan(request.body)
+      const existing = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.idempotency_key AS "idempotencyKey",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",p.status,p.created_at AS "createdAt",p.updated_at AS "updatedAt"
+        FROM supply.publish_plans p WHERE p.user_id=$1 AND p.idempotency_key=$2`, [claims.sub, input.idempotencyKey])
+      if (existing.rows[0]) return { ...existing.rows[0], duplicate: true }
+      const material = await sql.query(`SELECT m.id,m.status,m.current_version,v.id AS material_version_id,v.canonical_snapshot
+        FROM supply.materials m JOIN supply.material_versions v ON v.material_id=m.id AND v.version=m.current_version
+        WHERE m.id=$1 AND m.user_id=$2`, [input.materialId, claims.sub])
+      const current = material.rows[0]
+      if (!current) return fail(reply, 404, '素材不存在')
+      if (current.status === 'archived') return fail(reply, 409, '已归档素材不能创建发布计划')
+      const planId = randomUUID()
+      const created = await sql.query(`INSERT INTO supply.publish_plans (id,user_id,material_id,material_version_id,material_version,material_snapshot,idempotency_key,schedule_mode,scheduled_at,window_start,window_end,status,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,'planned',now(),now())
+        ON CONFLICT (user_id,idempotency_key) DO NOTHING RETURNING id`, [planId, claims.sub, current.id, current.material_version_id, current.current_version, JSON.stringify(current.canonical_snapshot), input.idempotencyKey, input.schedule.mode, input.schedule.scheduledAt, input.schedule.windowStart ?? null, input.schedule.windowEnd ?? null])
+      const id = String(created.rows[0]?.id ?? '')
+      const result = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.idempotency_key AS "idempotencyKey",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",p.status,p.created_at AS "createdAt",p.updated_at AS "updatedAt"
+        FROM supply.publish_plans p WHERE p.user_id=$1 AND p.idempotency_key=$2`, [claims.sub, input.idempotencyKey])
+      if (!result.rows[0]) throw new Error('发布计划幂等声明失败')
+      return { ...result.rows[0], duplicate: !id }
+    } catch (error) {
+      if (error && typeof error === 'object' && 'statusCode' in error) throw error
+      return fail(reply, 400, error instanceof Error ? error.message : '发布计划创建失败')
+    }
+  })
+  app.get('/v1/supply/publish-plans/:planId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const planId = String((request.params as { planId?: string }).planId ?? '')
+    const result = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.idempotency_key AS "idempotencyKey",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",p.status,p.created_at AS "createdAt",p.updated_at AS "updatedAt"
+      FROM supply.publish_plans p WHERE p.id=$1 AND p.user_id=$2`, [planId, claims.sub])
+    if (!result.rows[0]) return fail(reply, 404, '发布计划不存在')
+    return result.rows[0]
+  })
+  app.patch('/v1/supply/publish-plans/:planId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const planId = String((request.params as { planId?: string }).planId ?? '')
+    try {
+      const patch = parseSupplyPublishPlanPatch(request.body)
+      const existing = await sql.query('SELECT id,status,schedule_mode,scheduled_at,window_start,window_end FROM supply.publish_plans WHERE id=$1 AND user_id=$2', [planId, claims.sub])
+      if (!existing.rows[0]) return fail(reply, 404, '发布计划不存在')
+      if (existing.rows[0].status !== 'planned') return fail(reply, 409, '只有待发布计划可以编辑')
+      const schedule = patch.schedule ?? {
+        mode: existing.rows[0].schedule_mode as SupplyPublishPlanInput['schedule']['mode'],
+        scheduledAt: timestamp(existing.rows[0].scheduled_at),
+        windowStart: existing.rows[0].window_start ? timestamp(existing.rows[0].window_start) : undefined,
+        windowEnd: existing.rows[0].window_end ? timestamp(existing.rows[0].window_end) : undefined
+      }
+      const status = patch.status ?? 'planned'
+      const updated = await sql.query(`UPDATE supply.publish_plans SET schedule_mode=$1,scheduled_at=$2,window_start=$3,window_end=$4,status=$5,updated_at=now()
+        WHERE id=$6 AND user_id=$7
+        RETURNING id,material_id AS "materialId",material_version_id AS "materialVersionId",material_version AS "materialVersion",material_snapshot AS "materialSnapshot",idempotency_key AS "idempotencyKey",schedule_mode AS "scheduleMode",scheduled_at AS "scheduledAt",window_start AS "windowStart",window_end AS "windowEnd",status,created_at AS "createdAt",updated_at AS "updatedAt"`, [schedule.mode, schedule.scheduledAt, schedule.windowStart ?? null, schedule.windowEnd ?? null, status, planId, claims.sub])
+      return updated.rows[0]
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '发布计划编辑失败') }
   })
   app.post('/v1/monitors', async (request, reply) => {
     let claims
@@ -1641,6 +1894,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/materials'], sql, domains.user, 'user', userSupplyMaterialsListConfig, userSupplyMaterialsPlan, 401, '未授权')
+  registerListEndpoint(app, ['/v1/supply/publish-plans'], sql, domains.user, 'user', userSupplyPublishPlansListConfig, userSupplyPublishPlansPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/seller-monitors'], sql, domains.user, 'user', userSellerMonitorsListConfig, userSellerMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/sellers', '/v1/market/sellers'], sql, domains.user, 'user', userSellersListConfig, userSellersPlan, 401, '未授权')

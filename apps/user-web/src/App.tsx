@@ -8,11 +8,12 @@ import {
   UserApiClient, UserApiError, readUserRuntimeConfig, type UserIdentity, type UserListRequest,
   type UserListResource, type UserPage, type MonitorTask, type MonitorTaskInput, type MonitorTaskRule,
   type MonitorTaskSort, type MonitorTaskStatus, type SellerEvent, type SellerItem, type SellerItemState,
-  type SellerMonitor, type SellerMonitorInput, type SellerMonitorProfile, type SellerMonitorStatus, type SellerProfile, type UserAnnouncement
+  type SellerMonitor, type SellerMonitorInput, type SellerMonitorProfile, type SellerMonitorStatus, type SellerProfile, type UserAnnouncement,
+  type SupplyImportResult, type SupplyMaterial, type SupplyMaterialPatch, type SupplyPublishPlan, type SupplyPublishSchedule, type SupplySourceType
 } from './api'
 
-type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai' | 'settings'
-type RowKind = Exclude<PageKey, 'dashboard' | 'settings'>
+type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai' | 'xianyuSupply' | 'generalSupply' | 'settings'
+type RowKind = 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai'
 type Status = '正常' | '关注' | '已暂停' | '已处理' | '待处理'
 type SortKey = 'updated_at_desc' | 'priority_desc' | 'title_asc'
 type MonitorForm = {
@@ -67,6 +68,8 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
   { key: 'events', label: '事件中心', icon: Bell },
   { key: 'logs', label: '动态日志', icon: ClipboardList },
   { key: 'ai', label: 'AI 分析', icon: Bot },
+  { key: 'xianyuSupply', label: '咸鱼搬家', icon: PackageSearch },
+  { key: 'generalSupply', label: '通用铺货', icon: Store },
   { key: 'settings', label: '账户设置', icon: Settings }
 ]
 
@@ -493,7 +496,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const [reloadKey, setReloadKey] = useState(0)
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
-  const listKind = active === 'dashboard' || active === 'settings' || active === 'monitors' || active === 'sellers' ? null : active
+  const listKind: RowKind | null = active === 'pool' || active === 'discoveries' || active === 'events' || active === 'logs' || active === 'ai' ? active : null
   const listRequest = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort, filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, sort, status])
 
   useEffect(() => {
@@ -515,12 +518,15 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   return <div className={`app ${collapsed ? 'sidebar-collapsed' : ''}`}>
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><Fish size={18} /></span>{!collapsed && <span>闲鱼数据台</span>}</div>
-      <nav>{pages.map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}</nav>
+      <nav>{pages.filter((pageItem) => pageItem.key !== 'xianyuSupply' && pageItem.key !== 'generalSupply').slice(0, -1).map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}
+        {!collapsed && <p className="nav-caption">无人货源</p>}
+        {pages.filter((pageItem) => pageItem.key === 'xianyuSupply' || pageItem.key === 'generalSupply').map((pageItem) => <button key={pageItem.key} className={`nav-item supply-nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}
+        {pages.filter((pageItem) => pageItem.key === 'settings').map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}</nav>
       <div className="sidebar-foot"><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开侧边栏' : '收起侧边栏'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
     <section className="main-shell"><header className="workspace-header"><div className="header-context"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{activePage.label}</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header>
-      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
+      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'xianyuSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="xianyu" />}{active === 'generalSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="general" />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
     {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />}
     <AnnouncementModal api={api} mode={runtime.mode} />
   </div>
@@ -1098,6 +1104,148 @@ function CursorPagination({ total, pageIndex, pageSize, canGoBack, canGoForward,
 function DetailDrawer({ row, onClose, onAddSeller }: { row: TableRow; onClose: () => void; onAddSeller: (target: SellerTarget) => void }): ReactNode {
   const [relatedOpen, setRelatedOpen] = useState(false)
   return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭详情" onClick={onClose} /><section className="modal-shell detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-modal-title"><header><div><span className="eyebrow">详情</span><h2 id="detail-modal-title">{row.title}</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="modal-body"><span className="row-tag">{row.tag}</span><p className="detail-summary">{row.subtitle}</p><dl><div><dt>最新信息</dt><dd>{row.metric}</dd></div><div><dt>最近更新</dt><dd>{row.updatedAt}</dd></div><div><dt>状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div></dl>{relatedOpen && <section className="related-content"><h3>关联内容</h3><p>{row.title}</p><span>{row.subtitle}</span><strong>{row.metric}</strong></section>}</div><footer><button className="secondary" onClick={onClose}>关闭</button>{row.sellerTarget ? <button className="primary small" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />添加卖家监控</button> : <button className="primary small" onClick={() => setRelatedOpen((value) => !value)}><ExternalLink size={15} />{relatedOpen ? '收起关联内容' : '查看关联对象'}</button>}</footer></section></div>
+}
+
+const demoSupplyMaterials: SupplyMaterial[] = [
+  { id: 'demo-supply-xianyu-1', sourceType: 'xianyu', sourcePlatform: 'goofish', sourceItemId: 'xy-1001', sourceUrl: 'https://www.goofish.com/item/xy-1001', title: '闲置机械键盘 87 键', description: '已整理的公开商品素材。', price: 168, mainImages: ['https://images.unsplash.com/photo-1587829741301-dc798b83add3?auto=format&fit=crop&w=360&q=80'], detailImages: [], sku: null, attributes: { condition: '二手' }, currentVersion: 1, status: 'ready', importBatchId: 'demo-batch-1', createdAt: '2026-08-18T09:00:00.000Z', updatedAt: '2026-08-18T09:00:00.000Z' },
+  { id: 'demo-supply-general-1', sourceType: 'general', sourcePlatform: 'pdd', sourceItemId: 'pdd-1001', sourceUrl: 'https://mobile.yangkeduo.com/goods.html?goods_id=1001', title: '收纳盒桌面整理套装', description: '已解析的商品快照。', price: 19.9, mainImages: ['https://images.unsplash.com/photo-1583847268964-b28dc8f51f92?auto=format&fit=crop&w=360&q=80'], detailImages: [], sku: null, attributes: { category: '家居' }, currentVersion: 1, status: 'draft', importBatchId: 'demo-batch-2', createdAt: '2026-08-18T08:00:00.000Z', updatedAt: '2026-08-18T08:00:00.000Z' }
+]
+
+function supplyDate(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function supplyStatusLabel(status: string): string {
+  return status === 'ready' ? '可发布' : status === 'archived' ? '已归档' : '待编辑'
+}
+
+function newSupplyKey(): string {
+  return typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function SupplyPage({ api, mode, sourceType }: { api: UserApiClient; mode: 'demo' | 'api'; sourceType: SupplySourceType }): ReactNode {
+  const [materials, setMaterials] = useState<SupplyMaterial[]>(() => mode === 'demo' ? demoSupplyMaterials.filter((item) => item.sourceType === sourceType) : [])
+  const [total, setTotal] = useState(materials.length)
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [history, setHistory] = useState<Array<string | null>>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [status, setStatus] = useState('')
+  const [pageSize, setPageSize] = useState(20)
+  const [loading, setLoading] = useState(mode === 'api')
+  const [error, setError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [importOpen, setImportOpen] = useState(false)
+  const [selected, setSelected] = useState<SupplyMaterial | null>(null)
+  const [editing, setEditing] = useState<SupplyMaterial | null>(null)
+  const [planning, setPlanning] = useState<SupplyMaterial | null>(null)
+
+  useEffect(() => {
+    if (mode === 'demo') {
+      const rows = demoSupplyMaterials.filter((item) => item.sourceType === sourceType && (!query || item.title.includes(query)) && (!status || item.status === status))
+      setMaterials(rows.slice(0, pageSize)); setTotal(rows.length); setNextCursor(null); setLoading(false); setError(null)
+      return
+    }
+    const controller = new AbortController()
+    setLoading(true); setError(null)
+    void api.listSupplyMaterials({ limit: pageSize, cursor, sort: 'updated_at', filters: { source_type: sourceType, ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }, controller.signal)
+      .then((page) => { setMaterials(page.items); setTotal(page.total); setNextCursor(page.nextCursor) })
+      .catch((caught) => { if (!(caught instanceof DOMException && caught.name === 'AbortError')) setError(caught instanceof UserApiError ? caught.message : '素材加载失败') })
+      .finally(() => setLoading(false))
+    return () => controller.abort()
+  }, [api, cursor, mode, pageSize, query, reloadKey, sourceType, status])
+
+  const reset = (callback: () => void) => { callback(); setCursor(null); setHistory([]) }
+  const archive = async (material: SupplyMaterial) => {
+    if (!window.confirm(`归档“${material.title}”？`)) return
+    try {
+      if (mode === 'demo') setMaterials((items) => items.map((item) => item.id === material.id ? { ...item, status: 'archived' } : item))
+      else await api.updateSupplyMaterial(material.id, { status: 'archived' })
+      setReloadKey((value) => value + 1)
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '归档失败') }
+  }
+  const pageIndex = history.length + 1
+  const title = sourceType === 'xianyu' ? '咸鱼搬家' : '通用铺货'
+  const description = sourceType === 'xianyu' ? '导入已解析的闲鱼公开商品素材，编辑后创建发布计划。' : '导入已解析的平台商品快照，整理成适用于闲鱼发布的素材。'
+  return <><div className="page-heading supply-heading"><div><h1>{title}</h1><p>{description}</p></div><button className="primary" onClick={() => setImportOpen(true)}><Plus size={16} />导入素材</button></div>
+    <section className="filter-bar supply-filter"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => reset(() => setQuery(event.target.value))} placeholder="搜索标题或来源 ID" /></label><label><span>状态</span><select value={status} onChange={(event) => reset(() => setStatus(event.target.value))}><option value="">全部状态</option><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><button className="icon-button" title="刷新素材" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={17} /></button></section>
+    {error && <div className="monitor-alert">{error}</div>}
+    <section className="table-panel supply-table-panel"><div className="table-summary"><span>素材列表</span><span>已解析快照，最多每页 100 条</span></div><div className="table-wrap"><table className="data-table supply-table"><thead><tr><th>素材</th><th>价格</th><th>来源</th><th>版本</th><th>状态</th><th>更新时间</th><th aria-label="操作" /></tr></thead><tbody>{loading ? <tr><td colSpan={7}><div className="state-box"><RefreshCw className="spin" size={18} />正在加载素材</div></td></tr> : materials.length === 0 ? <tr><td colSpan={7}><div className="state-box"><PackageSearch size={20} /><strong>暂无素材</strong><p>导入已解析的 JSON 或 JSONL 快照后会显示在这里。</p></div></td></tr> : materials.map((material) => <tr key={material.id}><td><div className="supply-material-title">{material.mainImages[0] && <img src={material.mainImages[0]} alt="" />}<div><strong>{material.title}</strong><small>{material.sourceItemId}</small></div></div></td><td>¥{Number(material.price).toFixed(2)}</td><td>{material.sourcePlatform}</td><td>v{material.currentVersion}</td><td><span className={`status ${material.status === 'ready' ? 'ok' : material.status === 'archived' ? 'muted' : 'pending'}`}>{supplyStatusLabel(material.status)}</span></td><td>{supplyDate(material.updatedAt)}</td><td><div className="supply-actions"><button className="icon-button" title="预览" onClick={() => setSelected(material)}><ExternalLink size={16} /></button><button className="icon-button" title="编辑" onClick={() => setEditing(material)}><Pencil size={16} /></button>{material.status !== 'archived' && <button className="icon-button" title="归档" onClick={() => void archive(material)}><Trash2 size={16} /></button>}<button className="primary small" disabled={material.status !== 'ready'} onClick={() => setPlanning(material)}>创建计划</button></div></td></tr>)}</tbody></table></div><CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={history.length > 0} canGoForward={Boolean(nextCursor)} onPrev={() => { const previous = history[history.length - 1] ?? null; setHistory((items) => items.slice(0, -1)); setCursor(previous) }} onNext={() => { if (!nextCursor) return; setHistory((items) => [...items, cursor]); setCursor(nextCursor) }} onPageSize={(value) => { setPageSize(value); setCursor(null); setHistory([]) }} /></section>
+    {importOpen && <SupplyImportModal api={api} mode={mode} sourceType={sourceType} onClose={() => setImportOpen(false)} onImported={() => setReloadKey((value) => value + 1)} />}
+    {selected && <SupplyPreviewModal material={selected} onClose={() => setSelected(null)} />}
+    {editing && <SupplyEditModal api={api} mode={mode} material={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); setReloadKey((value) => value + 1) }} />}
+    {planning && <SupplyPlanModal api={api} mode={mode} material={planning} onClose={() => setPlanning(null)} />}
+  </>
+}
+
+function SupplyImportModal({ api, mode, sourceType, onClose, onImported }: { api: UserApiClient; mode: 'demo' | 'api'; sourceType: SupplySourceType; onClose: () => void; onImported: () => void }): ReactNode {
+  const [file, setFile] = useState<File | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [result, setResult] = useState<SupplyImportResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    if (!file) { setError('请选择 JSON 或 JSONL 文件'); return }
+    setSaving(true); setError(null)
+    try {
+      const text = await file.text()
+      const snapshots = file.name.toLowerCase().endsWith('.jsonl') ? text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => JSON.parse(line)) : (() => { const value = JSON.parse(text); return Array.isArray(value) ? value : [value] })()
+      if (!snapshots.length || snapshots.length > 100) throw new Error('每次导入仅支持 1 到 100 条已解析快照')
+      const imported = mode === 'demo' ? { batchId: `demo-${newSupplyKey()}`, receivedCount: snapshots.length, insertedCount: snapshots.length, deduplicatedCount: 0, failedCount: 0, rejections: [], duplicate: false } : await api.importSupplySnapshots({ schemaVersion: 1, sourceType, sourceFormat: file.name.toLowerCase().endsWith('.jsonl') ? 'parsed_snapshot_jsonl' : 'parsed_snapshot_json', idempotencyKey: newSupplyKey(), snapshots })
+      setResult(imported); onImported()
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : caught instanceof Error ? caught.message : '素材导入失败') } finally { setSaving(false) }
+  }
+  return <Modal title="导入素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在导入…' : '开始导入'}</button></>}><label className="modal-field"><span>素材文件</span><input type="file" accept=".json,.jsonl,.txt,application/json,application/x-ndjson,text/plain" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label><p className="supply-hint">只接受已提取完成的 JSON、JSONL 或 JSON 内容 TXT 快照，不接受商品链接文本。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>导入完成</strong><span>接收 {result.receivedCount}，新增 {result.insertedCount}，去重 {result.deduplicatedCount}，失败 {result.failedCount}</span>{result.rejections.length > 0 && <small>失败记录：{result.rejections.map((item) => `${item.recordIndex + 1} (${item.reasonCode})`).join('，')}</small>}</div>}</Modal>
+}
+
+function SupplyPreviewModal({ material, onClose }: { material: SupplyMaterial; onClose: () => void }): ReactNode {
+  return <Modal title="素材预览" onClose={onClose} footer={<button className="primary" onClick={onClose}>关闭</button>}><div className="supply-preview">{material.mainImages[0] && <img src={material.mainImages[0]} alt={material.title} />}<div><strong>{material.title}</strong><b>¥{Number(material.price).toFixed(2)}</b><p>{material.description || '暂无商品描述'}</p><small>{material.sourcePlatform} · {material.sourceItemId} · v{material.currentVersion}</small></div></div></Modal>
+}
+
+function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserApiClient; mode: 'demo' | 'api'; material: SupplyMaterial; onClose: () => void; onSaved: () => void }): ReactNode {
+  const [title, setTitle] = useState(material.title)
+  const [description, setDescription] = useState(material.description ?? '')
+  const [price, setPrice] = useState(String(material.price))
+  const [status, setStatus] = useState(material.status)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    const numericPrice = Number(price)
+    if (!title.trim()) { setError('请输入标题'); return }
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) { setError('请输入有效价格'); return }
+    setSaving(true); setError(null)
+    try {
+      const patch: SupplyMaterialPatch = { title: title.trim(), description: description.trim() || null, price: numericPrice, status: status as SupplyMaterial['status'] }
+      if (mode !== 'demo') await api.updateSupplyMaterial(material.id, patch)
+      onSaved()
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '素材保存失败') } finally { setSaving(false) }
+  }
+  return <Modal title="编辑素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '正在保存…' : '保存'}</button></>}><label className="modal-field"><span>标题</span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} /></label><label className="modal-field"><span>价格</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label><label className="modal-field"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value as SupplyMaterial['status'])}><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><label className="modal-field"><span>描述</span><textarea value={description} maxLength={10000} onChange={(event) => setDescription(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}</Modal>
+}
+
+function SupplyPlanModal({ api, mode, material, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; material: SupplyMaterial; onClose: () => void }): ReactNode {
+  const [scheduleMode, setScheduleMode] = useState<SupplyPublishSchedule['mode']>('immediate')
+  const [scheduledAt, setScheduledAt] = useState('')
+  const [windowStart, setWindowStart] = useState('')
+  const [windowEnd, setWindowEnd] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [result, setResult] = useState<SupplyPublishPlan | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    let schedule: SupplyPublishSchedule = { mode: 'immediate' }
+    try {
+      if (scheduleMode === 'scheduled') { if (!scheduledAt) throw new Error('请选择发布时间'); schedule = { mode: 'scheduled', scheduledAt: new Date(scheduledAt).toISOString() } }
+      if (scheduleMode === 'random_window') { if (!windowStart || !windowEnd) throw new Error('请选择随机发布时间范围'); schedule = { mode: 'random_window', windowStart: new Date(windowStart).toISOString(), windowEnd: new Date(windowEnd).toISOString() } }
+      setSaving(true); setError(null)
+      const plan = mode === 'demo' ? { id: `demo-plan-${newSupplyKey()}`, materialId: material.id, materialVersionId: 'demo-version', materialVersion: material.currentVersion, materialSnapshot: {}, scheduleMode: schedule.mode, scheduledAt: schedule.mode === 'scheduled' ? schedule.scheduledAt : schedule.mode === 'random_window' ? schedule.windowStart : new Date().toISOString(), status: 'planned', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : await api.createSupplyPublishPlan({ schemaVersion: 1, materialId: material.id, idempotencyKey: newSupplyKey(), schedule })
+      setResult(plan)
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : caught instanceof Error ? caught.message : '创建计划失败') } finally { setSaving(false) }
+  }
+  return <Modal title="创建咸鱼发布计划" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在创建…' : '创建计划'}</button></>}><div className="supply-plan-material"><strong>{material.title}</strong><span>¥{Number(material.price).toFixed(2)} · v{material.currentVersion}</span></div><label className="modal-field"><span>发布时间</span><select value={scheduleMode} onChange={(event) => setScheduleMode(event.target.value as SupplyPublishSchedule['mode'])}><option value="immediate">立即</option><option value="scheduled">定时</option><option value="random_window">随机时间窗口</option></select></label>{scheduleMode === 'scheduled' && <label className="modal-field"><span>计划时间</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>}{scheduleMode === 'random_window' && <div className="supply-time-grid"><label className="modal-field"><span>开始时间</span><input type="datetime-local" value={windowStart} onChange={(event) => setWindowStart(event.target.value)} /></label><label className="modal-field"><span>结束时间</span><input type="datetime-local" value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} /></label></div>}<p className="supply-hint">创建计划不会立即打开浏览器或发布商品。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>计划已创建</strong><span>{result.status} · {supplyDate(result.scheduledAt)}</span></div>}</Modal>
+}
+
+function Modal({ title, children, footer, onClose }: { title: string; children: ReactNode; footer: ReactNode; onClose: () => void }): ReactNode {
+  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭" onClick={onClose} /><section className="modal-shell supply-modal" role="dialog" aria-modal="true"><header><h2>{title}</h2><button className="icon-button" title="关闭" onClick={onClose}><X size={18} /></button></header><div className="modal-body">{children}</div><footer>{footer}</footer></section></div>
 }
 
 function SettingsPage(): ReactNode {

@@ -16,6 +16,71 @@ export type UserIdentity = {
 
 export type UserListResource = 'monitors' | 'sellerMonitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai'
 
+export type SupplySourceType = 'xianyu' | 'general'
+export type SupplyMaterialStatus = 'draft' | 'ready' | 'archived'
+export type SupplyMaterial = {
+  id: string
+  sourceType: SupplySourceType
+  sourcePlatform: string
+  sourceItemId: string
+  sourceUrl: string
+  title: string
+  description?: string | null
+  price: number
+  mainImages: string[]
+  detailImages: string[]
+  sku?: unknown | null
+  attributes: Record<string, unknown>
+  currentVersion: number
+  status: SupplyMaterialStatus
+  importBatchId: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type SupplyMaterialPatch = Partial<Pick<SupplyMaterial, 'title' | 'description' | 'price' | 'mainImages' | 'detailImages' | 'sku' | 'attributes' | 'status'>>
+
+export type SupplyImportInput = {
+  schemaVersion: 1
+  sourceType: SupplySourceType
+  sourceFormat: 'parsed_snapshot_json' | 'parsed_snapshot_jsonl'
+  idempotencyKey: string
+  snapshots: unknown[]
+}
+
+export type SupplyImportResult = {
+  batchId: string
+  receivedCount: number
+  insertedCount: number
+  deduplicatedCount: number
+  failedCount: number
+  rejections: Array<{ recordIndex: number; reasonCode: string }>
+  duplicate: boolean
+}
+
+export type SupplyPublishSchedule =
+  | { mode: 'immediate' }
+  | { mode: 'scheduled'; scheduledAt: string }
+  | { mode: 'random_window'; windowStart: string; windowEnd: string }
+
+export type SupplyPublishPlan = {
+  id: string
+  materialId: string
+  materialVersionId: string
+  materialVersion: number
+  materialSnapshot: Record<string, unknown>
+  scheduleMode: SupplyPublishSchedule['mode']
+  scheduledAt: string
+  windowStart?: string | null
+  windowEnd?: string | null
+  status: string
+  materialTitle?: string
+  sourcePlatform?: string
+  createdAt: string
+  updatedAt: string
+  duplicate?: boolean
+}
+
 export type UserListRequest = {
   limit: number
   cursor: string | null
@@ -383,6 +448,26 @@ export class UserApiClient {
 
   async list<T>(resource: UserListResource, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<T>> {
     return this.listPath<T>(USER_LIST_PATHS[resource], input, signal)
+  }
+
+  async importSupplySnapshots(input: SupplyImportInput): Promise<SupplyImportResult> {
+    return this.request<SupplyImportResult>('/v1/supply/imports', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  async listSupplyMaterials(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<SupplyMaterial>> {
+    return this.listPath<SupplyMaterial>('/v1/supply/materials', input, signal)
+  }
+
+  async updateSupplyMaterial(id: string, input: SupplyMaterialPatch): Promise<SupplyMaterial> {
+    return this.request<SupplyMaterial>(`/v1/supply/materials/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) })
+  }
+
+  async createSupplyPublishPlan(input: { schemaVersion: 1; materialId: string; idempotencyKey: string; schedule: SupplyPublishSchedule }): Promise<SupplyPublishPlan> {
+    return this.request<SupplyPublishPlan>('/v1/supply/publish-plans', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  async listSupplyPublishPlans(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<SupplyPublishPlan>> {
+    return this.listPath<SupplyPublishPlan>('/v1/supply/publish-plans', input, signal)
   }
 
   async getSellerMonitorProfile(id: string, signal?: AbortSignal): Promise<SellerMonitorProfile> {
