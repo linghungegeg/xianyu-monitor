@@ -96,7 +96,7 @@ async function run() {
     await firstDesktop.page.getByLabel('账号').fill(email)
     await firstDesktop.page.getByLabel('密码').fill(password)
     await firstDesktop.page.getByRole('button', { name: '登录并绑定' }).click()
-    await waitForText(firstDesktop.page, '设备已绑定，等待启动采集')
+    await waitForText(firstDesktop.page, '设备已绑定，账号权益有效')
 
     await firstDesktop.page.getByRole('button', { name: '打开 Chrome' }).click()
     await waitForText(firstDesktop.page, 'Chrome 已打开')
@@ -107,7 +107,7 @@ async function run() {
     heartbeatOnline = true
     await delay(5_500)
     await firstDesktop.page.getByRole('button', { name: '暂停采集' }).click()
-    await waitForText(firstDesktop.page, '采集器已暂停')
+    await waitForText(firstDesktop.page, '设备已绑定，账号权益有效')
 
     collectorOnline = false
     await firstDesktop.page.getByRole('button', { name: '启动采集' }).click()
@@ -117,7 +117,7 @@ async function run() {
     await firstDesktop.page.getByRole('button', { name: '启动采集' }).click()
     await waitForText(firstDesktop.page, '采集器正在运行')
     await firstDesktop.page.getByRole('button', { name: '暂停采集' }).click()
-    await waitForText(firstDesktop.page, '采集器已暂停')
+    await waitForText(firstDesktop.page, '设备已绑定，账号权益有效')
 
     const hiddenAfterClose = await firstDesktop.desktop.evaluate(async ({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0]
@@ -149,7 +149,7 @@ async function run() {
     }
 
     secondDesktop = await launchDesktop(userApiUrl, collectorApiUrl)
-    await waitForText(secondDesktop.page, '设备已绑定，等待启动采集')
+    await waitForText(secondDesktop.page, '设备已绑定，账号权益有效')
     const clientId = String((await db.query('SELECT id FROM identity.collector_clients WHERE user_id=$1', [userId])).rows[0].id)
     const revoked = await userApi.inject({ method: 'POST', url: `/v1/collector-devices/${clientId}/revoke`, headers: auth(userAccess) })
     assert(revoked.statusCode === 200, `运行态解绑失败：${revoked.statusCode} ${revoked.body}`)

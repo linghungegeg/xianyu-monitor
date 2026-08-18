@@ -13,7 +13,7 @@ const databasePath = join(tmpdir(), `xianyu-phase5-desktop-cloud-${process.pid}-
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase5-desktop-'))
 const password = 'p5-runtime-123456'
 const cookieValue = 'phase5-cookie-local-only'
-const email = 'phase5-runtime@example.test'
+const email = 'p5@test.dev'
 const sellerId = 'seller-phase5-001'
 const publishedItemId = '900'
 const domains = {
@@ -302,7 +302,7 @@ async function run() {
     const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password } })
     assert(registered.statusCode === 200, `运行测试账号创建失败：${registered.statusCode} ${registered.body}`)
     const userAccess = json(registered).accessToken
-    const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='phase5-runtime@example.test'")).rows[0].id)
+    const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='p5@test.dev'")).rows[0].id)
     await db.query(`INSERT INTO billing.entitlement_grants (id,user_id,capability,limit_value,effective_from,source,created_at)
       VALUES ($1,$2,'collector',1,now(),'phase5-runtime',now())`, [randomUUID(), userId])
 
@@ -348,7 +348,7 @@ async function run() {
     await desktop.page.getByLabel('账号').fill(email)
     await desktop.page.getByLabel('密码').fill(password)
     await desktop.page.getByRole('button', { name: '登录并绑定' }).click()
-    await waitForText(desktop.page, '设备已绑定，等待启动采集')
+    await waitForText(desktop.page, '设备已绑定，账号权益有效')
     await desktop.page.getByRole('button', { name: '打开 Chrome' }).click()
     await waitForText(desktop.page, 'Chrome 已打开')
     assert(existsSync(join(userDataPath, 'xianyu-chrome-profile')), '系统 Chrome 未创建本机专用 Profile')
@@ -360,7 +360,7 @@ async function run() {
       await waitForCount(sellerLogs, expectedCount)
       await waitForCount(publishedLogs, expectedCount)
       await desktop.page.getByRole('button', { name: '暂停采集' }).click()
-      await waitForText(desktop.page, '采集器已暂停')
+      await waitForText(desktop.page, '设备已绑定，账号权益有效')
     }
 
     await runAndPause(1)
@@ -378,7 +378,7 @@ async function run() {
     await waitForText(desktop.page, '采集器正在运行')
     await delay(6_500)
     await desktop.page.getByRole('button', { name: '暂停采集' }).click()
-    await waitForText(desktop.page, '采集器已暂停')
+    await waitForText(desktop.page, '设备已绑定，账号权益有效')
     const recoveryDatabasePath = join(userDataPath, 'monitor-data', 'launcher.db')
     assert(readOutboxCount(recoveryDatabasePath) === 0, `断网恢复后的 Outbox 未在解绑前清空: ${JSON.stringify(readOutboxState(recoveryDatabasePath))}`)
 
@@ -409,7 +409,7 @@ async function run() {
     await desktop.page.getByRole('button', { name: '启动采集' }).click()
     await waitForCount(publishedLogs, 5)
     await desktop.page.getByRole('button', { name: '暂停采集' }).click()
-    await waitForText(desktop.page, '采集器已暂停')
+    await waitForText(desktop.page, '设备已绑定，账号权益有效')
     await setTaskStatus('active', 'paused')
     let resolveStarted
     let releaseDetail

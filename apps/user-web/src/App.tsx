@@ -14,7 +14,7 @@ import {
 
 type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'market' | 'dynamic' | 'ai' | 'xianyuSupply' | 'generalSupply' | 'settings'
 type RowKind = 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai'
-type Status = '正常' | '关注' | '已暂停' | '已处理' | '待处理'
+type Status = '正常' | '关注' | '已暂停' | '已处理' | '失败' | '待编辑' | '已停用'
 type SortKey = 'updated_at_desc' | 'priority_desc' | 'title_asc'
 type MonitorForm = {
   keyword: string
@@ -53,6 +53,8 @@ type MarketItemInfo = {
   platformSellerId?: string
   sourceUrl?: string
   price?: string
+  previousPrice?: number
+  currentPrice?: number
   region?: string
   conditionText?: string
   wantCount?: number
@@ -79,8 +81,8 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
   { key: 'monitors', label: '我的监控', icon: Gauge },
   { key: 'sellers', label: '竞品商家', icon: Store },
-  { key: 'market', label: '市场', icon: PackageSearch },
-  { key: 'dynamic', label: '动态', icon: Bell },
+  { key: 'market', label: '市场趋势', icon: PackageSearch },
+  { key: 'dynamic', label: '动态趋势', icon: Bell },
   { key: 'ai', label: 'AI 分析', icon: Bot },
   { key: 'xianyuSupply', label: '咸鱼搬家', icon: PackageSearch },
   { key: 'generalSupply', label: '通用铺货', icon: Store },
@@ -90,10 +92,10 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
 const pageCopy: Record<RowKind, { title: string; description: string; primary: string; columns: [string, string, string, string] }> = {
   monitors: { title: '我的监控', description: '查看关键词、分类和价格区间产生的市场变化。', primary: '新建监控', columns: ['监控条件', '最新命中', '本次变化', '状态'] },
   sellers: { title: '竞品商家', description: '跟踪已关注商家的公开商品与经营动态。', primary: '添加商家', columns: ['商家', '公开商品', '动态摘要', '状态'] },
-  pool: { title: '市场', description: '按条件查询已进入公共市场范围的商品快照。', primary: '保存筛选', columns: ['商品', '当前价格', '最近更新', '状态'] },
-  discoveries: { title: '市场', description: '浏览按筛选条件整理出的近期市场机会。', primary: '查看筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
-  events: { title: '动态', description: '统一查看价格、上架、下架和卖家变化。', primary: '查看筛选', columns: ['事件', '关联对象', '变化内容', '状态'] },
-  logs: { title: '动态日志', description: '按对象、类型和时间筛选工作台可见的业务动态。', primary: '导出当前页', columns: ['动态', '对象', '记录内容', '状态'] },
+  pool: { title: '市场趋势', description: '查看市场商品、价格变化和近期机会。', primary: '保存筛选', columns: ['商品', '当前价格', '最近更新', '状态'] },
+  discoveries: { title: '市场趋势', description: '浏览按筛选条件整理出的近期市场机会。', primary: '查看筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
+  events: { title: '动态趋势', description: '统一查看价格、上架、下架和卖家变化。', primary: '查看筛选', columns: ['事件', '关联对象', '变化内容', '状态'] },
+  logs: { title: '动态趋势', description: '按对象、类型和时间筛选工作台可见的业务动态。', primary: '导出当前页', columns: ['动态', '对象', '记录内容', '状态'] },
   ai: { title: 'AI 分析', description: '阅读已发布的市场解读与竞品分析结果。', primary: '创建分析请求', columns: ['分析主题', '数据范围', '结论摘要', '状态'] }
 }
 
@@ -130,12 +132,12 @@ const bases: Record<RowKind, Omit<TableRow, 'id' | 'updatedAt'>[]> = {
     { title: 'Switch OLED 白色国行', subtitle: '广州 · 包邮 · 1 小时前', metric: '¥1,365 · 17 人想要', status: '正常', tag: '游戏机', sellerTarget: { platformSellerId: 'demo-switch-seller' }, market: { platform: 'goofish', platformItemId: 'demo-switch-1', platformSellerId: 'demo-switch-seller', sourceUrl: 'https://www.goofish.com/item/demo-switch-1', price: '1365', region: '广州', conditionText: '包邮', wantCount: 17, images: ['https://images.unsplash.com/photo-1578303512597-81e6cc155b3e?auto=format&fit=crop&w=960&q=80'], firstSeenAt: '2026-08-18T09:20:00.000Z', lastSeenAt: '2026-08-18T11:00:00.000Z' } }
   ],
   discoveries: [
-    { title: '轻薄本周末价格带下移', subtitle: '笔记本电脑 · 全国 · 近 24 小时', metric: 'P50 下降 4.8%，样本 186', status: '待处理', tag: '价格' },
+    { title: '轻薄本周末价格带下移', subtitle: '笔记本电脑 · 全国 · 近 24 小时', metric: 'P50 下降 4.8%，样本 186', status: '关注', tag: '价格' },
     { title: '二手微单新上架加速', subtitle: '摄影摄像 · 上海 / 杭州 · 近 12 小时', metric: '新上架 +31%，样本 74', status: '关注', tag: '上新' },
     { title: '掌机需求热度回升', subtitle: '游戏机 · 全国 · 近 7 天', metric: '想要数 +18%，样本 1,042', status: '正常', tag: '热度' }
   ],
   events: [
-    { title: '价格下调', subtitle: 'MacBook Air M2 16G 512G', metric: '¥4,580 降至 ¥4,280 (-6.5%)', status: '待处理', tag: '价格' },
+    { title: '价格下调', subtitle: 'MacBook Air M2 16G 512G', metric: '¥4,580 降至 ¥4,280 (-6.5%)', status: '关注', tag: '价格' },
     { title: '竞品商家上新', subtitle: '海风数码回收店', metric: '新上架 6 件笔记本商品', status: '关注', tag: '商家' },
     { title: '商品已下架', subtitle: 'Sony A7M4 全画幅微单机身', metric: '最近一次公开快照已不可见', status: '已处理', tag: '商品' }
   ],
@@ -159,7 +161,7 @@ function makeRows(kind: RowKind): TableRow[] {
   })
 }
 
-const statusClass: Record<Status, string> = { 正常: 'ok', 关注: 'watch', 已暂停: 'muted', 已处理: 'done', 待处理: 'pending' }
+const statusClass: Record<Status, string> = { 正常: 'ok', 关注: 'watch', 已暂停: 'muted', 已处理: 'done', 失败: 'failed', 待编辑: 'pending', 已停用: 'muted' }
 
 function demoOffset(cursor: string | null): number {
   const match = cursor ? /^demo:(\d+)$/.exec(cursor) : null
@@ -176,7 +178,7 @@ function demoPage(kind: RowKind, request: UserListRequest): Promise<UserPage<Tab
       return matchesQuery && matchesStatus
     })
     if (request.sort === 'title_asc') rows = [...rows].sort((left, right) => left.title.localeCompare(right.title))
-    if (request.sort === 'priority_desc') rows = [...rows].sort((left, right) => Number(right.status === '待处理') - Number(left.status === '待处理'))
+    if (request.sort === 'priority_desc') rows = [...rows].sort((left, right) => Number(right.status === '失败') - Number(left.status === '失败'))
     const offset = demoOffset(request.cursor)
     const items = rows.slice(offset, offset + request.limit)
     const nextOffset = offset + items.length
@@ -207,8 +209,9 @@ function recordImages(record: Record<string, unknown>): string[] {
 }
 
 function normalizeStatus(value: string): Status {
-  if (value === '正常' || value === '关注' || value === '已暂停' || value === '已处理' || value === '待处理') return value
-  if (value === 'pending' || value === 'open' || value === 'warning') return '待处理'
+  if (value === '正常' || value === '关注' || value === '已暂停' || value === '已处理' || value === '失败' || value === '待编辑' || value === '已停用') return value
+  if (value === 'failed' || value === 'error') return '失败'
+  if (value === 'pending' || value === 'open' || value === 'warning') return '关注'
   if (value === 'paused' || value === 'disabled' || value === 'offline') return '已暂停'
   if (value === 'done' || value === 'resolved' || value === 'read') return '已处理'
   return '正常'
@@ -228,6 +231,8 @@ function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow
     ...(platformSellerId ? { platformSellerId } : {}),
     ...(recordValue(record, ['sourceUrl', 'source_url', 'itemUrl', 'item_url', 'url'], '') ? { sourceUrl: recordValue(record, ['sourceUrl', 'source_url', 'itemUrl', 'item_url', 'url'], '') } : {}),
     ...(recordValue(record, ['price'], '') ? { price: recordValue(record, ['price'], '') } : {}),
+    ...(recordNumber(record, ['previousPrice', 'previous_price']) === undefined ? {} : { previousPrice: recordNumber(record, ['previousPrice', 'previous_price']) }),
+    ...(recordNumber(record, ['currentPrice', 'current_price']) === undefined ? {} : { currentPrice: recordNumber(record, ['currentPrice', 'current_price']) }),
     ...(recordValue(record, ['region'], '') ? { region: recordValue(record, ['region'], '') } : {}),
     ...(recordValue(record, ['conditionText', 'condition_text'], '') ? { conditionText: recordValue(record, ['conditionText', 'condition_text'], '') } : {}),
     ...(recordNumber(record, ['wantCount', 'want_count']) === undefined ? {} : { wantCount: recordNumber(record, ['wantCount', 'want_count']) }),
@@ -235,11 +240,16 @@ function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow
     ...(recordValue(record, ['firstSeenAt', 'first_seen_at'], '') ? { firstSeenAt: recordValue(record, ['firstSeenAt', 'first_seen_at'], '') } : {}),
     ...(recordValue(record, ['lastSeenAt', 'last_seen_at'], '') ? { lastSeenAt: recordValue(record, ['lastSeenAt', 'last_seen_at'], '') } : {})
   } : undefined
+  const previousPrice = recordNumber(record, ['previousPrice', 'previous_price'])
+  const currentPrice = recordNumber(record, ['currentPrice', 'current_price'])
+  const priceMetric = previousPrice !== undefined && currentPrice !== undefined
+    ? `¥${previousPrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} -> ¥${currentPrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+    : currentPrice !== undefined ? `现价 ¥${currentPrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` : undefined
   return {
     id,
     title: recordValue(record, ['title', 'name', 'subject', 'platformItemId', 'platform_item_id'], id),
     subtitle: recordValue(record, ['subtitle', 'description', 'scope', 'region'], '暂无说明'),
-    metric: recordValue(record, ['metric', 'summary', 'value', 'detail'], '暂无摘要'),
+    metric: priceMetric ?? recordValue(record, ['metric', 'summary', 'value', 'detail'], '暂无摘要'),
     updatedAt: recordValue(record, ['updatedAt', 'updated_at', 'occurredAt', 'occurred_at'], '最近更新未知'),
     status: normalizeStatus(recordValue(record, ['status', 'state'], '正常')),
     tag: recordValue(record, ['tag', 'type', 'eventType', 'event_type'], kind),
@@ -527,7 +537,6 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
 
 function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIdentity; onLogout: () => void }): ReactNode {
   const [active, setActive] = useState<PageKey>('dashboard')
-  const [marketView, setMarketView] = useState<RowKind>('pool')
   const [dynamicView, setDynamicView] = useState<RowKind>('events')
   const [menuOpen, setMenuOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
@@ -543,9 +552,11 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [marketMigrationId, setMarketMigrationId] = useState<string | null>(null)
+  const [marketMigrationNotice, setMarketMigrationNotice] = useState<string | null>(null)
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
-  const listKind: RowKind | null = active === 'market' ? marketView : active === 'dynamic' ? dynamicView : active === 'ai' ? 'ai' : null
+  const listKind: RowKind | null = active === 'market' ? 'pool' : active === 'dynamic' ? dynamicView : active === 'ai' ? 'ai' : null
   const listRequest = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort, filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, sort, status])
 
   useEffect(() => {
@@ -559,12 +570,18 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
 
   const switchPage = (next: PageKey) => { setActive(next); setCursor(null); setCursorHistory([]); setQuery(''); setStatus(''); setSort('updated_at_desc'); setDrawer(null); setMenuOpen(false) }
   const switchListView = (next: RowKind) => {
-    if (next === 'pool' || next === 'discoveries') setMarketView(next)
     if (next === 'events' || next === 'logs') setDynamicView(next)
     setCursor(null); setCursorHistory([]); setQuery(''); setStatus(''); setSort('updated_at_desc'); setDrawer(null)
   }
   const openSellerFromItem = (target: SellerTarget) => { setSellerTarget(target); switchPage('sellers') }
   const openItemEvents = () => { setDynamicView('events'); switchPage('dynamic') }
+  const migrateMarketItem = async (row: TableRow) => {
+    setMarketMigrationId(row.id); setMarketMigrationNotice(null)
+    try {
+      const request = runtime.mode === 'demo' ? { platformItemId: row.market?.platformItemId || row.id, status: 'queued' } : await api.createSupplyMigration({ schemaVersion: 1, idempotencyKey: newSupplyKey(), source: { kind: 'market_item', sourceId: row.id } })
+      setMarketMigrationNotice(`商品 ${request.platformItemId} 已加入搬家队列${request.status === 'queued' ? '，等待本机采集器处理' : ''}`)
+    } catch (caught) { setMarketMigrationNotice(caught instanceof UserApiError ? caught.message : '创建搬家请求失败') } finally { setMarketMigrationId(null) }
+  }
   const changeFilter = (callback: () => void) => { callback(); setCursor(null); setCursorHistory([]) }
   const nextPage = () => { if (!page.nextCursor) return; setCursorHistory((history) => [...history, cursor]); setCursor(page.nextCursor) }
   const previousPage = () => { if (!cursorHistory.length) return; setCursor(cursorHistory[cursorHistory.length - 1] ?? null); setCursorHistory(cursorHistory.slice(0, -1)) }
@@ -580,7 +597,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
     <section className="main-shell"><header className="workspace-header"><div className="header-context"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{activePage.label}</span></div><div className="header-tools"><button className="icon-button notification" title="查看动态" onClick={() => switchPage('dynamic')}><Bell size={18} /></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header>
-      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'xianyuSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="xianyu" />}{active === 'generalSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="general" />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} tabs={active === 'market' ? [{ key: 'pool' as RowKind, label: '商品' }, { key: 'discoveries' as RowKind, label: '发现' }] : active === 'dynamic' ? [{ key: 'events' as RowKind, label: '变化事件' }, { key: 'logs' as RowKind, label: '系统日志' }] : undefined} onTabChange={switchListView} />}</main></section>
+      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'xianyuSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="xianyu" />}{active === 'generalSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="general" />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} tabs={active === 'dynamic' ? [{ key: 'events' as RowKind, label: '变化事件' }, { key: 'logs' as RowKind, label: '系统日志' }] : undefined} tabMode={active === 'dynamic' ? 'select' : undefined} onTabChange={switchListView} onMigrate={active === 'market' ? migrateMarketItem : undefined} migratingId={marketMigrationId} notice={marketMigrationNotice} />}</main></section>
     {drawer && (drawer.market ? <MarketItemDetail api={api} mode={runtime.mode} row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} onOpenEvents={openItemEvents} /> : <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />)}
     <AnnouncementModal api={api} mode={runtime.mode} />
   </div>
@@ -602,7 +619,7 @@ function AnnouncementModal({ api, mode }: { api: UserApiClient; mode: 'demo' | '
 
 function Dashboard({ mode, onNavigate }: { mode: 'demo' | 'api'; onNavigate: (key: PageKey) => void }): ReactNode {
   if (mode === 'api') return <ApiState title="暂无数据概览" description="数据概览准备完成后将在这里展示。" />
-  const stats = [['生效监控', '18', '较昨日 +2', Gauge, 'blue'], ['关注商家', '36', '公开商品变化 14', Store, 'mint'], ['待处理事件', '7', '3 条价格变化', Bell, 'amber'], ['市场机会', '12', '过去 24 小时', FileSearch, 'rose']] as const
+  const stats = [['生效监控', '18', '较昨日 +2', Gauge, 'blue'], ['关注商家', '36', '公开商品变化 14', Store, 'mint'], ['失败任务', '0', '最近 24 小时', Bell, 'amber'], ['市场机会', '12', '过去 24 小时', FileSearch, 'rose']] as const
   return <><div className="page-heading"><div><p className="eyebrow">数据概览</p><h1>数据总览</h1><p>查看近期监控、市场和分析动态。</p></div><button className="primary" onClick={() => onNavigate('monitors')}><Plus size={16} />新建监控</button></div><section className="stats-grid">{stats.map(([label, value, note, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={20} /></div><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div></article>)}</section><section className="dashboard-grid"><section className="panel wide"><div className="panel-head"><div><h2>重点动态</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('dynamic')}>查看全部 <ChevronRight size={15} /></button></div><div className="feed-list">{['MacBook Air M2 16G 512G 价格下降 6.5%', '海风数码回收店新增 6 个公开商品', '轻薄本价格带的低价供给增加 18%'].map((item, index) => <button className="feed" key={item} onClick={() => onNavigate('dynamic')}><span className={`feed-dot d${index}`} /><div><strong>{item}</strong><small>{index + 1} 小时前</small></div><ChevronRight size={16} /></button>)}</div></section><section className="panel"><div className="panel-head"><div><h2>市场信号</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('market')}>全部</button></div><div className="signal"><div><span>价格下降商品</span><strong>42</strong></div><div><span>新增样本</span><strong>186</strong></div><div><span>商家上新</span><strong>29</strong></div></div></section><section className="panel"><div className="panel-head"><div><h2>最新 AI 解读</h2><p>已更新</p></div><button className="text-button" onClick={() => onNavigate('ai')}>打开</button></div><div className="ai-preview"><Bot size={22} /><div><strong>轻薄本价格带周报</strong><p>低价供给增加，成交热度保持平稳。</p></div></div></section></section></>
 }
 
@@ -730,7 +747,8 @@ function MonitorPage({ api, mode }: { api: UserApiClient; mode: 'demo' | 'api' }
 
 function MonitorEditor({ editing, form, saving, error, onChange, onClose, onSubmit }: { editing: MonitorTask | null; form: MonitorForm; saving: boolean; error: string | null; onChange: (field: keyof MonitorForm, value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void }): ReactNode {
   const setValue = (field: keyof MonitorForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => onChange(field, event.target.value)
-  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭监控编辑器" onClick={onClose} /><section className="monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="monitor-editor-title"><header><div><p className="eyebrow">监控规则</p><h2 id="monitor-editor-title">{editing ? '编辑监控' : '新建监控'}</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>关键词</span><input value={form.keyword} onChange={setValue('keyword')} maxLength={80} required={!form.categoryPath.trim()} placeholder="例如 MacBook Air M2" autoFocus /></label><label className="monitor-field monitor-field-wide"><span>类目路径</span><input value={form.categoryPath} onChange={setValue('categoryPath')} required={!form.keyword.trim()} placeholder="用 / 分隔，最多 3 级，例如 数码 / 电脑 / 笔记本" /></label><label className="monitor-field"><span>排序</span><select value={form.sort} onChange={setValue('sort')}>{monitorSortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="monitor-field"><span>地区</span><input value={form.region} onChange={setValue('region')} maxLength={64} placeholder="例如 全国、杭州" /></label><label className="monitor-field"><span>最低价（元）</span><input type="number" min="0" value={form.minPrice} onChange={setValue('minPrice')} placeholder="不限" /></label><label className="monitor-field"><span>最高价（元）</span><input type="number" min="0" value={form.maxPrice} onChange={setValue('maxPrice')} placeholder="不限" /></label></div><section className="monitor-form-section"><h3>公开筛选</h3><div className="monitor-form-grid"><label className="monitor-field"><span>成色</span><input value={form.condition} onChange={setValue('condition')} maxLength={40} placeholder="例如 全新" /></label><label className="monitor-field"><span>发货方式</span><input value={form.delivery} onChange={setValue('delivery')} maxLength={40} placeholder="例如 同城自提" /></label><label className="monitor-field"><span>配送</span><input value={form.shipping} onChange={setValue('shipping')} maxLength={40} placeholder="例如 包邮" /></label><label className="monitor-field"><span>保障</span><input value={form.guarantee} onChange={setValue('guarantee')} maxLength={40} placeholder="例如 验货宝" /></label><label className="monitor-field"><span>仅看全新</span><select value={form.newOnly} onChange={setValue('newOnly')}><option value="">不限</option><option value="是">是</option><option value="否">否</option></select></label></div></section><section className="monitor-form-section"><h3>匹配与频率</h3><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>包含词</span><input value={form.includeWords} onChange={setValue('includeWords')} placeholder="用逗号分隔，例如 16G，国行" /></label><label className="monitor-field monitor-field-wide"><span>排除词</span><input value={form.excludeWords} onChange={setValue('excludeWords')} placeholder="用逗号分隔，例如 维修，配件" /></label><label className="monitor-field"><span>页数上限</span><input type="number" min="1" max="10" step="1" value={form.pageLimit} onChange={setValue('pageLimit')} /></label><label className="monitor-field"><span>采集间隔（分钟）</span><input type="number" min="30" max="1440" step="1" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用采集</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用采集" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div></section>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '保存监控'}</button></footer></form></section></div>
+  const options = (value: string, preset: string[]) => Array.from(new Set(['', ...preset, ...(value ? [value] : [])]))
+  return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭监控编辑器" onClick={onClose} /><section className="monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="monitor-editor-title"><header><div><p className="eyebrow">监控规则</p><h2 id="monitor-editor-title">{editing ? '编辑监控' : '新建监控'}</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>关键词</span><input value={form.keyword} onChange={setValue('keyword')} maxLength={80} required={!form.categoryPath.trim()} placeholder="例如 MacBook Air M2" autoFocus /></label><label className="monitor-field monitor-field-wide"><span>类目路径</span><input value={form.categoryPath} onChange={setValue('categoryPath')} required={!form.keyword.trim()} placeholder="用 / 分隔，最多 3 级，例如 数码 / 电脑 / 笔记本" /></label><label className="monitor-field"><span>排序</span><select value={form.sort} onChange={setValue('sort')}>{monitorSortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label className="monitor-field"><span>地区</span><select value={form.region} onChange={setValue('region')}>{options(form.region, ['全国', '北京', '上海', '广州', '深圳', '杭州', '成都', '武汉']).map((option) => <option value={option} key={option}>{option || '不限'}</option>)}</select></label><label className="monitor-field"><span>最低价（元）</span><input type="number" min="0" value={form.minPrice} onChange={setValue('minPrice')} placeholder="不限" /></label><label className="monitor-field"><span>最高价（元）</span><input type="number" min="0" value={form.maxPrice} onChange={setValue('maxPrice')} placeholder="不限" /></label></div><section className="monitor-form-section"><h3>公开筛选</h3><div className="monitor-form-grid"><label className="monitor-field"><span>成色</span><select value={form.condition} onChange={setValue('condition')}>{options(form.condition, ['全新', '几乎全新', '轻微使用痕迹', '明显使用痕迹', '维修/瑕疵']).map((option) => <option value={option} key={option}>{option || '不限'}</option>)}</select></label><label className="monitor-field"><span>发货方式</span><select value={form.delivery} onChange={setValue('delivery')}>{options(form.delivery, ['同城自提', '快递', '包邮', '到付']).map((option) => <option value={option} key={option}>{option || '不限'}</option>)}</select></label><label className="monitor-field"><span>配送</span><select value={form.shipping} onChange={setValue('shipping')}>{options(form.shipping, ['包邮', '买家自提', '同城配送', '快递']).map((option) => <option value={option} key={option}>{option || '不限'}</option>)}</select></label><label className="monitor-field"><span>保障</span><select value={form.guarantee} onChange={setValue('guarantee')}>{options(form.guarantee, ['验货宝', '平台验货', '无保障']).map((option) => <option value={option} key={option}>{option || '不限'}</option>)}</select></label><label className="monitor-field"><span>仅看全新</span><select value={form.newOnly} onChange={setValue('newOnly')}><option value="">不限</option><option value="是">是</option><option value="否">否</option></select></label></div></section><section className="monitor-form-section"><h3>匹配与频率</h3><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>包含词</span><input value={form.includeWords} onChange={setValue('includeWords')} placeholder="用逗号分隔，例如 16G，国行" /></label><label className="monitor-field monitor-field-wide"><span>排除词</span><input value={form.excludeWords} onChange={setValue('excludeWords')} placeholder="用逗号分隔，例如 维修，配件" /></label><label className="monitor-field"><span>页数上限</span><input type="number" min="1" max="10" step="1" value={form.pageLimit} onChange={setValue('pageLimit')} /></label><label className="monitor-field"><span>采集间隔（分钟）</span><input type="number" min="30" max="1440" step="1" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用采集</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用采集" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div></section>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '保存监控'}</button></footer></form></section></div>
 }
 
 function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }: { api: UserApiClient; mode: 'demo' | 'api'; initialTarget?: SellerTarget | null; onInitialTargetConsumed?: () => void }): ReactNode {
@@ -751,6 +769,7 @@ function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }
   const [saving, setSaving] = useState(false)
   const [workingId, setWorkingId] = useState<string | null>(null)
   const [detailTask, setDetailTask] = useState<SellerMonitor | null>(null)
+  const [intervalTask, setIntervalTask] = useState<SellerMonitor | null>(null)
   const request = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort: 'updated_at_desc', filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, status])
 
   useEffect(() => {
@@ -863,6 +882,24 @@ function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }
       setWorkingId(null)
     }
   }
+  const saveInterval = async (task: SellerMonitor, minutes: number) => {
+    const intervalSeconds = minutes * 60
+    setActionError(null)
+    setWorkingId(task.id)
+    try {
+      if (mode === 'demo') {
+        setDemoTasks((current) => current.map((entry) => entry.id === task.id ? { ...entry, intervalSeconds, updatedAt: new Date().toISOString() } : entry))
+      } else {
+        const updated = await api.updateSellerMonitor(task.id, { intervalSeconds })
+        setPage((current) => ({ ...current, items: current.items.map((entry) => entry.id === updated.id ? updated : entry) }))
+      }
+      setIntervalTask(null)
+    } catch (caught) {
+      setActionError(caught instanceof UserApiError ? caught.message : '更新采集间隔失败')
+    } finally {
+      setWorkingId(null)
+    }
+  }
   const previousPage = () => {
     if (!cursorHistory.length) return
     setCursor(cursorHistory[cursorHistory.length - 1] ?? null)
@@ -874,12 +911,23 @@ function SellerMonitorPage({ api, mode, initialTarget, onInitialTargetConsumed }
     setCursor(page.nextCursor)
   }
 
-  return <><div className="page-heading"><div><p className="eyebrow">竞品监控</p><h1>竞品商家</h1><p>管理公开卖家监控任务。</p></div><button className="primary" onClick={() => openEditor()}><Plus size={16} />添加商家</button></div>{actionError && <div className="monitor-alert" role="alert">{actionError}</div>}<section className="table-panel monitor-table-panel seller-monitor-table-panel"><div className="table-summary"><span>共 <strong>{page.total}</strong> 个商家</span><button className="icon-button" title="刷新竞品商家" onClick={() => setReloadKey((value) => value + 1)} disabled={loading}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></div><div className="filter-bar seller-monitor-filter"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); resetToFirstPage() }} placeholder="搜索卖家" /></label><label><span>状态</span><select value={status} onChange={(event) => { setStatus(event.target.value); resetToFirstPage() }}><option value="">全部状态</option><option value="active">已启用</option><option value="paused">已暂停</option></select></label></div>{loadError ? <div className="state-box"><Activity size={27} /><strong>竞品商家加载失败</strong><p>{loadError}</p><button className="primary small" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载竞品商家</strong><p>请稍候。</p></div> : page.items.length === 0 ? <div className="state-box"><Store size={27} /><strong>还没有竞品商家</strong><p>添加公开卖家主页后即可开始监控。</p><button className="primary small" onClick={() => openEditor()}><Plus size={15} />添加商家</button></div> : <div className="table-wrap"><table className="monitor-table seller-monitor-table"><thead><tr><th>商家</th><th>采集频率</th><th>最近更新</th><th>状态</th><th aria-label="操作" /></tr></thead><tbody>{page.items.map((task) => <tr key={task.id}><td><strong>{task.publicName ?? task.platformSellerId}</strong><small>{task.profileUrl || task.platformSellerId}</small></td><td>{monitorInterval(task.intervalSeconds)}</td><td><span className="time">{monitorUpdatedAt(task.updatedAt)}</span></td><td><span className={`status ${task.status === 'active' ? 'ok' : 'muted'}`}>{task.status === 'active' ? '已启用' : '已暂停'}</span></td><td><div className="monitor-actions"><button className="row-action" title="查看商家详情" onClick={() => setDetailTask(task)}><MoreHorizontal size={17} /></button><button className="row-action" title={task.status === 'active' ? '暂停监控' : '启用监控'} onClick={() => void changeStatus(task)} disabled={workingId === task.id}>{task.status === 'active' ? <Pause size={16} /> : <Play size={16} />}</button><button className="row-action monitor-delete" title="删除商家" onClick={() => void deleteTask(task)} disabled={workingId === task.id}><Trash2 size={16} /></button></div></td></tr>)}</tbody></table></div>}<CursorPagination total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onPrev={previousPage} onNext={nextPage} onPageSize={(value) => { setPageSize(value); resetToFirstPage() }} /></section>{editorOpen && <SellerMonitorEditor form={form} saving={saving} error={formError} onChange={(field, value) => setForm((current) => ({ ...current, [field]: value }))} onClose={closeEditor} onSubmit={(event) => void saveTask(event)} />}{detailTask && <SellerMonitorDetail api={api} mode={mode} task={detailTask} onClose={() => setDetailTask(null)} />}</>
+  return <><div className="page-heading"><div><p className="eyebrow">竞品监控</p><h1>竞品商家</h1><p>管理公开卖家监控任务。</p></div><button className="primary" onClick={() => openEditor()}><Plus size={16} />添加商家</button></div>{actionError && <div className="monitor-alert" role="alert">{actionError}</div>}<section className="table-panel monitor-table-panel seller-monitor-table-panel"><div className="table-summary"><span>共 <strong>{page.total}</strong> 个商家</span><button className="icon-button" title="刷新竞品商家" onClick={() => setReloadKey((value) => value + 1)} disabled={loading}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></div><div className="filter-bar seller-monitor-filter"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); resetToFirstPage() }} placeholder="搜索卖家" /></label><label><span>状态</span><select value={status} onChange={(event) => { setStatus(event.target.value); resetToFirstPage() }}><option value="">全部状态</option><option value="active">已启用</option><option value="paused">已暂停</option></select></label></div>{loadError ? <div className="state-box"><Activity size={27} /><strong>竞品商家加载失败</strong><p>{loadError}</p><button className="primary small" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载竞品商家</strong><p>请稍候。</p></div> : page.items.length === 0 ? <div className="state-box"><Store size={27} /><strong>还没有竞品商家</strong><p>添加公开卖家主页后即可开始监控。</p><button className="primary small" onClick={() => openEditor()}><Plus size={15} />添加商家</button></div> : <div className="table-wrap"><table className="monitor-table seller-monitor-table"><thead><tr><th>商家</th><th>采集频率</th><th>最近更新</th><th>状态</th><th aria-label="操作" /></tr></thead><tbody>{page.items.map((task) => <tr key={task.id}><td><strong>{task.publicName ?? task.platformSellerId}</strong><small>{task.profileUrl || task.platformSellerId}</small></td><td>{monitorInterval(task.intervalSeconds)}</td><td><span className="time">{monitorUpdatedAt(task.updatedAt)}</span></td><td><span className={`status ${task.status === 'active' ? 'ok' : 'muted'}`}>{task.status === 'active' ? '已启用' : '已暂停'}</span></td><td><div className="monitor-actions"><button className="row-action" title="查看商家详情" onClick={() => setDetailTask(task)}><MoreHorizontal size={17} /></button><button className="row-action" title="编辑采集间隔" onClick={() => setIntervalTask(task)} disabled={workingId === task.id}><Pencil size={16} /></button><button className="row-action" title={task.status === 'active' ? '暂停监控' : '启用监控'} onClick={() => void changeStatus(task)} disabled={workingId === task.id}>{task.status === 'active' ? <Pause size={16} /> : <Play size={16} />}</button><button className="row-action monitor-delete" title="删除商家" onClick={() => void deleteTask(task)} disabled={workingId === task.id}><Trash2 size={16} /></button></div></td></tr>)}</tbody></table></div>}<CursorPagination total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onPrev={previousPage} onNext={nextPage} onPageSize={(value) => { setPageSize(value); resetToFirstPage() }} /></section>{editorOpen && <SellerMonitorEditor form={form} saving={saving} error={formError} onChange={(field, value) => setForm((current) => ({ ...current, [field]: value }))} onClose={closeEditor} onSubmit={(event) => void saveTask(event)} />}{intervalTask && <SellerMonitorIntervalModal task={intervalTask} saving={workingId === intervalTask.id} onClose={() => setIntervalTask(null)} onSave={(minutes) => void saveInterval(intervalTask, minutes)} />}{detailTask && <SellerMonitorDetail api={api} mode={mode} task={detailTask} onClose={() => setDetailTask(null)} />}</>
 }
 
 function SellerMonitorEditor({ form, saving, error, onChange, onClose, onSubmit }: { form: SellerMonitorForm; saving: boolean; error: string | null; onChange: (field: keyof SellerMonitorForm, value: string) => void; onClose: () => void; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void }): ReactNode {
   const setValue = (field: keyof SellerMonitorForm) => (event: React.ChangeEvent<HTMLInputElement>) => onChange(field, event.target.value)
   return <div className="monitor-dialog-layer"><button className="monitor-dialog-backdrop" aria-label="关闭竞品商家编辑器" onClick={onClose} /><section className="monitor-dialog seller-monitor-dialog" role="dialog" aria-modal="true" aria-labelledby="seller-monitor-editor-title"><header><div><p className="eyebrow">竞品商家</p><h2 id="seller-monitor-editor-title">添加商家</h2></div><button className="icon-button" type="button" title="关闭" onClick={onClose} disabled={saving}><X size={18} /></button></header><form onSubmit={onSubmit}><div className="monitor-dialog-body"><div className="monitor-form-grid"><label className="monitor-field monitor-field-wide"><span>公开卖家主页或卖家 ID</span><input value={form.target} onChange={setValue('target')} maxLength={2048} placeholder="粘贴公开主页" autoFocus required /></label><label className="monitor-field"><span>采集间隔（分钟）</span><input type="number" min="30" max="1440" step="1" value={form.intervalSeconds} onChange={setValue('intervalSeconds')} /></label><div className="monitor-field monitor-switch-field"><span>启用监控</span><button type="button" className={`toggle ${form.status === 'active' ? 'on' : ''}`} aria-label="启用监控" aria-pressed={form.status === 'active'} onClick={() => onChange('status', form.status === 'active' ? 'paused' : 'active')}><i /></button></div></div>{error && <p className="form-error monitor-form-error" role="alert">{error}</p>}</div><footer><button className="secondary" type="button" onClick={onClose} disabled={saving}>取消</button><button className="primary" type="submit" disabled={saving}><Save size={16} />{saving ? '正在保存…' : '添加商家'}</button></footer></form></section></div>
+}
+
+function SellerMonitorIntervalModal({ task, saving, onClose, onSave }: { task: SellerMonitor; saving: boolean; onClose: () => void; onSave: (minutes: number) => void }): ReactNode {
+  const [minutes, setMinutes] = useState(String(Math.max(30, Math.round(task.intervalSeconds / 60))))
+  const [error, setError] = useState<string | null>(null)
+  const submit = () => {
+    const value = Number(minutes)
+    if (!Number.isInteger(value) || value < 30 || value > 1440) { setError('采集间隔需为 30 到 1440 分钟的整数'); return }
+    onSave(value)
+  }
+  return <Modal title="编辑采集间隔" onClose={onClose} footer={<><button className="secondary" onClick={onClose} disabled={saving}>取消</button><button className="primary" onClick={submit} disabled={saving}>{saving ? '正在保存…' : '保存'}</button></>}><label className="modal-field"><span>采集间隔（分钟）</span><input type="number" min="30" max="1440" step="1" value={minutes} onChange={(event) => setMinutes(event.target.value)} autoFocus /></label>{error && <p className="form-error">{error}</p>}</Modal>
 }
 
 type SellerDetailTab = 'items' | 'events'
@@ -1106,7 +1154,7 @@ function ApiState({ title, description }: { title: string; description: string }
   return <div className="state-box api-state"><Activity size={27} /><strong>{title}</strong><p>{description}</p></div>
 }
 
-function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; copy: { title: string; description: string; primary: string; columns: [string, string, string, string] }; rows: TableRow[]; total: number; pageIndex: number; pageSize: number; query: string; status: string; sort: SortKey; loading: boolean; error: string | null; canGoBack: boolean; canGoForward: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onPageSize: (value: number) => void; onPrev: () => void; onNext: () => void; onReload: () => void; onRetry: () => void; onOpen: (row: TableRow) => void; tabs?: Array<{ key: RowKind; label: string }>; onTabChange: (next: RowKind) => void }): ReactNode {
+function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; copy: { title: string; description: string; primary: string; columns: [string, string, string, string] }; rows: TableRow[]; total: number; pageIndex: number; pageSize: number; query: string; status: string; sort: SortKey; loading: boolean; error: string | null; canGoBack: boolean; canGoForward: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onPageSize: (value: number) => void; onPrev: () => void; onNext: () => void; onReload: () => void; onRetry: () => void; onOpen: (row: TableRow) => void; tabs?: Array<{ key: RowKind; label: string }>; tabMode?: 'tabs' | 'select'; onTabChange: (next: RowKind) => void; onMigrate?: (row: TableRow) => void; migratingId?: string | null; notice?: string | null }): ReactNode {
   const { copy, rows, total, pageIndex, pageSize, query, status, sort, loading, error } = props
   const [aiOpen, setAiOpen] = useState(false)
   const exportCurrentPage = () => {
@@ -1120,7 +1168,7 @@ function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: R
     if (props.resource === 'ai') return setAiOpen(true)
   }
   const hasPrimary = props.resource === 'logs' || props.resource === 'ai'
-  return <><div className="page-heading"><div><p className="eyebrow">数据中心</p><h1>{copy.title}</h1><p>{copy.description}</p></div>{hasPrimary && <button className="primary" onClick={handlePrimary}>{props.resource === 'logs' ? <ExternalLink size={16} /> : <Bot size={16} />}{copy.primary}</button>}</div>{props.tabs && <div className="content-tabs" role="tablist">{props.tabs.map((tab) => <button key={tab.key} className={props.resource === tab.key ? 'active' : ''} role="tab" aria-selected={props.resource === tab.key} onClick={() => props.onTabChange(tab.key)}>{tab.label}</button>)}</div>}<section className="filter-bar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索名称、对象或变化内容" /></label><label><span>状态</span><select value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label><span>排序</span><select value={sort} onChange={(event) => props.onSort(event.target.value)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><div className="filter-spacer" /><button className="icon-button" title="刷新" onClick={props.onReload}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></section><section className="table-panel"><div className="table-summary"><span>共 <strong>{total}</strong> 条</span><span>已按当前筛选加载</span></div>{error ? <div className="state-box"><Activity size={27} /><strong>列表加载失败</strong><p>{error}</p><button className="primary small" onClick={props.onRetry}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载数据</strong><p>请稍候。</p></div> : rows.length === 0 ? <div className="state-box"><Filter size={27} /><strong>没有匹配的数据</strong><p>调整关键词或状态后重试。</p></div> : <div className="table-wrap"><table><thead><tr><th>{copy.columns[0]}</th><th>{copy.columns[1]}</th><th>{copy.columns[2]}</th><th>{copy.columns[3]}</th><th aria-label="操作" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><span className="row-tag">{row.tag}</span><strong>{row.title}</strong><small>{row.subtitle}</small></td><td>{row.metric}</td><td><span className="time">{row.updatedAt}</span></td><td><span className={`status ${statusClass[row.status]}`}>{row.status}</span></td><td><button className="row-action" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={19} /></button></td></tr>)}</tbody></table></div>}<CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={props.canGoBack} canGoForward={props.canGoForward} onPrev={props.onPrev} onNext={props.onNext} onPageSize={props.onPageSize} /></section>{aiOpen && <AiRequestModal api={props.api} mode={props.mode} resource={props.resource} query={query} status={status} sort={sort} rows={rows} onClose={() => setAiOpen(false)} />}</>
+  return <><div className="page-heading"><div><p className="eyebrow">数据中心</p><h1>{copy.title}</h1><p>{copy.description}</p></div>{hasPrimary && <button className="primary" onClick={handlePrimary}>{props.resource === 'logs' ? <ExternalLink size={16} /> : <Bot size={16} />}{copy.primary}</button>}</div>{props.tabs && props.tabMode !== 'select' && <div className="content-tabs" role="tablist">{props.tabs.map((tab) => <button key={tab.key} className={props.resource === tab.key ? 'active' : ''} role="tab" aria-selected={props.resource === tab.key} onClick={() => props.onTabChange(tab.key)}>{tab.label}</button>)}</div>}<section className="filter-bar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索名称、对象或变化内容" /></label>{props.tabs && props.tabMode === 'select' && <label className="trend-filter"><span>动态类型</span><select value={props.resource} onChange={(event) => props.onTabChange(event.target.value as RowKind)}>{props.tabs.map((tab) => <option value={tab.key} key={tab.key}>{tab.label}</option>)}</select></label>}<label><span>状态</span><select value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="失败">失败</option><option value="已处理">已处理</option></select></label><label><span>排序</span><select value={sort} onChange={(event) => props.onSort(event.target.value)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><div className="filter-spacer" /><button className="icon-button" title="刷新" onClick={props.onReload}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></section><section className="table-panel"><div className="table-summary"><span>共 <strong>{total}</strong> 条</span><span>已按当前筛选加载</span>{props.notice && <span className="supply-hint">{props.notice}</span>}</div>{error ? <div className="state-box"><Activity size={27} /><strong>列表加载失败</strong><p>{error}</p><button className="primary small" onClick={props.onRetry}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载数据</strong><p>请稍候。</p></div> : rows.length === 0 ? <div className="state-box"><Filter size={27} /><strong>没有匹配的数据</strong><p>调整关键词或状态后重试。</p></div> : <div className="table-wrap"><table><thead><tr><th>{copy.columns[0]}</th><th>{copy.columns[1]}</th><th>{copy.columns[2]}</th><th>{copy.columns[3]}</th><th aria-label="操作" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><span className="row-tag">{row.tag}</span><strong>{row.title}</strong><small>{row.subtitle}</small></td><td>{row.metric}</td><td><span className="time">{row.updatedAt}</span></td><td><span className={`status ${statusClass[row.status]}`}>{row.status}</span></td><td><div className="supply-actions">{props.onMigrate && row.market && <button className="primary small" disabled={props.migratingId === row.id} onClick={() => props.onMigrate?.(row)}>{props.migratingId === row.id ? '提交中…' : '搬家'}</button>}<button className="row-action" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={19} /></button></div></td></tr>)}</tbody></table></div>}<CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={props.canGoBack} canGoForward={props.canGoForward} onPrev={props.onPrev} onNext={props.onNext} onPageSize={props.onPageSize} /></section>{aiOpen && <AiRequestModal api={props.api} mode={props.mode} resource={props.resource} query={query} status={status} sort={sort} rows={rows} onClose={() => setAiOpen(false)} />}</>
 }
 
 function AiRequestModal({ api, mode, resource, query, status, sort, rows, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; query: string; status: string; sort: SortKey; rows: TableRow[]; onClose: () => void }): ReactNode {
@@ -1151,7 +1199,9 @@ function MarketItemDetail({ api, mode, row, onClose, onAddSeller, onOpenEvents }
   const [migrating, setMigrating] = useState(false)
   const [migrationResult, setMigrationResult] = useState<string | null>(null)
   const [migrationError, setMigrationError] = useState<string | null>(null)
-  const price = market.price ? `¥${Number(market.price).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` : '暂无价格'
+  const currentPrice = market.currentPrice ?? (market.price ? Number(market.price) : undefined)
+  const price = currentPrice === undefined || !Number.isFinite(currentPrice) ? '暂无价格' : `¥${currentPrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+  const priceChange = market.previousPrice === undefined || currentPrice === undefined ? null : `原价 ¥${market.previousPrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })} -> 现价 ¥${currentPrice.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
   const itemId = market.platformItemId || row.id
   const sellerName = market.platformSellerId || market.sellerId || '暂无公开卖家标识'
   const formatDate = (value?: string) => value ? supplyDate(value) : '暂无记录'
@@ -1162,7 +1212,7 @@ function MarketItemDetail({ api, mode, row, onClose, onAddSeller, onOpenEvents }
       setMigrationResult(`商品 ${request.platformItemId} 已加入搬家队列${request.status === 'queued' ? '，等待本机采集器处理' : ''}`)
     } catch (caught) { setMigrationError(caught instanceof UserApiError ? caught.message : '创建搬家请求失败') } finally { setMigrating(false) }
   }
-  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭商品详情" onClick={onClose} /><section className="modal-shell market-detail-modal" role="dialog" aria-modal="true" aria-labelledby="market-detail-title"><header><div><span className="eyebrow">市场商品</span><h2 id="market-detail-title">{row.title}</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="modal-body market-detail-body"><section className="market-detail-hero">{market.images[0] ? <img src={market.images[0]} alt="" /> : <div className="market-image-empty"><PackageSearch size={24} /></div>}<div><span className="row-tag">{row.tag}</span><strong>{price}</strong><p>{market.region || '地区未知'}{market.conditionText ? ` · ${market.conditionText}` : ''}{market.wantCount === undefined ? '' : ` · ${market.wantCount} 人想要`}</p></div></section><section className="market-detail-section"><h3>商品信息</h3><dl><div><dt>平台</dt><dd>{market.platform || '闲鱼'}</dd></div><div><dt>商品 ID</dt><dd>{itemId}</dd></div><div><dt>商品状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div>{market.sourceUrl && <div><dt>公开链接</dt><dd><a href={market.sourceUrl} target="_blank" rel="noreferrer">打开商品页 <ExternalLink size={13} /></a></dd></div>}</dl></section><section className="market-detail-section"><h3>卖家</h3><dl><div><dt>公开卖家 ID</dt><dd>{sellerName}</dd></div><div><dt>卖家记录</dt><dd>{market.sellerId || '尚未关联本地卖家记录'}</dd></div></dl>{row.sellerTarget && <button className="text-button market-detail-link" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />查看关联卖家</button>}</section><section className="market-detail-section"><h3>最近快照</h3><dl><div><dt>首次发现</dt><dd>{formatDate(market.firstSeenAt)}</dd></div><div><dt>最近发现</dt><dd>{formatDate(market.lastSeenAt)}</dd></div><div><dt>当前摘要</dt><dd>{row.metric}</dd></div></dl></section><section className="market-detail-section"><h3>变化事件</h3><p className="market-detail-note">价格、状态和卖家变化会归入动态中的变化事件。</p><button className="text-button market-detail-link" onClick={onOpenEvents}><Bell size={15} />查看关联事件</button></section>{migrationError && <p className="form-error">{migrationError}</p>}{migrationResult && <div className="supply-result"><strong>搬家请求已提交</strong><span>{migrationResult}</span></div>}</div><footer><button className="secondary" onClick={onClose}>关闭</button><button className="primary small" onClick={() => void migrate()} disabled={migrating || Boolean(migrationResult)}>{migrating ? '正在提交…' : '搬家'}</button>{market.sourceUrl && <a className="primary small" href={market.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />打开商品页</a>}</footer></section></div>
+  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭商品详情" onClick={onClose} /><section className="modal-shell market-detail-modal" role="dialog" aria-modal="true" aria-labelledby="market-detail-title"><header><div><span className="eyebrow">市场商品</span><h2 id="market-detail-title">{row.title}</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="modal-body market-detail-body"><section className="market-detail-hero">{market.images[0] ? <img src={market.images[0]} alt="" /> : <div className="market-image-empty"><PackageSearch size={24} /></div>}<div><span className="row-tag">{row.tag}</span><strong>{price}</strong>{priceChange && <small>{priceChange}</small>}<p>{market.region || '地区未知'}{market.conditionText ? ` · ${market.conditionText}` : ''}{market.wantCount === undefined ? '' : ` · ${market.wantCount} 人想要`}</p></div></section><section className="market-detail-section"><h3>商品信息</h3><dl><div><dt>平台</dt><dd>{market.platform || '闲鱼'}</dd></div><div><dt>商品 ID</dt><dd>{itemId}</dd></div><div><dt>商品状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div>{market.sourceUrl && <div><dt>公开链接</dt><dd><a href={market.sourceUrl} target="_blank" rel="noreferrer">打开商品页 <ExternalLink size={13} /></a></dd></div>}</dl></section><section className="market-detail-section"><h3>卖家</h3><dl><div><dt>公开卖家 ID</dt><dd>{sellerName}</dd></div><div><dt>卖家记录</dt><dd>{market.sellerId || '尚未关联本地卖家记录'}</dd></div></dl>{row.sellerTarget && <button className="text-button market-detail-link" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />查看关联卖家</button>}</section><section className="market-detail-section"><h3>最近快照</h3><dl><div><dt>首次发现</dt><dd>{formatDate(market.firstSeenAt)}</dd></div><div><dt>最近发现</dt><dd>{formatDate(market.lastSeenAt)}</dd></div><div><dt>当前摘要</dt><dd>{row.metric}</dd></div></dl></section><section className="market-detail-section"><h3>变化事件</h3><p className="market-detail-note">价格、状态和卖家变化会归入动态中的变化事件。</p><button className="text-button market-detail-link" onClick={onOpenEvents}><Bell size={15} />查看关联事件</button></section>{migrationError && <p className="form-error">{migrationError}</p>}{migrationResult && <div className="supply-result"><strong>搬家请求已提交</strong><span>{migrationResult}</span></div>}</div><footer><button className="secondary" onClick={onClose}>关闭</button><button className="primary small" onClick={() => void migrate()} disabled={migrating || Boolean(migrationResult)}>{migrating ? '正在提交…' : '搬家'}</button>{market.sourceUrl && <a className="primary small" href={market.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />打开商品页</a>}</footer></section></div>
 }
 
 function DetailDrawer({ row, onClose, onAddSeller }: { row: TableRow; onClose: () => void; onAddSeller: (target: SellerTarget) => void }): ReactNode {
@@ -1206,6 +1256,9 @@ function SupplyPage({ api, mode, sourceType }: { api: UserApiClient; mode: 'demo
   const [selected, setSelected] = useState<SupplyMaterial | null>(null)
   const [editing, setEditing] = useState<SupplyMaterial | null>(null)
   const [planning, setPlanning] = useState<SupplyMaterial | null>(null)
+  const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([])
+  const [batchPlanning, setBatchPlanning] = useState(false)
+  const [batchPlanNotice, setBatchPlanNotice] = useState<string | null>(null)
 
   useEffect(() => {
     if (mode === 'demo') {
@@ -1231,13 +1284,31 @@ function SupplyPage({ api, mode, sourceType }: { api: UserApiClient; mode: 'demo
       setReloadKey((value) => value + 1)
     } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '归档失败') }
   }
+  const createBatchPlans = async () => {
+    const selectedMaterials = materials.filter((item) => selectedMaterialIds.includes(item.id) && item.status === 'ready')
+    if (!selectedMaterials.length) { setBatchPlanNotice('请先选择可发布素材'); return }
+    setBatchPlanning(true); setBatchPlanNotice(null)
+    let succeeded = 0
+    let failed = 0
+    for (const material of selectedMaterials) {
+      try {
+        if (mode !== 'demo') await api.createSupplyPublishPlan({ schemaVersion: 1, materialId: material.id, idempotencyKey: newSupplyKey(), schedule: { mode: 'immediate' } })
+        succeeded += 1
+      } catch {
+        failed += 1
+      }
+    }
+    setSelectedMaterialIds([])
+    setBatchPlanNotice(`已创建 ${succeeded} 个发布计划${failed ? `，失败 ${failed} 个` : ''}`)
+    setBatchPlanning(false)
+  }
   const pageIndex = history.length + 1
   const title = sourceType === 'xianyu' ? '咸鱼搬家' : '通用铺货'
   const description = sourceType === 'xianyu' ? '粘贴公开闲鱼商品链接，由本机采集器读取详情后生成待编辑素材。' : '导入已解析的平台商品快照，整理成适用于闲鱼发布的素材。'
-  return <><div className="page-heading supply-heading"><div><h1>{title}</h1><p>{description}</p></div>{sourceType === 'xianyu' ? <div className="supply-actions"><button className="secondary" onClick={() => setPublishedMigrationOpen(true)}>已发布商品搬家</button><button className="primary" onClick={() => setMigrationOpen(true)}><Plus size={16} />搬家商品</button></div> : <button className="primary" onClick={() => setImportOpen(true)}><Plus size={16} />导入素材</button>}</div>
+  return <><div className="page-heading supply-heading"><div><h1>{title}</h1><p>{description}</p></div><div className="supply-actions"><button className="secondary" disabled={batchPlanning} onClick={() => void createBatchPlans()}>{batchPlanning ? '正在创建…' : '批量创建发布计划'}</button>{sourceType === 'xianyu' ? <><button className="secondary" onClick={() => setPublishedMigrationOpen(true)}>已发布商品搬家</button><button className="primary" onClick={() => setMigrationOpen(true)}><Plus size={16} />搬家商品</button></> : <button className="primary" onClick={() => setImportOpen(true)}><Plus size={16} />导入素材</button>}</div></div>
     <section className="filter-bar supply-filter"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => reset(() => setQuery(event.target.value))} placeholder="搜索标题或来源 ID" /></label><label><span>状态</span><select value={status} onChange={(event) => reset(() => setStatus(event.target.value))}><option value="">全部状态</option><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><button className="icon-button" title="刷新素材" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={17} /></button></section>
     {error && <div className="monitor-alert">{error}</div>}
-    <section className="table-panel supply-table-panel"><div className="table-summary"><span>素材列表</span><span>已解析快照，最多每页 100 条</span></div><div className="table-wrap"><table className="data-table supply-table"><thead><tr><th>素材</th><th>价格</th><th>来源</th><th>版本</th><th>状态</th><th>更新时间</th><th aria-label="操作" /></tr></thead><tbody>{loading ? <tr><td colSpan={7}><div className="state-box"><RefreshCw className="spin" size={18} />正在加载素材</div></td></tr> : materials.length === 0 ? <tr><td colSpan={7}><div className="state-box"><PackageSearch size={20} /><strong>暂无素材</strong><p>导入已解析的 JSON 或 JSONL 快照后会显示在这里。</p></div></td></tr> : materials.map((material) => <tr key={material.id}><td><div className="supply-material-title">{material.mainImages[0] && <img src={material.mainImages[0]} alt="" />}<div><strong>{material.title}</strong><small>{material.sourceItemId}</small></div></div></td><td>¥{Number(material.price).toFixed(2)}</td><td>{material.sourcePlatform}</td><td>v{material.currentVersion}</td><td><span className={`status ${material.status === 'ready' ? 'ok' : material.status === 'archived' ? 'muted' : 'pending'}`}>{supplyStatusLabel(material.status)}</span></td><td>{supplyDate(material.updatedAt)}</td><td><div className="supply-actions"><button className="icon-button" title="预览" onClick={() => setSelected(material)}><ExternalLink size={16} /></button><button className="icon-button" title="编辑" onClick={() => setEditing(material)}><Pencil size={16} /></button>{material.status !== 'archived' && <button className="icon-button" title="归档" onClick={() => void archive(material)}><Trash2 size={16} /></button>}<button className="primary small" disabled={material.status !== 'ready'} onClick={() => setPlanning(material)}>创建计划</button></div></td></tr>)}</tbody></table></div><CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={history.length > 0} canGoForward={Boolean(nextCursor)} onPrev={() => { const previous = history[history.length - 1] ?? null; setHistory((items) => items.slice(0, -1)); setCursor(previous) }} onNext={() => { if (!nextCursor) return; setHistory((items) => [...items, cursor]); setCursor(nextCursor) }} onPageSize={(value) => { setPageSize(value); setCursor(null); setHistory([]) }} /></section>
+    <section className="table-panel supply-table-panel"><div className="table-summary"><span>素材列表</span><span>已解析快照，最多每页 100 条</span>{batchPlanNotice && <span className="supply-hint">{batchPlanNotice}</span>}</div><div className="table-wrap"><table className="data-table supply-table"><thead><tr><th><input type="checkbox" aria-label="全选当前页素材" checked={materials.length > 0 && materials.every((item) => selectedMaterialIds.includes(item.id))} onChange={(event) => setSelectedMaterialIds(event.target.checked ? materials.map((item) => item.id) : [])} /></th><th>素材</th><th>价格</th><th>来源</th><th>版本</th><th>状态</th><th>更新时间</th><th aria-label="操作" /></tr></thead><tbody>{loading ? <tr><td colSpan={8}><div className="state-box"><RefreshCw className="spin" size={18} />正在加载素材</div></td></tr> : materials.length === 0 ? <tr><td colSpan={8}><div className="state-box"><PackageSearch size={20} /><strong>暂无素材</strong><p>导入已解析的 JSON 或 JSONL 快照后会显示在这里。</p></div></td></tr> : materials.map((material) => <tr key={material.id}><td><input type="checkbox" aria-label={`选择素材 ${material.title}`} checked={selectedMaterialIds.includes(material.id)} onChange={(event) => setSelectedMaterialIds((current) => event.target.checked ? [...current, material.id] : current.filter((id) => id !== material.id))} /></td><td><div className="supply-material-title">{material.mainImages[0] && <img src={material.mainImages[0]} alt="" />}<div><strong>{material.title}</strong><small>{material.sourceItemId}</small></div></div></td><td>¥{Number(material.price).toFixed(2)}</td><td>{material.sourcePlatform}</td><td>v{material.currentVersion}</td><td><span className={`status ${material.status === 'ready' ? 'ok' : material.status === 'archived' ? 'muted' : 'pending'}`}>{supplyStatusLabel(material.status)}</span></td><td>{supplyDate(material.updatedAt)}</td><td><div className="supply-actions"><button className="icon-button" title="预览" onClick={() => setSelected(material)}><ExternalLink size={16} /></button><button className="icon-button" title="编辑" onClick={() => setEditing(material)}><Pencil size={16} /></button>{material.status !== 'archived' && <button className="icon-button" title="归档" onClick={() => void archive(material)}><Trash2 size={16} /></button>}<button className="primary small" disabled={material.status !== 'ready'} onClick={() => setPlanning(material)}>创建计划</button></div></td></tr>)}</tbody></table></div><CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={history.length > 0} canGoForward={Boolean(nextCursor)} onPrev={() => { const previous = history[history.length - 1] ?? null; setHistory((items) => items.slice(0, -1)); setCursor(previous) }} onNext={() => { if (!nextCursor) return; setHistory((items) => [...items, cursor]); setCursor(nextCursor) }} onPageSize={(value) => { setPageSize(value); setCursor(null); setHistory([]) }} /></section>
     {importOpen && <SupplyImportModal api={api} mode={mode} sourceType={sourceType} onClose={() => setImportOpen(false)} onImported={() => setReloadKey((value) => value + 1)} />}
     {migrationOpen && <SupplyMigrationModal api={api} mode={mode} sourceKind="public_url" onClose={() => setMigrationOpen(false)} />}
     {publishedMigrationOpen && <SupplyMigrationModal api={api} mode={mode} sourceKind="published_item" onClose={() => setPublishedMigrationOpen(false)} />}
@@ -1289,6 +1360,48 @@ function SupplyPreviewModal({ material, onClose }: { material: SupplyMaterial; o
   return <Modal title="素材预览" onClose={onClose} footer={<button className="primary" onClick={onClose}>关闭</button>}><div className="supply-preview">{material.mainImages[0] && <img src={material.mainImages[0]} alt={material.title} />}<div><strong>{material.title}</strong><b>¥{Number(material.price).toFixed(2)}</b><p>{material.description || '暂无商品描述'}</p><small>{material.sourcePlatform} · {material.sourceItemId} · v{material.currentVersion}</small></div></div></Modal>
 }
 
+type SupplySkuGroup = { name: string; values: string[] }
+type SupplySkuCombination = { key: string; values: string[]; price: string; stock: string }
+type SupplySkuRow = { key: string; value: string }
+
+function skuCombinationKey(groups: SupplySkuGroup[], values: string[]): string {
+  return groups.map((group, index) => `${group.name.trim()}=${values[index] ?? ''}`).join('|')
+}
+
+function buildSkuCombinations(groups: SupplySkuGroup[], current: SupplySkuCombination[], defaultPrice: string): SupplySkuCombination[] {
+  const usableGroups = groups.filter((group) => group.name.trim() && group.values.some((value) => value.trim()))
+  if (!usableGroups.length) return []
+  const existing = new Map(current.map((item) => [item.key, item]))
+  const combinations = usableGroups.reduce<string[][]>((items, group) => items.flatMap((item) => group.values.filter((value) => value.trim()).map((value) => [...item, value.trim()])), [[]])
+  return combinations.map((values) => {
+    const key = skuCombinationKey(usableGroups, values)
+    return existing.get(key) ?? { key, values, price: defaultPrice, stock: '' }
+  })
+}
+
+function supplySkuConfig(value: unknown, defaultPrice: string): { groups: SupplySkuGroup[]; combinations: SupplySkuCombination[] } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { groups: [], combinations: [] }
+  const source = value as Record<string, unknown>
+  const groups = Array.isArray(source.groups)
+    ? source.groups.slice(0, 2).flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+      const group = item as Record<string, unknown>
+      const name = typeof group.name === 'string' ? group.name : ''
+      const values = Array.isArray(group.values) ? group.values.filter((entry): entry is string => typeof entry === 'string') : []
+      return name || values.length ? [{ name, values }] : []
+    })
+    : Object.entries(source).flatMap(([name, entry]) => typeof entry === 'string' ? [{ name, values: [entry] }] : []).slice(0, 2)
+  const imported = Array.isArray(source.combinations)
+    ? source.combinations.flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+      const row = item as Record<string, unknown>
+      const values = Array.isArray(row.values) ? row.values.filter((entry): entry is string => typeof entry === 'string') : []
+      return values.length ? [{ key: skuCombinationKey(groups, values), values, price: String(row.price ?? defaultPrice), stock: String(row.stock ?? '') }] : []
+    })
+    : []
+  return { groups, combinations: buildSkuCombinations(groups, imported, defaultPrice) }
+}
+
 function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserApiClient; mode: 'demo' | 'api'; material: SupplyMaterial; onClose: () => void; onSaved: () => void }): ReactNode {
   const [title, setTitle] = useState(material.title)
   const [description, setDescription] = useState(material.description ?? '')
@@ -1296,8 +1409,32 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
   const [status, setStatus] = useState(material.status)
   const [mainImages, setMainImages] = useState(material.mainImages.join('\n'))
   const [detailImages, setDetailImages] = useState(material.detailImages.join('\n'))
-  const [sku, setSku] = useState(JSON.stringify(material.sku ?? null, null, 2))
-  const [attributes, setAttributes] = useState(JSON.stringify(material.attributes, null, 2))
+  const [category, setCategory] = useState(String(material.attributes.category ?? ''))
+  const [condition, setCondition] = useState(String(material.attributes.condition ?? material.attributes.conditionText ?? ''))
+  const [brand, setBrand] = useState(String(material.attributes.brand ?? ''))
+  const [delivery, setDelivery] = useState(String(material.attributes.delivery ?? ''))
+  const [shipping, setShipping] = useState(String(material.attributes.shipping ?? ''))
+  const [postage, setPostage] = useState(String(material.attributes.postage ?? ''))
+  const [region, setRegion] = useState(String(material.attributes.region ?? ''))
+  const [publishAddressMode, setPublishAddressMode] = useState(String(material.attributes.publishAddressMode ?? 'default'))
+  const [publishAddressPool, setPublishAddressPool] = useState(Array.isArray(material.attributes.publishAddressPool) ? material.attributes.publishAddressPool.filter((item): item is string => typeof item === 'string').join('\n') : '')
+  const [originalPrice] = useState(String(material.attributes.originalPrice ?? ''))
+  const [skuGroups, setSkuGroups] = useState<SupplySkuGroup[]>(() => supplySkuConfig(material.sku, String(material.price)).groups)
+  const [skuCombinations, setSkuCombinations] = useState<SupplySkuCombination[]>(() => supplySkuConfig(material.sku, String(material.price)).combinations)
+  const skuRows = skuGroups.flatMap((group) => group.values.map((value) => ({ key: group.name, value })))
+  const setSkuRows = (updater: (current: SupplySkuRow[]) => SupplySkuRow[]) => {
+    const nextRows = updater(skuRows)
+    const nextGroups = nextRows.reduce<SupplySkuGroup[]>((groups, row) => {
+      const name = row.key.trim()
+      if (!name) return groups
+      const existing = groups.find((group) => group.name === name)
+      if (existing) existing.values.push(row.value)
+      else if (groups.length < 2) groups.push({ name, values: [row.value] })
+      return groups
+    }, [])
+    setSkuGroups(nextGroups)
+    setSkuCombinations((current) => buildSkuCombinations(nextGroups, current, price))
+  }
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [aiNotice, setAiNotice] = useState<string | null>(null)
@@ -1315,18 +1452,25 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
     if (new Set(normalized).size !== normalized.length) throw new Error(`${field}不能重复`)
     return normalized
   }
+  const updateSkuGroups = (updater: (current: SupplySkuGroup[]) => SupplySkuGroup[]) => {
+    setSkuGroups((current) => {
+      const next = updater(current)
+      setSkuCombinations((existing) => buildSkuCombinations(next, existing, price))
+      return next
+    })
+  }
   const submit = async () => {
     const numericPrice = Number(price)
     if (!title.trim()) { setError('请输入标题'); return }
     if (!Number.isFinite(numericPrice) || numericPrice < 0) { setError('请输入有效价格'); return }
     try {
-      const parsedSku: unknown = JSON.parse(sku)
-      const parsedAttributes: unknown = JSON.parse(attributes)
-      if (!parsedAttributes || Array.isArray(parsedAttributes) || typeof parsedAttributes !== 'object') throw new Error('属性必须是 JSON 对象')
+      const groups = skuGroups.map((group) => ({ name: group.name.trim(), values: group.values.map((value) => value.trim()).filter(Boolean) })).filter((group) => group.name && group.values.length)
+      const sku = groups.length ? { groups, combinations: skuCombinations.map((item) => ({ values: item.values, price: Number(item.price), stock: Number(item.stock) })) } : null
+      const attributes = { ...material.attributes, category: category.trim(), categoryPath: category.trim(), condition: condition.trim(), conditionText: condition.trim(), brand: brand.trim(), delivery: delivery.trim(), shipping: shipping.trim(), postage: postage.trim(), region: region.trim(), publishAddressMode, publishAddressPool: publishAddressPool.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) }
       const patch: SupplyMaterialPatch = {
         title: title.trim(), description: description.trim() || null, price: numericPrice, status: status as SupplyMaterial['status'],
         mainImages: parseImageUrls(mainImages, '主图', 1, 10), detailImages: parseImageUrls(detailImages, '详情图', 0, 120),
-        sku: parsedSku, attributes: parsedAttributes as Record<string, unknown>
+        sku, attributes
       }
       setSaving(true); setError(null)
       if (mode !== 'demo') await api.updateSupplyMaterial(material.id, patch)
@@ -1343,7 +1487,7 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
       setError(caught instanceof UserApiError ? caught.message : 'AI 二创请求失败')
     } finally { setAiSubmitting(false) }
   }
-  return <Modal title="编辑素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '正在保存…' : '保存'}</button></>}><label className="modal-field"><span>标题</span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} /></label><label className="modal-field"><span>价格</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label><label className="modal-field"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value as SupplyMaterial['status'])}><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><label className="modal-field"><span>描述</span><textarea value={description} maxLength={10000} onChange={(event) => setDescription(event.target.value)} /></label><label className="modal-field"><span>主图 URL（每行一条）</span><textarea value={mainImages} onChange={(event) => setMainImages(event.target.value)} placeholder="https://example.com/image.jpg" /></label><label className="modal-field"><span>详情图 URL（每行一条）</span><textarea value={detailImages} onChange={(event) => setDetailImages(event.target.value)} placeholder="可留空" /></label><label className="modal-field"><span>SKU JSON</span><textarea value={sku} onChange={(event) => setSku(event.target.value)} spellCheck={false} /></label><label className="modal-field"><span>属性 JSON</span><textarea value={attributes} onChange={(event) => setAttributes(event.target.value)} spellCheck={false} /></label><button className="secondary" disabled={aiSubmitting} onClick={() => void requestAiRewrite()}>{aiSubmitting ? '正在提交…' : 'AI 二创标题与内容'}</button>{aiNotice && <p className="supply-hint">{aiNotice}</p>}{error && <p className="form-error">{error}</p>}</Modal>
+  return <Modal title="编辑素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '正在保存…' : '保存'}</button></>}><div className="supply-edit-grid"><label className="modal-field supply-edit-wide"><span>标题</span><div className="supply-field-heading"><button className="text-button" disabled={aiSubmitting} onClick={() => void requestAiRewrite()}>{aiSubmitting ? '正在提交…' : 'AI 二创标题与内容'}</button></div><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} /></label><label className="modal-field"><span>售价</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label><label className="modal-field"><span>原价（仅展示）</span><input value={originalPrice} disabled placeholder="暂无原价" /></label><label className="modal-field"><span>类目</span><input value={category} maxLength={80} onChange={(event) => setCategory(event.target.value)} /></label><label className="modal-field"><span>品牌</span><input value={brand} maxLength={80} onChange={(event) => setBrand(event.target.value)} /></label><label className="modal-field"><span>成色</span><input value={condition} maxLength={40} onChange={(event) => setCondition(event.target.value)} /></label><label className="modal-field"><span>发货方式</span><input value={delivery} maxLength={40} onChange={(event) => setDelivery(event.target.value)} /></label><label className="modal-field"><span>配送方式</span><input value={shipping} maxLength={40} onChange={(event) => setShipping(event.target.value)} /></label><label className="modal-field"><span>运费</span><input value={postage} maxLength={40} onChange={(event) => setPostage(event.target.value)} /></label><label className="modal-field"><span>所在地</span><input value={region} maxLength={64} onChange={(event) => setRegion(event.target.value)} /></label><label className="modal-field"><span>发布地址</span><select value={publishAddressMode} onChange={(event) => setPublishAddressMode(event.target.value)}><option value="default">使用本机默认地址</option><option value="random">随机地址</option></select></label>{publishAddressMode === 'random' && <label className="modal-field supply-edit-wide"><span>随机地址池（每行一个）</span><textarea value={publishAddressPool} onChange={(event) => setPublishAddressPool(event.target.value)} placeholder="杭州\n上海\n广州" /></label>}<label className="modal-field"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value as SupplyMaterial['status'])}><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><label className="modal-field supply-edit-wide"><span>描述</span><textarea value={description} maxLength={10000} onChange={(event) => setDescription(event.target.value)} /></label><section className="supply-sku-section supply-edit-wide"><div className="supply-section-heading"><h3>规格</h3><button className="text-button" onClick={() => setSkuRows((rows) => [...rows, { key: '', value: '' }])}>添加规格</button></div>{skuRows.length === 0 && <p className="supply-hint">暂无规格，可按需添加。</p>}{skuRows.map((row, index) => <div className="supply-sku-row" key={`${row.key}-${index}`}><input value={row.key} placeholder="规格名" onChange={(event) => setSkuRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} /><input value={row.value} placeholder="规格值" onChange={(event) => setSkuRows((rows) => rows.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} /><button className="row-action" title="删除规格" onClick={() => setSkuRows((rows) => rows.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} /></button></div>)}</section><label className="modal-field supply-edit-wide"><span>主图 URL（每行一条）</span><textarea value={mainImages} onChange={(event) => setMainImages(event.target.value)} placeholder="https://example.com/image.jpg" /></label><label className="modal-field supply-edit-wide"><span>详情图 URL（每行一条）</span><textarea value={detailImages} onChange={(event) => setDetailImages(event.target.value)} placeholder="可留空" /></label></div>{aiNotice && <p className="supply-hint">{aiNotice}</p>}{error && <p className="form-error">{error}</p>}</Modal>
 }
 
 function SupplyPlanModal({ api, mode, material, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; material: SupplyMaterial; onClose: () => void }): ReactNode {
@@ -1354,6 +1498,8 @@ function SupplyPlanModal({ api, mode, material, onClose }: { api: UserApiClient;
   const [saving, setSaving] = useState(false)
   const [result, setResult] = useState<SupplyPublishPlan | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const randomAddressCount = Array.isArray(material.attributes.publishAddressPool) ? material.attributes.publishAddressPool.filter((item): item is string => typeof item === 'string').length : 0
+  const addressLabel = material.attributes.publishAddressMode === 'random' && randomAddressCount > 0 ? `随机地址（${randomAddressCount} 个）` : '使用本机默认地址'
   const submit = async () => {
     let schedule: SupplyPublishSchedule = { mode: 'immediate' }
     try {
@@ -1364,7 +1510,7 @@ function SupplyPlanModal({ api, mode, material, onClose }: { api: UserApiClient;
       setResult(plan)
     } catch (caught) { setError(caught instanceof UserApiError ? caught.message : caught instanceof Error ? caught.message : '创建计划失败') } finally { setSaving(false) }
   }
-  return <Modal title="创建咸鱼发布计划" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在创建…' : '创建计划'}</button></>}><div className="supply-plan-material"><strong>{material.title}</strong><span>¥{Number(material.price).toFixed(2)} · v{material.currentVersion}</span></div><label className="modal-field"><span>发布时间</span><select value={scheduleMode} onChange={(event) => setScheduleMode(event.target.value as SupplyPublishSchedule['mode'])}><option value="immediate">立即</option><option value="scheduled">定时</option><option value="random_window">随机时间窗口</option></select></label>{scheduleMode === 'scheduled' && <label className="modal-field"><span>计划时间</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>}{scheduleMode === 'random_window' && <div className="supply-time-grid"><label className="modal-field"><span>开始时间</span><input type="datetime-local" value={windowStart} onChange={(event) => setWindowStart(event.target.value)} /></label><label className="modal-field"><span>结束时间</span><input type="datetime-local" value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} /></label></div>}<p className="supply-hint">创建计划不会立即打开浏览器或发布商品。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>计划已创建</strong><span>{result.status} · {supplyDate(result.scheduledAt)}</span></div>}</Modal>
+  return <Modal title="创建咸鱼发布计划" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在创建…' : '创建计划'}</button></>}><div className="supply-plan-material"><strong>{material.title}</strong><span>¥{Number(material.price).toFixed(2)} · v{material.currentVersion}</span></div><label className="modal-field"><span>发布时间</span><select value={scheduleMode} onChange={(event) => setScheduleMode(event.target.value as SupplyPublishSchedule['mode'])}><option value="immediate">立即</option><option value="scheduled">定时</option><option value="random_window">随机时间窗口</option></select></label><label className="modal-field"><span>发布地址</span><input value={addressLabel} disabled /></label>{scheduleMode === 'scheduled' && <label className="modal-field"><span>计划时间</span><input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} /></label>}{scheduleMode === 'random_window' && <div className="supply-time-grid"><label className="modal-field"><span>开始时间</span><input type="datetime-local" value={windowStart} onChange={(event) => setWindowStart(event.target.value)} /></label><label className="modal-field"><span>结束时间</span><input type="datetime-local" value={windowEnd} onChange={(event) => setWindowEnd(event.target.value)} /></label></div>}<p className="supply-hint">地址策略取自素材当前版本；创建计划不会立即打开浏览器或发布商品。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>计划已创建</strong><span>{result.status} · {supplyDate(result.scheduledAt)}</span></div>}</Modal>
 }
 
 function Modal({ title, children, footer, onClose }: { title: string; children: ReactNode; footer: ReactNode; onClose: () => void }): ReactNode {

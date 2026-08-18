@@ -11,7 +11,7 @@ const workspace = join(import.meta.dirname, '..', '..')
 const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase6-desktop-cloud-${process.pid}-${Date.now()}`)
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase6-desktop-'))
-const email = 'phase6-desktop@example.test'
+const email = 'p6desk@test.com'
 const password = 'p6-desktop-123456'
 const domains = {
   user: { issuer: 'https://user.phase6.desktop', audience: 'user-api', secret: 'user-phase6-desktop-secret-012345678901234567890' },
@@ -46,21 +46,21 @@ async function run() {
   const migrations = await applyMigrations(db); let first; let second
   try {
     const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password } }); assert(registered.statusCode === 200, '用户注册失败')
-    const userAccess = json(registered).accessToken; const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='phase6-desktop@example.test'")).rows[0].id)
+    const userAccess = json(registered).accessToken; const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='p6desk@test.com'")).rows[0].id)
     await db.query(`INSERT INTO billing.entitlement_grants (id,user_id,capability,limit_value,effective_from,source,created_at) VALUES ($1,$2,'collector',1,now(),'phase6-desktop',now())`, [randomUUID(), userId])
     const userApiUrl = await userApi.listen({ host: '127.0.0.1', port: 0 }); const collectorApiUrl = await collectorApi.listen({ host: '127.0.0.1', port: 0 })
     first = await launch(userApiUrl, collectorApiUrl)
-    await first.page.getByText('闲鱼采集器').waitFor({ state: 'visible', timeout: 15_000 })
+    await first.page.getByText('咸鱼监控').waitFor({ state: 'visible', timeout: 15_000 })
     assert(await first.page.getByText('Windows Collector').count() === 0 && await first.page.getByText('DEVICE AUTHORIZATION').count() === 0, '采集器界面仍显示工程化文案')
     await first.page.getByLabel('账号').fill(email); await first.page.getByLabel('密码').fill(password); await first.page.getByRole('button', { name: '登录并绑定' }).click()
-    await first.page.getByText('设备已绑定，等待启动采集').waitFor({ state: 'visible', timeout: 15_000 }); await first.desktop.close(); first = undefined
+    await first.page.getByText('设备已绑定，账号权益有效').waitFor({ state: 'visible', timeout: 15_000 }); await first.desktop.close(); first = undefined
     seedLocalUpload()
     second = await launch(userApiUrl, collectorApiUrl)
     await second.page.getByRole('button', { name: '打开 Chrome' }).waitFor({ state: 'visible', timeout: 15_000 })
-    await second.page.getByRole('button', { name: '启动采集' }).click(); await second.page.getByRole('heading', { name: '采集器正在运行' }).first().waitFor({ state: 'visible', timeout: 15_000 }); await delay(1_000)
+    await second.page.getByRole('button', { name: '启动采集' }).click(); await second.page.getByText('采集器正在运行', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 }); await delay(1_000)
     let local = new DatabaseSync(join(userDataPath, 'monitor-data', 'launcher.db')); const pending = Number(local.prepare("SELECT COUNT(*) AS total FROM outbox WHERE kind='market_batch'").get().total); local.close()
     assert(pending === 1, '断网上传未进入本机 Outbox')
-    ingestOnline = true; await delay(5_500); await second.page.getByRole('button', { name: '暂停采集' }).click(); await second.page.getByRole('heading', { name: '采集器已暂停' }).waitFor({ state: 'visible', timeout: 15_000 }); await second.desktop.close(); second = undefined
+    ingestOnline = true; await delay(5_500); await second.page.getByRole('button', { name: '暂停采集' }).click(); await second.page.getByText('设备已绑定，账号权益有效', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 }); await second.desktop.close(); second = undefined
     local = new DatabaseSync(join(userDataPath, 'monitor-data', 'launcher.db')); const remaining = Number(local.prepare("SELECT COUNT(*) AS total FROM outbox WHERE kind='market_batch'").get().total); const bytes = readFileSync(join(userDataPath, 'monitor-data', 'launcher.db')); local.close()
     assert(remaining === 0, '网络恢复后市场 Outbox 未清空'); assert(!bytes.includes(Buffer.from('temporary offline')) && !bytes.includes(Buffer.from('cookie')), 'SQLite 写入了云端错误或敏感状态')
     const count = await db.query("SELECT COUNT(*)::int AS total FROM market.items WHERE platform_item_id='item-phase6-desktop'"); assert(Number(count.rows[0].total) === 1, 'Electron 上传未写入共享市场池')

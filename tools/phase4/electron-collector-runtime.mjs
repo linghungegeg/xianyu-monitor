@@ -12,7 +12,7 @@ const migrationDirectory = join(workspace, 'infra', 'postgres', 'migrations')
 const databasePath = join(tmpdir(), `xianyu-phase4-desktop-cloud-${process.pid}-${Date.now()}`)
 const userDataPath = mkdtempSync(join(tmpdir(), 'xianyu-phase4-desktop-'))
 const password = 'p4-runtime-123456'
-const email = 'phase4-runtime@example.test'
+const email = 'p4@test.dev'
 const domains = {
   user: { issuer: 'https://user.runtime.test', audience: 'user-api', secret: 'user-phase4-runtime-secret-012345678901234567890' },
   admin: { issuer: 'https://admin.runtime.test', audience: 'admin-api', secret: 'admin-phase4-runtime-secret-012345678901234567890' },
@@ -186,7 +186,7 @@ async function run() {
     const registered = await userApi.inject({ method: 'POST', url: '/v1/auth/register', payload: { email, password } })
     assert(registered.statusCode === 200, `运行测试账号创建失败：${registered.statusCode} ${registered.body}`)
     const userAccess = json(registered).accessToken
-    const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='phase4-runtime@example.test'")).rows[0].id)
+    const userId = String((await db.query("SELECT id FROM identity.users WHERE email_normalized='p4@test.dev'")).rows[0].id)
     await db.query(`INSERT INTO billing.entitlement_grants (id,user_id,capability,limit_value,effective_from,source,created_at)
       VALUES ($1,$2,'collector',1,now(),'phase4-runtime',now())`, [randomUUID(), userId])
 
@@ -209,10 +209,20 @@ async function run() {
     const userApiUrl = await userApi.listen({ host: '127.0.0.1', port: 0 })
     const collectorApiUrl = await collectorApi.listen({ host: '127.0.0.1', port: 0 })
     desktop = await launchDesktop(userApiUrl, collectorApiUrl)
+    assert(await desktop.page.locator('.login-panel').isVisible(), '未展示独立登录框')
+    assert(await desktop.page.getByText('咸鱼监控', { exact: true }).isVisible(), '未展示当前品牌名称')
+    assert(!(await desktop.page.locator('body').innerText()).includes('本机采集工具'), '仍展示已移除的工程文案')
     await desktop.page.getByLabel('账号').fill(email)
     await desktop.page.getByLabel('密码').fill(password)
     await desktop.page.getByRole('button', { name: '登录并绑定' }).click()
-    await waitForText(desktop.page, '设备已绑定，等待启动采集')
+    await waitForText(desktop.page, `欢迎您的使用，${email}`)
+    await waitForText(desktop.page, '本机设备绑定完成')
+    const launcherLayout = await desktop.page.evaluate(() => {
+      const panel = document.querySelector('.logs-panel')
+      const list = document.querySelector('.log-list')
+      return { panelHeight: panel ? getComputedStyle(panel).height : '', logOverflowY: list ? getComputedStyle(list).overflowY : '' }
+    })
+    assert(launcherLayout.panelHeight === '270px' && launcherLayout.logOverflowY === 'auto', '运行日志未保持固定高度或内部滚动')
     await desktop.page.getByRole('button', { name: '打开 Chrome' }).click()
     await waitForText(desktop.page, 'Chrome 已打开')
     assert(existsSync(join(userDataPath, 'xianyu-chrome-profile')), '系统 Chrome 未创建本机专用 Profile')
@@ -221,13 +231,13 @@ async function run() {
     await desktop.page.getByRole('button', { name: '启动采集' }).click()
     await waitForCount(runLog, 1)
     await desktop.page.getByRole('button', { name: '暂停采集' }).click()
-    await waitForText(desktop.page, '采集器已暂停')
+    await waitForText(desktop.page, '设备已绑定，账号权益有效')
 
     await patchTask({ status: 'active' })
     await desktop.page.getByRole('button', { name: '启动采集' }).click()
     await waitForCount(runLog, 2)
     await desktop.page.getByRole('button', { name: '暂停采集' }).click()
-    await waitForText(desktop.page, '采集器已暂停')
+    await waitForText(desktop.page, '设备已绑定，账号权益有效')
 
     changedPrice = true
     await patchTask({ status: 'active' })

@@ -74,26 +74,21 @@ export default function App(): JSX.Element {
 
   return <main className="launcher-shell">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark"><ShieldCheck size={20} /></span><div><strong>闲鱼采集器</strong><small>本机采集工具</small></div></div>
+      <div className="brand"><span className="brand-mark"><ShieldCheck size={20} /></span><strong>咸鱼监控</strong></div>
       <div className={`status-chip status-${status.session}`}><span /><strong>{statusLabel(status)}</strong></div>
     </header>
 
-    <section className="launcher-content">
-      <div className="status-heading">
-        <div><p className="eyebrow">采集状态</p><h1>{status.message}</h1></div>
-        {status.browser === 'open' ? <span className="browser-state"><Chrome size={16} /> Chrome 已打开</span> : null}
-      </div>
-
+    <section className={`launcher-content ${isSignedOut(status) ? 'is-login' : ''}`}>
       {notice ? <div className="notice" role="alert"><CircleAlert size={17} /><span>{notice}</span></div> : null}
 
       {isSignedOut(status) ? <form className="login-panel" onSubmit={(event) => void login(event)}>
         <div className="panel-icon"><KeyRound size={22} /></div>
-        <div><h2>登录并绑定设备</h2><p>使用本系统用户账号</p></div>
-        <label>账号<input type="email" autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" required /></label>
-        <label>密码<input type="password" autoComplete="off" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+        <div><h1>登录</h1><p>登录后即可开始使用。</p></div>
+        <label>账号<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入账号" required minLength={6} maxLength={20} /></label>
+        <label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" required minLength={6} maxLength={20} /></label>
         <button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录并绑定</button>
-      </form> : <section className="control-panel">
-        <div className="control-summary"><span className={`state-icon state-${status.session}`}>{status.session === 'running' ? <Play size={22} /> : <CircleCheck size={22} />}</span><div><h2>{running ? '采集器正在运行' : '设备已就绪'}</h2><p>{status.entitled ? '账号权益有效' : '正在确认账号状态'}</p></div></div>
+      </form> : <><section className="welcome-heading"><p>欢迎您的使用，<strong>{status.account ?? '当前账户'}</strong></p><span>{status.browser === 'open' ? <><Chrome size={15} />Chrome 已打开</> : '本机 Chrome 待打开'}</span></section><section className="control-panel">
+        <div className="control-summary"><span className={`state-icon state-${status.session}`}>{status.session === 'running' ? <Play size={22} /> : <CircleCheck size={22} />}</span><div><h2>本机设备</h2><p>{running ? '采集器正在运行' : status.entitled ? '设备已绑定，账号权益有效' : '正在确认账号状态'}</p></div></div>
         <div className="control-actions">
           <button className="secondary-button" type="button" disabled={busy || !status.entitled} onClick={() => void run(() => window.xianyu.launcher.openChrome())}><Chrome size={17} />打开 Chrome</button>
           {running
@@ -101,10 +96,10 @@ export default function App(): JSX.Element {
             : <button className="primary-button" type="button" disabled={busy || !canStart} onClick={() => void run(() => window.xianyu.launcher.start())}>{busy ? <LoaderCircle className="spin" size={17} /> : <Play size={17} />}启动采集</button>}
           <button className="icon-button danger" title="解绑本机设备" type="button" disabled={busy} onClick={() => void run(() => window.xianyu.launcher.unbind())}><Unplug size={18} /></button>
         </div>
-      </section>}
+      </section></>}
 
       <section className="logs-panel" aria-label="运行日志">
-        <div className="panel-heading"><div><h2>活动记录</h2><p>最近活动</p></div><CircleCheck size={18} /></div>
+        <div className="panel-heading"><div><h2>运行日志</h2><p>最近活动</p></div><CircleCheck size={18} /></div>
         <div className="log-list">
           {logs.length === 0 ? <p className="empty-log">尚无运行记录</p> : logs.map((log) => <div className={`log-row log-${log.level}`} key={log.id}><time>{formatTime(log.createdAt)}</time><span>{log.level === 'error' ? <CircleAlert size={15} /> : <span className="log-dot" />}</span><p>{log.message}</p></div>)}
         </div>

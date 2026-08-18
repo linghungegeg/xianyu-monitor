@@ -36,13 +36,14 @@ const STATE_REFRESH_TOKEN = 'collector.refresh-token'
 const STATE_PRIVATE_KEY = 'collector.device-private-key'
 const STATE_PUBLIC_KEY = 'collector.device-public-key'
 const STATE_CLIENT_ID = 'collector.client-id'
+const STATE_ACCOUNT_LABEL = 'collector.account-label'
 const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com']
 
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
 type EntitlementResponse = { allowed?: boolean }
 type TaskResponse = { items?: unknown[]; snapshotAt?: string }
-type SupplyPublishSnapshot = { title: string; description: string; price: number; mainImages: string[]; sku: unknown; address?: string }
-type SupplyClaimResponse = { claimBatchId?: string; items?: Array<{ id?: string; materialSnapshot?: unknown }> }
+type SupplyPublishSnapshot = { title: string; description: string; price: number; mainImages: string[]; sku: unknown; attributes: Record<string, unknown>; address?: string }
+type SupplyClaimResponse = { claimBatchId?: string; items?: Array<{ id?: string; status?: string; materialSnapshot?: unknown }> }
 type SupplyMigrationClaimResponse = { items?: Array<{ id?: string; platformItemId?: string; itemUrl?: string }> }
 type DeviceKey = { publicKey: string; privateKey: ReturnType<typeof createPrivateKey> }
 
@@ -150,7 +151,44 @@ function supplySnapshot(value: unknown): SupplyPublishSnapshot {
   }
   const attributes = source.attributes && typeof source.attributes === 'object' && !Array.isArray(source.attributes) ? source.attributes as Record<string, unknown> : {}
   const address = compact(typeof attributes.publishAddress === 'string' ? attributes.publishAddress : typeof attributes.address === 'string' ? attributes.address : '')
-  return { title, description, price: Number(price.toFixed(2)), mainImages: images, sku: source.sku ?? null, ...(address ? { address } : {}) }
+  return { title, description, price: Number(price.toFixed(2)), mainImages: images, sku: source.sku ?? null, attributes, ...(address ? { address } : {}) }
+}
+
+function supplySkuLines(value: unknown): string[] {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => supplySkuLines(entry)).filter(Boolean)
+  }
+  if (typeof value !== 'object') return [compact(String(value))].filter(Boolean)
+  const source = value as Record<string, unknown>
+  const specs = Array.isArray(source.specifications) ? source.specifications : Array.isArray(source.specs) ? source.specs : null
+  if (specs) {
+    const headers = specs.map((spec) => {
+      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return ''
+      const row = spec as Record<string, unknown>
+      const name = compact(typeof row.name === 'string' ? row.name : '')
+      const values = Array.isArray(row.values) ? row.values.map((item) => compact(typeof item === 'string' ? item : String(item))).filter(Boolean).join(' / ') : ''
+      return name && values ? `${name}: ${values}` : name || values
+    }).filter(Boolean)
+    const variants = Array.isArray(source.skus) ? source.skus : Array.isArray(source.variants) ? source.variants : []
+    const rows = variants.flatMap((variant) => {
+      if (!variant || typeof variant !== 'object' || Array.isArray(variant)) return []
+      const row = variant as Record<string, unknown>
+      const values = Array.isArray(row.values) ? row.values.map((item) => compact(typeof item === 'string' ? item : String(item))).filter(Boolean).join(' / ') : compact(typeof row.label === 'string' ? row.label : '')
+      const price = typeof row.price === 'number' || typeof row.price === 'string' ? Number(row.price) : NaN
+      const stock = typeof row.stock === 'number' || typeof row.stock === 'string' ? Number(row.stock) : NaN
+      const details = [values, Number.isFinite(price) ? `¥${price.toFixed(2)}` : '', Number.isFinite(stock) ? `库存 ${Math.max(0, Math.trunc(stock))}` : ''].filter(Boolean).join(' · ')
+      return details ? [details] : []
+    })
+    return [...headers, ...rows]
+  }
+  return Object.entries(source).flatMap(([key, raw]) => {
+    if (['skus', 'variants', 'specifications', 'specs'].includes(key)) return []
+    const name = compact(key)
+    if (!name) return []
+    const values = Array.isArray(raw) ? raw.map((item) => compact(typeof item === 'string' ? item : String(item))).filter(Boolean).join(' / ') : raw && typeof raw === 'object' ? '' : compact(raw === undefined || raw === null ? '' : String(raw))
+    return values ? [`${name}: ${values}`] : []
+  })
 }
 
 function escapedText(value: string): RegExp {
@@ -210,9 +248,13 @@ export class XianyuMonitor {
   private running = false
   private ticking = false
   private lastTaskSyncAt = 0
+  private readonly publishAddressQueues = new Map<string, string[]>()
+  private lastPublishAddress: string | undefined
   private state: LauncherStatus = { session: 'signed-out', browser: 'idle', entitled: false, message: '请登录本系统账号并完成设备绑定' }
 
-  constructor(private readonly db: MonitorDatabase, private readonly publish: (status: LauncherStatus) => void) {}
+  constructor(private readonly db: MonitorDatabase, private readonly publish: (status: LauncherStatus) => void) {
+    this.state = { ...this.state, account: this.db.getState(STATE_ACCOUNT_LABEL) ?? undefined }
+  }
 
   status(): LauncherStatus {
     return this.state
@@ -254,6 +296,7 @@ export class XianyuMonitor {
       })
       if (!bound.accessToken || !bound.refreshToken || !bound.clientId) throw new Error('云端未返回采集器授权')
       this.storeCollectorSession(bound)
+      this.db.setState(STATE_ACCOUNT_LABEL, email.trim())
       const allowed = await this.checkEntitlements()
       this.db.addLog('success', '本机设备绑定完成')
       this.updateStatus(allowed ? 'ready' : 'paused', allowed ? '设备已绑定，等待启动采集' : '当前账号没有可用采集权益', allowed)
@@ -374,11 +417,11 @@ export class XianyuMonitor {
     if (!clientId) return
     const claimIdempotencyKey = `collector:${clientId}:${new Date().toISOString().slice(0, 16)}`
     const claim = await this.request<SupplyClaimResponse>(this.collectorApiBase, '/v1/supply/publish-plans/claim', {
-      method: 'POST', token: this.accessToken, body: { schemaVersion: 1, deviceId: clientId, idempotencyKey: claimIdempotencyKey, limit: 1 }
+      method: 'POST', token: this.accessToken, body: { schemaVersion: 1, deviceId: clientId, idempotencyKey: claimIdempotencyKey, limit: 20 }
     })
     if (!claim.claimBatchId || !Array.isArray(claim.items)) return
     for (const plan of claim.items) {
-      if (!plan.id) continue
+      if (!plan.id || plan.status !== 'claimed') continue
       const attemptId = randomUUID()
       this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'claimed', message: '已领取发布计划，等待本机发布页处理' })
       try {
@@ -453,6 +496,10 @@ export class XianyuMonitor {
   }
 
   private localPublishAddress(snapshot: SupplyPublishSnapshot): string | undefined {
+    const pool = Array.isArray(snapshot.attributes.publishAddressPool)
+      ? snapshot.attributes.publishAddressPool.map((entry) => compact(typeof entry === 'string' ? entry : '')).filter(Boolean)
+      : []
+    if (snapshot.attributes.publishAddressMode === 'random' && pool.length) return this.nextPublishAddress('material', pool)
     if (snapshot.address) return snapshot.address
     const configured = compact(process.env.XIANYU_PUBLISH_ADDRESSES ?? '')
     if (!configured) return undefined
@@ -461,7 +508,21 @@ export class XianyuMonitor {
     if (!Array.isArray(addresses)) throw new Error('本机发布地址配置无效')
     const values = addresses.map((entry) => compact(typeof entry === 'string' ? entry : entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).value === 'string' ? String((entry as Record<string, unknown>).value) : '')).filter(Boolean)
     if (!values.length) throw new Error('本机发布地址配置无有效地址')
-    return values[Math.floor(Math.random() * values.length)]
+    return this.nextPublishAddress('local-default', values)
+  }
+
+  private nextPublishAddress(scope: string, values: string[]): string {
+    const unique = [...new Set(values)]
+    const key = `${scope}:${unique.slice().sort().join('\u0000')}`
+    let queue = this.publishAddressQueues.get(key) ?? []
+    if (!queue.length) {
+      queue = unique.slice().sort(() => Math.random() - 0.5)
+      if (queue.length > 1 && queue[0] === this.lastPublishAddress) queue.push(queue.shift()!)
+    }
+    const address = queue.shift()!
+    this.publishAddressQueues.set(key, queue)
+    this.lastPublishAddress = address
+    return address
   }
 
   private async downloadSupplyImages(images: string[], attemptId: string): Promise<{ directory: string; files: string[] }> {
@@ -502,10 +563,11 @@ export class XianyuMonitor {
       await description.fill(material.description)
       await price.fill(String(material.price))
       await imageInput.setInputFiles(imageFiles.files)
-      if (material.sku !== null) {
+      const skuLines = supplySkuLines(material.sku)
+      if (skuLines.length) {
         const sku = await this.firstVisible(page, ['[data-xianyu-publish-sku]', 'textarea[name="sku"]'])
         if (!sku) throw new Error('发布页缺少 SKU 输入项')
-        await sku.fill(JSON.stringify(material.sku))
+        await sku.fill(skuLines.join('\n'))
       }
       const address = this.localPublishAddress(material)
       if (address) {
@@ -1130,7 +1192,7 @@ export class XianyuMonitor {
 
   private clearSession(): void {
     this.accessToken = undefined
-    this.db.deleteState(STATE_REFRESH_TOKEN, STATE_CLIENT_ID)
+    this.db.deleteState(STATE_REFRESH_TOKEN, STATE_CLIENT_ID, STATE_ACCOUNT_LABEL)
   }
 
   private requireEncryption(): void {
@@ -1252,7 +1314,7 @@ export class XianyuMonitor {
   }
 
   private updateStatus(session: LauncherStatus['session'], message: string, entitled: boolean): void {
-    this.state = { session, browser: this.state.browser, entitled, message }
+    this.state = { session, browser: this.state.browser, entitled, message, account: this.db.getState(STATE_ACCOUNT_LABEL) ?? undefined }
     this.publish(this.state)
   }
 }

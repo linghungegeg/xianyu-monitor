@@ -3,6 +3,7 @@ export type LauncherStatus = {
   browser: 'idle' | 'open' | 'error'
   entitled: boolean
   message: string
+  account?: string
 }
 
 export type LauncherLog = {

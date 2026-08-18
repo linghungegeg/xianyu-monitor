@@ -170,8 +170,11 @@ async function run() {
       await db.query(`INSERT INTO market.items (id,platform,platform_item_id,seller_id,lifecycle_state,first_seen_at,last_seen_at)
         VALUES ($1,'goofish',$2,$3,'active',now() - ($4::int * interval '1 second'),now() - ($4::int * interval '1 second'))`, [itemId, `phase5-item-${index}`, sellerId, index])
     }
+    const previousVersionId = randomUUID()
+    const currentVersionId = randomUUID()
     await db.query(`INSERT INTO market.item_versions (id,item_id,title,price,region,condition_text,want_count,canonical_payload,content_hash,observed_at)
-      VALUES ($1,$2,'phase5 seller item',123.45,'上海','95新',7,'{}'::jsonb,'phase5-seller-item-version',now())`, [randomUUID(), itemIds[0]])
+      VALUES ($1,$2,'phase5 seller item',99,'上海','95新',6,'{"cookie":"local-only"}'::jsonb,'phase5-seller-item-version-previous',now() - interval '1 minute'),
+             ($3,$2,'phase5 seller item',123.45,'上海','95新',7,'{"imageUrls":["https://img.example/public.jpg"],"chromeProfilePath":"C:\\\\local-only"}'::jsonb,'phase5-seller-item-version-current',now())`, [previousVersionId, itemIds[0], currentVersionId])
     const userARunId = randomUUID()
     await db.query(`INSERT INTO ops.collection_runs (id,client_id,client_run_id,task_reference,kind,status,started_at,finished_at,result_counts)
       VALUES ($1,$2,$3,$4,'seller','completed',now(),now(),'{}'::jsonb)`, [userARunId, collectorSession.clientId, `phase5-user-a-${userARunId}`, firstTask.id])
@@ -179,23 +182,40 @@ async function run() {
       await db.query(`INSERT INTO market.observations (id,collected_at,received_at,collection_run_id,item_id,platform_item_id,payload_hash)
         VALUES ($1,now(),now(),$2,$3,$4,$5)`, [randomUUID(), userARunId, itemIds[index], `phase5-item-${index}`, `phase5-user-a-payload-${index}`])
     }
-    await db.query(`INSERT INTO market.item_events (id,occurred_at,detected_at,item_id,seller_id,event_type,event_key)
-      VALUES ($1,now(),now(),$2,$3,'price_changed','phase5-price-event'),($4,now(),now(),$5,$3,'state_changed','phase5-state-event')`, [randomUUID(), itemIds[0], sellerId, randomUUID(), itemIds[1]])
+    await db.query(`INSERT INTO market.item_events (id,occurred_at,detected_at,item_id,seller_id,event_type,before_version_id,after_version_id,event_key)
+      VALUES ($1,now(),now(),$2,$3,'price_changed',$4,$5,'phase5-price-event'),($6,now(),now(),$7,$3,'state_changed',NULL,NULL,'phase5-state-event')`, [randomUUID(), itemIds[0], sellerId, previousVersionId, currentVersionId, randomUUID(), itemIds[1]])
     const itemPageResponse = await userApi.inject({ method: 'GET', url: `/v1/seller-monitors/${firstTask.id}/items?limit=20&sort=last_seen_at&order=desc`, headers: auth(userAAccess) })
     assert(itemPageResponse.statusCode === 200, `卖家商品分页失败：${itemPageResponse.statusCode} ${itemPageResponse.body}`)
     const itemPage = json(itemPageResponse)
     assert(itemPage.items.length === 20 && itemPage.page.total === 21 && itemPage.page.hasMore && itemPage.page.nextCursor, '卖家商品分页合同错误')
     const detailedItem = itemPage.items.find((item) => item.platformItemId === 'phase5-item-0')
-    assert(detailedItem?.title === 'phase5 seller item' && String(detailedItem.price) === '123.45' && detailedItem.region === '上海' && detailedItem.conditionText === '95新' && detailedItem.wantCount === 7, '卖家商品详情未返回最新公开版本字段')
+    assert(detailedItem?.title === 'phase5 seller item' && Number(detailedItem.price) === 123.45 && Number(detailedItem.previousPrice) === 99 && Number(detailedItem.currentPrice) === 123.45 && detailedItem.region === '上海' && detailedItem.conditionText === '95新' && detailedItem.wantCount === 7, `卖家商品详情未返回公开版本价格投影：${JSON.stringify(detailedItem)}`)
     assert(detailedItem?.sellerId === sellerId && detailedItem.platformSellerId === firstTask.platformSellerId, '卖家商品详情缺少稳定卖家引用')
     const marketItemResponse = await userApi.inject({ method: 'GET', url: '/v1/market/items?limit=20&q=phase5-item-0', headers: auth(userAAccess) })
     assert(marketItemResponse.statusCode === 200, `市场商品读取失败：${marketItemResponse.statusCode} ${marketItemResponse.body}`)
     const marketItem = json(marketItemResponse).items.find((item) => item.platformItemId === 'phase5-item-0')
-    assert(marketItem?.sellerId === sellerId && marketItem.platformSellerId === firstTask.platformSellerId, '市场商品详情缺少可添加卖家的稳定引用')
+    assert(marketItem?.sellerId === sellerId && marketItem.platformSellerId === firstTask.platformSellerId && Number(marketItem.previousPrice) === 99 && Number(marketItem.currentPrice) === 123.45 && !marketItemResponse.body.includes('local-only'), '市场商品详情缺少价格投影或泄露本机字段')
     const eventPageResponse = await userApi.inject({ method: 'GET', url: `/v1/seller-monitors/${firstTask.id}/events?limit=20&eventType=price_changed`, headers: auth(userAAccess) })
     assert(eventPageResponse.statusCode === 200, `卖家事件分页失败：${eventPageResponse.statusCode} ${eventPageResponse.body}`)
     const eventPage = json(eventPageResponse)
-    assert(eventPage.page.total === 1 && eventPage.items[0].eventType === 'price_changed', '卖家事件过滤未绑定任务卖家')
+    assert(eventPage.page.total === 1 && eventPage.items[0].eventType === 'price_changed' && Number(eventPage.items[0].previousPrice) === 99 && Number(eventPage.items[0].currentPrice) === 123.45 && !eventPageResponse.body.includes('local-only'), '卖家事件未返回版本价格投影或泄露本机字段')
+    const marketEventsResponse = await userApi.inject({ method: 'GET', url: '/v1/market/events?limit=20&eventType=price_changed', headers: auth(userAAccess) })
+    assert(marketEventsResponse.statusCode === 200 && Number(json(marketEventsResponse).items[0]?.previousPrice) === 99 && Number(json(marketEventsResponse).items[0]?.currentPrice) === 123.45, `市场事件价格投影失败：${marketEventsResponse.body}`)
+
+    const categoryRootId = randomUUID()
+    await db.query(`INSERT INTO market.category_taxonomy (id,platform,platform_category_id,parent_id,name,path,depth,active,observed_at)
+      VALUES ($1,'goofish','phase5-root',NULL,'phase5 root','phase5 root',0,true,now())`, [categoryRootId])
+    for (let index = 0; index < 21; index += 1) {
+      await db.query(`INSERT INTO market.category_taxonomy (id,platform,platform_category_id,parent_id,name,path,depth,active,observed_at)
+        VALUES ($1,'goofish',$2,$3,$4,$5,1,true,now())`, [randomUUID(), `phase5-category-${index}`, categoryRootId, `phase5 category ${index}`, `phase5 root/${String(index).padStart(2, '0')}`])
+    }
+    const categoriesFirstResponse = await userApi.inject({ method: 'GET', url: `/v1/market/categories?limit=20&platform=goofish&parentId=${encodeURIComponent(categoryRootId)}&sort=path&order=asc`, headers: auth(userAAccess) })
+    assert(categoriesFirstResponse.statusCode === 200, `User 类目树第一页失败：${categoriesFirstResponse.statusCode} ${categoriesFirstResponse.body}`)
+    const categoriesFirst = json(categoriesFirstResponse)
+    assert(categoriesFirst.items.length === 20 && categoriesFirst.page.total === 21 && categoriesFirst.page.hasMore && categoriesFirst.items.every((item) => item.parentId === categoryRootId && item.platform === 'goofish' && item.active === true), 'User 类目树分页或父类目合同错误')
+    const categoriesSecondResponse = await userApi.inject({ method: 'GET', url: `/v1/market/categories?limit=20&platform=goofish&parentId=${encodeURIComponent(categoryRootId)}&sort=path&order=asc&cursor=${encodeURIComponent(categoriesFirst.page.nextCursor)}`, headers: auth(userAAccess) })
+    const categoriesSecond = json(categoriesSecondResponse)
+    assert(categoriesSecondResponse.statusCode === 200 && categoriesSecond.items.length === 1 && categoriesSecond.page.total === 21 && !categoriesSecond.page.hasMore && categoriesSecond.items[0].platformCategoryId === 'phase5-category-20', `User 类目树游标续页失败：${categoriesSecondResponse.body}`)
 
     await grantCollector(db, userBId)
     const collectorBSession = await bindCollector(collectorApi, userBAccess, userBId)
@@ -236,6 +256,8 @@ async function run() {
         sellerTaskCursorPagination: true,
         collectorSearchAndSellerKinds: true,
         sellerItemsAndEventsReadPagination: true,
+        userMarketCategoryTreeCursor: true,
+        marketPriceProjection: true,
         sellerItemLatestPublicDetail: true,
         marketItemSellerReference: true,
         sellerItemOwnership: true,

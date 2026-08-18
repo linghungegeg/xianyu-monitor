@@ -1013,6 +1013,14 @@ const sellerEventsListConfig: ListConfig = {
   allowedFilters: ['event_type', 'item_id', 'seller_id']
 }
 
+const userMarketCategoriesListConfig: ListConfig = {
+  resource: 'user.market_categories',
+  defaultSort: 'path',
+  sortAliases: { path: 'path', name: 'name', observed_at: 'observed_at', updated_at: 'observed_at', updated_at_desc: 'observed_at', recent: 'observed_at', id: 'id' },
+  filterAliases: { search: 'q', parentId: 'parent_id' },
+  allowedFilters: ['q', 'platform', 'parent_id', 'active']
+}
+
 const adminBillingListConfig: ListConfig = {
   resource: 'admin.billing_orders',
   defaultSort: 'created_at',
@@ -1149,8 +1157,8 @@ function userInsightPlan(resource: string): ListPlanBuilder {
 
 const userEventsPlan = tablePlan({
   resource: userEventsListConfig.resource,
-  from: 'market.item_events e',
-  select: 'e.id, e.item_id AS "itemId", e.seller_id AS "sellerId", e.event_type AS "eventType", e.before_version_id AS "beforeVersionId", e.after_version_id AS "afterVersionId", e.event_key AS "eventKey", e.occurred_at AS "occurredAt", e.detected_at AS "detectedAt"',
+  from: 'market.item_events e LEFT JOIN market.item_versions before_version ON before_version.id=e.before_version_id LEFT JOIN market.item_versions after_version ON after_version.id=e.after_version_id',
+  select: 'e.id, e.item_id AS "itemId", e.seller_id AS "sellerId", e.event_type AS "eventType", e.before_version_id AS "beforeVersionId", e.after_version_id AS "afterVersionId", before_version.price AS "previousPrice", after_version.price AS "currentPrice", e.event_key AS "eventKey", e.occurred_at AS "occurredAt", e.detected_at AS "detectedAt"',
   idExpression: 'e.id::text',
   sortExpressions: { occurred_at: 'e.occurred_at', event_type: 'e.event_type', id: 'e.id::text' },
   conditions: (context, values, subjectId) => {
@@ -1197,6 +1205,22 @@ const userMonitorsPlan = tablePlan({
     const conditions = ['t.created_at <= $1', 't.user_id = $2']
     if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`LOWER(t.rule_json::text) LIKE LOWER($${values.length})`) }
     if (context.filters.status) { values.push(context.filters.status); conditions.push(`t.status = $${values.length}`) }
+    return conditions
+  }
+})
+
+const userMarketCategoriesPlan = tablePlan({
+  resource: userMarketCategoriesListConfig.resource,
+  from: 'market.category_taxonomy c',
+  select: 'c.id, c.platform, c.platform_category_id AS "platformCategoryId", c.parent_id AS "parentId", c.name, c.path, c.depth, c.active, c.observed_at AS "observedAt"',
+  idExpression: 'c.id::text',
+  sortExpressions: { path: 'c.path', name: 'c.name', observed_at: 'c.observed_at', id: 'c.id::text' },
+  conditions: (context, values) => {
+    const conditions = ['c.observed_at <= $1']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`(LOWER(c.name) LIKE LOWER($${values.length}) OR LOWER(c.path) LIKE LOWER($${values.length}) OR LOWER(c.platform_category_id) LIKE LOWER($${values.length}))`) }
+    if (context.filters.platform) { values.push(context.filters.platform); conditions.push(`c.platform = $${values.length}`) }
+    if (context.filters.parent_id) { values.push(context.filters.parent_id); conditions.push(`c.parent_id = $${values.length}`) }
+    if (context.filters.active) { values.push(context.filters.active); conditions.push(`c.active = $${values.length}::boolean`) }
     return conditions
   }
 })
@@ -1283,8 +1307,8 @@ const userAnnouncementsPlan = tablePlan({
 
 const sellerEventsPlan = tablePlan({
   resource: sellerEventsListConfig.resource,
-  from: 'market.item_events e',
-  select: 'e.id, e.item_id AS "itemId", e.seller_id AS "sellerId", e.event_type AS "eventType", e.before_version_id AS "beforeVersionId", e.after_version_id AS "afterVersionId", e.event_key AS "eventKey", e.occurred_at AS "occurredAt", e.detected_at AS "detectedAt"',
+  from: 'market.item_events e LEFT JOIN market.item_versions before_version ON before_version.id=e.before_version_id LEFT JOIN market.item_versions after_version ON after_version.id=e.after_version_id',
+  select: 'e.id, e.item_id AS "itemId", e.seller_id AS "sellerId", e.event_type AS "eventType", e.before_version_id AS "beforeVersionId", e.after_version_id AS "afterVersionId", before_version.price AS "previousPrice", after_version.price AS "currentPrice", e.event_key AS "eventKey", e.occurred_at AS "occurredAt", e.detected_at AS "detectedAt"',
   idExpression: 'e.id::text',
   sortExpressions: { occurred_at: 'e.occurred_at', event_type: 'e.event_type', id: 'e.id::text' },
   conditions: (context, values, subjectId) => {
@@ -1483,6 +1507,15 @@ function marketConditions(context: ListContext, values: unknown[], includeCursor
 function marketItemsPlan(resource: string, userScoped = false): ListPlanBuilder {
   return (context, subjectId) => {
     const sortExpression = ({ last_seen_at: 'i.last_seen_at', first_seen_at: 'i.first_seen_at', platform_item_id: 'i.platform_item_id', id: 'i.id::text' } as Record<string, string>)[context.sort]
+    const priceProjection = userScoped ? ', previous_version.price AS "previousPrice", v.price AS "currentPrice"' : ''
+    const previousVersionJoin = userScoped ? `
+          LEFT JOIN LATERAL (
+            SELECT price
+            FROM market.item_versions
+            WHERE item_id=i.id
+            ORDER BY observed_at DESC,id DESC
+            OFFSET 1 LIMIT 1
+          ) previous_version ON TRUE` : ''
     const build = (includeCursor: boolean): ListQuerySpec & { where: string } => {
       const values: unknown[] = [context.snapshotAt]
       const conditions = marketConditions(context, values, includeCursor, userScoped ? subjectId : undefined)
@@ -1492,7 +1525,7 @@ function marketItemsPlan(resource: string, userScoped = false): ListPlanBuilder 
       resource,
       page: () => {
         const query = build(true)
-        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", v.canonical_payload->'imageUrls' AS images, ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
+        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price${priceProjection}, v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", v.canonical_payload->'imageUrls' AS images, ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
           FROM market.items i
           LEFT JOIN market.seller_profiles s ON s.id = i.seller_id
           LEFT JOIN LATERAL (
@@ -1502,6 +1535,7 @@ function marketItemsPlan(resource: string, userScoped = false): ListPlanBuilder 
             ORDER BY observed_at DESC,id DESC
             LIMIT 1
           ) v ON TRUE
+          ${previousVersionJoin}
           WHERE ${query.where}
           ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()}
           LIMIT ${context.limit + 1}`, values: query.values }
@@ -1525,7 +1559,7 @@ function sellerItemsPlan(context: ListContext, subjectId: string): ListPlan {
     resource: sellerItemsListConfig.resource,
     page: () => {
       const query = build(true)
-        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
+        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, previous_version.price AS "previousPrice", v.price AS "currentPrice", v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
         FROM market.items i
         LEFT JOIN market.seller_profiles s ON s.id = i.seller_id
         LEFT JOIN LATERAL (
@@ -1535,6 +1569,13 @@ function sellerItemsPlan(context: ListContext, subjectId: string): ListPlan {
           ORDER BY observed_at DESC,id DESC
           LIMIT 1
         ) v ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT price
+          FROM market.item_versions
+          WHERE item_id=i.id
+          ORDER BY observed_at DESC,id DESC
+          OFFSET 1 LIMIT 1
+        ) previous_version ON TRUE
         WHERE ${query.where}
         ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()}
         LIMIT ${context.limit + 1}`, values: query.values }
@@ -2273,6 +2314,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
     return { deleted: true }
   })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
+  registerListEndpoint(app, ['/v1/market/categories'], sql, domains.user, 'user', userMarketCategoriesListConfig, userMarketCategoriesPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/materials'], sql, domains.user, 'user', userSupplyMaterialsListConfig, userSupplyMaterialsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/publish-plans'], sql, domains.user, 'user', userSupplyPublishPlansListConfig, userSupplyPublishPlansPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
@@ -2693,7 +2735,7 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
         }
         await sql.query("UPDATE supply.publish_claim_batches SET status='completed' WHERE id=$1 AND client_id=$2 AND status='processing'", [claimBatchId, claims.sub])
       }
-      const delivered = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",c.claimed_at AS "claimedAt"
+      const delivered = await sql.query(`SELECT p.id,p.material_id AS "materialId",p.material_version_id AS "materialVersionId",p.material_version AS "materialVersion",p.material_snapshot AS "materialSnapshot",p.schedule_mode AS "scheduleMode",p.scheduled_at AS "scheduledAt",p.window_start AS "windowStart",p.window_end AS "windowEnd",p.status,c.claimed_at AS "claimedAt"
         FROM supply.publish_plan_claims c
         JOIN supply.publish_plans p ON p.id=c.plan_id
         WHERE c.claim_batch_id=$1 AND c.client_id=$2 AND c.user_id=$3

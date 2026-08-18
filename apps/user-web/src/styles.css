@@ -390,3 +390,15 @@ td strong { color: #2f3b43; }
 .announcement-body h3 { margin: 0 0 8px; color: #1e293b; font-size: 14px; }
 .announcement-body p { margin: 0; color: #64748b; white-space: pre-wrap; line-height: 1.7; font-size: 13px; }
 .announcement-modal footer { display: flex; align-items: center; justify-content: space-between; }
+.status.failed { color: #b42318; border-color: #fecdca; background: #fff1f0; }
+.supply-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.supply-edit-grid .modal-field { min-width: 0; }
+.supply-edit-wide { grid-column: 1 / -1; }
+.supply-field-heading, .supply-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.supply-field-heading { margin-bottom: 2px; }
+.supply-section-heading h3 { margin: 0; color: #354149; font-size: 13px; }
+.supply-sku-section { margin: 0 0 17px; }
+.supply-sku-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 32px; gap: 8px; margin-top: 8px; }
+.supply-sku-row input { width: 100%; height: 36px; min-width: 0; padding: 0 10px; border: 1px solid #d8dfe2; border-radius: 5px; outline: 0; color: #27313b; background: #fff; font-size: 13px; }
+.supply-sku-row input:focus { border-color: #d8842d; box-shadow: 0 0 0 3px #fff1df; }
+@media (max-width: 720px) { .supply-edit-grid { grid-template-columns: 1fr; }.supply-edit-wide { grid-column: auto; } }
