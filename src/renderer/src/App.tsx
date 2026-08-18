@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type JSX } from 'react'
-import { Chrome, CircleAlert, CircleCheck, KeyRound, LoaderCircle, LogIn, LogOut, Pause, Play, ShieldCheck } from 'lucide-react'
+import { Chrome, CircleAlert, CircleCheck, Eye, EyeOff, KeyRound, LoaderCircle, LogIn, LogOut, Pause, Play, ShieldCheck } from 'lucide-react'
 import type { LauncherLog, LauncherStatus } from '../../shared/types'
 
 const initialStatus: LauncherStatus = {
@@ -48,6 +48,8 @@ export default function App(): JSX.Element {
   const [logs, setLogs] = useState<LauncherLog[]>([])
   const [email, setEmail] = useState(rememberedAccount)
   const [password, setPassword] = useState('')
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [showPassword, setShowPassword] = useState(false)
   const [rememberAccount, setRememberAccount] = useState(Boolean(rememberedAccount))
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -83,7 +85,7 @@ export default function App(): JSX.Element {
     event.preventDefault()
     const account = email.trim()
     if (!account) return setNotice('请输入账号')
-    if (account.length < 6) return setNotice('账号不低于6位')
+    if (account.length < 3) return setNotice('账号不低于3位')
     if (account.length > 20) return setNotice('账号不超过20位')
     if (!password) return setNotice('请输入密码')
     if (password.length < 6) return setNotice('密码不低于6位')
@@ -92,7 +94,7 @@ export default function App(): JSX.Element {
     setBusy(true)
     setNotice(null)
     try {
-      await window.xianyu.launcher.login(account, password)
+      await (authMode === 'register' ? window.xianyu.launcher.register(account, password) : window.xianyu.launcher.login(account, password))
       if (rememberAccount) {
         localStorage.setItem(rememberedAccountKey, JSON.stringify({ email: account }))
       } else {
@@ -121,11 +123,12 @@ export default function App(): JSX.Element {
       <form className="launcher-auth-card" noValidate onSubmit={(event) => void login(event)}>
         {notice ? <div className="notice" role="alert"><CircleAlert size={17} /><span>{notice}</span></div> : null}
         <div className="panel-icon"><KeyRound size={22} /></div>
-        <h1>登录</h1>
+        <h1>{authMode === 'register' ? '注册账号' : '登录'}</h1>
         <label>账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="请输入账号" /></label>
-        <label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" /></label>
+        <label>密码<div className="password-field"><input type={showPassword ? 'text' : 'password'} autoComplete={authMode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" /><button className="password-toggle" type="button" title={showPassword ? '隐藏密码' : '显示密码'} aria-label={showPassword ? '隐藏密码' : '显示密码'} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>
         <label className="launcher-remember"><input type="checkbox" aria-label="保存登录" checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} />记住账号</label>
-        <button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}登录</button>
+        <button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={17} /> : <LogIn size={17} />}{busy ? (authMode === 'register' ? '正在注册' : '正在登录') : authMode === 'register' ? '注册' : '登录'}</button>
+        <p className="auth-switch">{authMode === 'register' ? '已有账号？' : '还没有账号？'}<button type="button" onClick={() => { setAuthMode((value) => value === 'login' ? 'register' : 'login'); setNotice(null); setPassword('') }}>{authMode === 'register' ? '返回登录' : '注册账号'}</button></p>
       </form>
     </main>
   }

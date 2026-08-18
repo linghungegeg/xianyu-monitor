@@ -88,6 +88,7 @@ function createWindow(): void {
 function registerIpc(): void {
   ipcMain.handle('launcher:status', () => monitor?.status())
   ipcMain.handle('launcher:login', (_event, email: string, password: string) => monitor?.login(email, password))
+  ipcMain.handle('launcher:register', (_event, email: string, password: string) => monitor?.register(email, password))
   ipcMain.handle('launcher:start', () => monitor?.start())
   ipcMain.handle('launcher:pause', () => monitor?.pause())
   ipcMain.handle('launcher:open-chrome', () => monitor?.openLogin())

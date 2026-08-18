@@ -105,6 +105,14 @@ button:disabled { cursor: not-allowed; }
   outline: none;
 }
 .launcher-auth-card input:not([type="checkbox"]):focus { border-color: #2563eb; box-shadow: 0 0 0 3px #dbeafe; }
+.password-field { position: relative; }
+.password-field input { padding-right: 40px !important; }
+.password-toggle { position: absolute; top: 50%; right: 5px; display: grid; width: 30px; height: 30px; padding: 0; place-items: center; color: #64748b; border: 0; border-radius: 4px; background: transparent; transform: translateY(-50%); }
+.password-toggle:hover { color: #2563eb; background: #eff6ff; }
+.auth-switch { margin: 2px 0 0; color: #7b858c; font-size: 12px; text-align: center; }
+.auth-switch button { padding: 0; color: #2563eb; border: 0; background: transparent; font-size: inherit; }
+.auth-switch button:hover { text-decoration: underline; }
+.launcher-auth-card { width: min(408px, 100%); padding: 32px; }
 .launcher-remember { display: flex !important; align-items: center; justify-content: flex-end; gap: 7px !important; color: #7b858c !important; font-weight: 400 !important; }
 .launcher-remember input { width: 14px; height: 14px; margin: 0; accent-color: #2563eb; }
 

@@ -65,6 +65,12 @@ button:disabled { cursor: not-allowed; }
 @media (max-width: 1020px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }.grid { grid-template-columns: 1fr; }.wide { grid-row: auto; }.filters { flex-wrap: wrap; }.filters > span { display: none; }.filters > .icon { margin-left: auto; } }
 @media (max-width: 720px) { .sidebar { transform: translateX(-100%); width: 232px; box-shadow: 8px 0 24px #0f172a24; }.sidebar.open { transform: translateX(0); }.collapsed .sidebar { width: 232px; }.collapsed .brand, .collapsed .sidebar nav button { justify-content: flex-start; padding-inline: 11px; }.collapsed .brand strong, .collapsed .sidebar nav p, .collapsed .sidebar nav button span, .collapsed .side-account div { display: initial; }.collapsed .side-account div { display: block; }.side-foot { display: flex; }.main, .collapsed .main { margin-left: 0; }.workspace-header { height: 54px; padding: 0 15px; }.mobile-menu { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; color: #64748b; border: 0; border-radius: 5px; background: #f1f5f9; }.content { padding: 23px 15px 32px; }.heading { margin-bottom: 18px; }.heading h1 { font-size: 21px; }.heading p { max-width: 260px; line-height: 1.45; }.heading .primary { padding-inline: 10px; font-size: 0; }.heading .primary svg { margin: 0; }.stats { gap: 10px; }.stats article { min-height: 96px; padding: 13px; }.stats article > div { width: 34px; height: 34px; }.stats strong { font-size: 21px; }.stats small { display: none; }.filters { padding: 10px; }.filters label { flex-basis: 100%; }.filters select { flex: 1; width: 100%; }.filters > .icon { margin-left: 0; }.summary { padding-inline: 12px; }.pager { justify-content: flex-start; padding-inline: 12px; }.pager span { flex: 1; }.drawer { width: 100%; }.auth-card { padding: 28px 22px; } }
 
+.password-field { position: relative; }
+.password-field input { padding-right: 40px; }
+.password-toggle { position: absolute; top: 50%; right: 5px; display: grid; width: 30px; height: 30px; padding: 0; place-items: center; color: #64748b; border: 0; border-radius: 4px; background: transparent; transform: translateY(-50%); }
+.password-toggle:hover { color: #2563eb; background: #eff6ff; }
+.auth-card { width: min(408px, 100%); padding: 32px; }
+
 /* Match the shared light Sidebar baseline from Lazy Listing. */
 .sidebar { width: 224px; color: #475569; background: #fff; border-right: 1px solid #e2e8f0; box-shadow: none; }
 .collapsed .sidebar { width: 64px; }

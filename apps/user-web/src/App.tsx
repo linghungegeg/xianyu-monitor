@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Activity, Bell, Bot, ChevronLeft, ChevronRight, ExternalLink, FileSearch, Filter, Fish, Gauge, LayoutDashboard, LogOut, Menu, MoreHorizontal, PanelLeft, PanelLeftClose, PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from 'lucide-react'
+import { Activity, Bell, Bot, ChevronLeft, ChevronRight, Eye, EyeOff, ExternalLink, FileSearch, Filter, Fish, Gauge, LayoutDashboard, LogOut, Menu, MoreHorizontal, PanelLeft, PanelLeftClose, PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X } from 'lucide-react'
 import { UserApiClient, UserApiError, readUserRuntimeConfig, type UserIdentity, type UserListRequest, type UserListResource, type UserPage, type MonitorTask, type MonitorTaskInput, type MonitorTaskRule, type MonitorTaskSort, type MonitorTaskStatus, type SellerEvent, type SellerItem, type SellerItemState, type SellerMonitor, type SellerMonitorInput, type SellerMonitorProfile, type SellerMonitorStatus, type SellerProfile, type UserAnnouncement, type SupplyImportResult, type SupplyMaterial, type SupplyMaterialPatch, type SupplyPublishPlan, type SupplyPublishSchedule, type SupplySourceType, type MarketCategory, type MarketRegion } from './api'
 
 type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'market' | 'dynamic' | 'ai' | 'xianyuSupply' | 'generalSupply' | 'settings'
@@ -1049,6 +1049,8 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
   const [remembered] = useState(readRememberedLogin)
   const [email, setEmail] = useState(remembered.account)
   const [password, setPassword] = useState('')
+  const [mode, setMode] = useState<'login' | 'register'>('login')
+  const [showPassword, setShowPassword] = useState(false)
   const [rememberAccount, setRememberAccount] = useState(Boolean(remembered.account))
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(auth.error)
@@ -1061,8 +1063,8 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
       setSubmitting(false)
       return
     }
-    if (email.trim().length < 6) {
-      setError('账号不低于6位')
+    if (email.trim().length < 3) {
+      setError('账号不低于3位')
       setSubmitting(false)
       return
     }
@@ -1076,13 +1078,18 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
       setSubmitting(false)
       return
     }
-    if (password.length < 12) {
-      setError('密码至少12位')
+    if (password.length < 6) {
+      setError('密码不低于6位')
+      setSubmitting(false)
+      return
+    }
+    if (password.length > 20) {
+      setError('密码不超过20位')
       setSubmitting(false)
       return
     }
     try {
-      onAuthenticated(await api.login(email.trim(), password))
+      onAuthenticated(await (mode === 'register' ? api.register(email.trim(), password) : api.login(email.trim(), password)))
       if (rememberAccount) localStorage.setItem(rememberedLoginKey, JSON.stringify({ account: email.trim() }))
       else localStorage.removeItem(rememberedLoginKey)
     } catch (caught) {
@@ -1099,7 +1106,7 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
           <strong>闲鱼数据台</strong>
         </div>
         <div className="auth-heading">
-          <h1>登录工作台</h1>
+          <h1>{mode === 'register' ? '注册账号' : '登录工作台'}</h1>
         </div>
         {!api.configured && (
           <div className="auth-alert">
@@ -1117,31 +1124,35 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
               placeholder="请输入账号"
               onInvalid={(event) => {
                 const input = event.currentTarget
-                input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位')
+                input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 3 ? '账号不低于3位' : '账号不超过20位')
               }}
               onInput={(event) => event.currentTarget.setCustomValidity('')}
-              pattern=".{6,20}"
-              minLength={6}
+              pattern=".{3,20}"
+              minLength={3}
               maxLength={20}
               required
             />
           </label>
           <label>
             <span>密码</span>
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              autoComplete="current-password"
-              placeholder="请输入密码"
-              onInvalid={(event) => {
-                const input = event.currentTarget
-                input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 12 ? '密码至少12位' : '')
-              }}
-              onInput={(event) => event.currentTarget.setCustomValidity('')}
-              minLength={12}
-              required
-            />
+            <div className="password-field">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                placeholder="请输入密码"
+                onInvalid={(event) => {
+                  const input = event.currentTarget
+                  input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位')
+                }}
+                onInput={(event) => event.currentTarget.setCustomValidity('')}
+                minLength={6}
+                maxLength={20}
+                required
+              />
+              <button className="password-toggle" type="button" title={showPassword ? '隐藏密码' : '显示密码'} aria-label={showPassword ? '隐藏密码' : '显示密码'} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+            </div>
           </label>
           <label className="remember-password">
             <input type="checkbox" checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} />
@@ -1153,9 +1164,10 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
             </p>
           )}
           <button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>
-            {submitting ? '正在登录…' : '登录'}
+            {submitting ? (mode === 'register' ? '正在注册…' : '正在登录…') : mode === 'register' ? '注册' : '登录'}
           </button>
         </form>
+        <p className="auth-switch">{mode === 'register' ? '已有账号？' : '还没有账号？'}<button type="button" onClick={() => { setMode((value) => value === 'login' ? 'register' : 'login'); setError(null); setPassword('') }}>{mode === 'register' ? '返回登录' : '注册账号'}</button></p>
       </section>
     </main>
   )

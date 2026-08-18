@@ -328,6 +328,17 @@ td strong { color: #2f3b43; }
 .auth-submit { min-height: 40px; margin-top: 7px; }
 .auth-alert { border-color: #f0d7ad; color: #986629; background: #fff9ed; }
 .form-error { color: #b14e58; }
+.password-field { position: relative; }
+.password-field input { width: 100%; padding-right: 40px; }
+.password-toggle { position: absolute; top: 50%; right: 5px; display: grid; width: 30px; height: 30px; padding: 0; place-items: center; color: #64748b; border: 0; border-radius: 4px; background: transparent; transform: translateY(-50%); }
+.password-toggle:hover { color: #2563eb; background: #eff6ff; }
+.auth-switch { margin: 18px 0 0; color: #7b858c; font-size: 12px; text-align: center; }
+.auth-switch button { padding: 0; color: #2563eb; border: 0; background: transparent; font-size: inherit; }
+.auth-switch button:hover { text-decoration: underline; }
+.auth-panel { width: min(408px, 100%); padding: 32px; }
+.auth-panel input { height: 40px; }
+.auth-panel .remember-password input { width: 15px; height: 15px; accent-color: #2563eb; }
+.auth-panel .remember-password { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-weight: 400; }
 @media (max-width: 720px) {
   .sidebar { width: 232px; }
   .sidebar-collapsed .sidebar { width: 232px; }

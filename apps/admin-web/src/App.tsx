@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import {
   Activity, Bot, Boxes, ChevronLeft, ChevronRight, Database, FileCheck2, Fish, Gauge, LogOut,
-  Menu, Megaphone, MoreHorizontal, PackageSearch, PanelLeft, PanelLeftClose, RefreshCw, Search, Settings, ShieldCheck, Users, X
+  Eye, EyeOff, Menu, Megaphone, MoreHorizontal, PackageSearch, PanelLeft, PanelLeftClose, RefreshCw, Search, Settings, ShieldCheck, Users, X
 } from 'lucide-react'
 import {
   AdminApiError, adminApi, adminWebConfig, type AdminIdentity, type AdminResource,
@@ -166,6 +166,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
   const [remembered] = useState(readRememberedCredentials)
   const [account, setAccount] = useState(remembered.account)
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [rememberAccount, setRememberAccount] = useState(Boolean(remembered.account))
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState(error)
@@ -213,7 +214,7 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
   return <AuthFrame title="管理员登录" detail="">
     <form className="auth-form" onSubmit={submit}>
       <label>账号<input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 3 ? '账号不低于3位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{3,20}" required minLength={3} maxLength={20} /></label>
-      <label>密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} type="password" /></label>
+      <label>密码<div className="password-field"><input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} type={showPassword ? 'text' : 'password'} /><button className="password-toggle" type="button" title={showPassword ? '隐藏密码' : '显示密码'} aria-label={showPassword ? '隐藏密码' : '显示密码'} onClick={() => setShowPassword((value) => !value)}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button></div></label>
       <label className="remember-password"><input checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} type="checkbox" /><span>记住账号</span></label>
       {message && <p className="auth-error" role="alert">{message}</p>}
       <button className="primary auth-submit" disabled={submitting} type="submit"><ShieldCheck size={16} />{submitting ? '正在登录' : '登录'}</button>

@@ -294,28 +294,46 @@ export class XianyuMonitor {
     this.updateStatus('checking', '正在验证账号并绑定本机设备', false)
     try {
       const userSession = await this.request<TokenResponse>(this.userApiBase, '/v1/auth/login', { method: 'POST', body: { email: email.trim(), password } })
-      if (!userSession.accessToken) throw new Error('云端未返回登录授权')
-      const deviceKey = this.getOrCreateDeviceKey()
-      const bound = await this.request<TokenResponse>(this.collectorApiBase, '/v1/devices/bind', {
-        method: 'POST',
-        token: userSession.accessToken,
-        body: {
-          publicKey: deviceKey.publicKey,
-          proof: sign(null, Buffer.from(tokenSubject(userSession.accessToken)), deviceKey.privateKey).toString('base64'),
-          deviceName: app.getName()
-        }
-      })
-      if (!bound.accessToken || !bound.refreshToken || !bound.clientId) throw new Error('云端未返回采集器授权')
-      this.storeCollectorSession(bound)
-      this.db.setState(STATE_ACCOUNT_LABEL, email.trim())
-      const allowed = await this.checkEntitlements()
-      this.db.addLog('success', '本机设备绑定完成')
-      this.updateStatus(allowed ? 'ready' : 'paused', allowed ? '设备已绑定，等待启动采集' : '当前账号没有可用采集权益', allowed)
+      await this.finishLogin(email, userSession)
     } catch (error) {
       const message = this.safeMessage(error, '账号登录或设备绑定失败')
       this.updateStatus('error', message, false)
       throw new Error(message)
     }
+  }
+
+  async register(email: string, password: string): Promise<void> {
+    if (!email.trim() || !password) throw new Error('请输入账号和密码')
+    this.requireEncryption()
+    this.updateStatus('checking', '正在注册账号并绑定本机设备', false)
+    try {
+      const userSession = await this.request<TokenResponse>(this.userApiBase, '/v1/auth/register', { method: 'POST', body: { email: email.trim(), password } })
+      await this.finishLogin(email, userSession)
+    } catch (error) {
+      const message = this.safeMessage(error, '账号注册或设备绑定失败')
+      this.updateStatus('error', message, false)
+      throw new Error(message)
+    }
+  }
+
+  private async finishLogin(email: string, userSession: TokenResponse): Promise<void> {
+    if (!userSession.accessToken) throw new Error('云端未返回登录授权')
+    const deviceKey = this.getOrCreateDeviceKey()
+    const bound = await this.request<TokenResponse>(this.collectorApiBase, '/v1/devices/bind', {
+      method: 'POST',
+      token: userSession.accessToken,
+      body: {
+        publicKey: deviceKey.publicKey,
+        proof: sign(null, Buffer.from(tokenSubject(userSession.accessToken)), deviceKey.privateKey).toString('base64'),
+        deviceName: app.getName()
+      }
+    })
+    if (!bound.accessToken || !bound.refreshToken || !bound.clientId) throw new Error('云端未返回采集器授权')
+    this.storeCollectorSession(bound)
+    this.db.setState(STATE_ACCOUNT_LABEL, email.trim())
+    const allowed = await this.checkEntitlements()
+    this.db.addLog('success', '本机设备绑定完成')
+    this.updateStatus(allowed ? 'ready' : 'paused', allowed ? '设备已绑定，等待启动采集' : '当前账号没有可用采集权益', allowed)
   }
 
   async start(): Promise<void> {

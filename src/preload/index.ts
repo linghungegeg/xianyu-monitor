@@ -5,6 +5,7 @@ const api = {
   launcher: {
     status: () => ipcRenderer.invoke('launcher:status'),
     login: (email: string, password: string) => ipcRenderer.invoke('launcher:login', email, password),
+    register: (email: string, password: string) => ipcRenderer.invoke('launcher:register', email, password),
     start: () => ipcRenderer.invoke('launcher:start'),
     pause: () => ipcRenderer.invoke('launcher:pause'),
     openChrome: () => ipcRenderer.invoke('launcher:open-chrome'),
