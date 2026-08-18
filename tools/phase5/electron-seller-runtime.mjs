@@ -349,7 +349,7 @@ async function run() {
     desktop = await launchDesktop(userApiUrl, collectorApiUrl)
     await desktop.page.getByLabel('账号').fill(email)
     await desktop.page.getByLabel('密码').fill(password)
-    await desktop.page.getByRole('button', { name: '登录并绑定' }).click()
+    await desktop.page.getByRole('button', { name: '登录' }).click()
     await waitForText(desktop.page, '设备已绑定，账号权益有效')
     await desktop.page.getByRole('button', { name: '打开 Chrome' }).click()
     await waitForText(desktop.page, 'Chrome 已打开')
@@ -425,7 +425,7 @@ async function run() {
     const revoked = await userApi.inject({ method: 'POST', url: `/v1/collector-devices/${clientId}/revoke`, headers: auth(userAccess) })
     assert(revoked.statusCode === 200, `在途解绑失败：${revoked.statusCode} ${revoked.body}`)
     releaseDetail()
-    await waitForText(desktop.page, '本机设备授权已失效，采集已停止')
+    await desktop.page.locator('.launcher-auth-card').waitFor({ state: 'visible', timeout: 20_000 })
     await delay(350)
     assert(revokedRunDetailRequests === 1, `设备解绑后仍继续打开详情：${revokedRunDetailRequests}`)
     delayedDetailGate = undefined

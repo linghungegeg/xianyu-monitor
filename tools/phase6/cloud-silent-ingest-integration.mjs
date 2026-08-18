@@ -48,14 +48,16 @@ async function run() {
       { type: 'seller', idempotencyKey: 'seller:phase6', platform: 'goofish', platformSellerId: 'seller-phase6', publicName: '公开卖家', publicProfile: { rating: '5' }, contentHash: 'seller-phase6-v1' },
       { type: 'version', idempotencyKey: 'version:phase6', platform: 'goofish', platformItemId: 'item-phase6', platformSellerId: 'seller-phase6', state: 'active', title: '公开商品', price: 99, contentHash: 'item-phase6-v1', payload: { title: '公开商品', imageUrls: ['https://img.example/public.jpg'] } },
       { type: 'snapshot', idempotencyKey: 'snapshot:phase6', platform: 'goofish', platformItemId: 'item-phase6', platformSellerId: 'seller-phase6', payloadHash: 'snapshot-phase6-v1' },
-      { type: 'event', idempotencyKey: 'event:phase6', platform: 'goofish', platformItemId: 'item-phase6', platformSellerId: 'seller-phase6', eventType: 'new_listing', eventKey: 'event-phase6-v1' }
+      { type: 'event', idempotencyKey: 'event:phase6', platform: 'goofish', platformItemId: 'item-phase6', platformSellerId: 'seller-phase6', eventType: 'new_listing', eventKey: 'event-phase6-v1' },
+      { type: 'category', idempotencyKey: 'category:phase6', platform: 'goofish', platformCategoryId: '数码/手机', parentCategoryId: null, name: '手机', path: '数码/手机', depth: 2, active: true, observedAt: new Date().toISOString() },
+      { type: 'region', idempotencyKey: 'region:phase6', platform: 'goofish', name: '上海市', region: '上海市', active: true, observedAt: new Date().toISOString() }
     ]
     const payload = { schemaVersion: 1, deviceId: session.clientId, batchId: randomUUID(), idempotencyKey: 'phase6-batch-1', batchSequence: 1, cursor: { start: '0', end: '1' }, records }
     const first = await collectorApi.inject({ method: 'POST', url: '/v1/ingest', headers: auth(session.accessToken), payload })
     assert(first.statusCode === 200, `批量上传失败: ${first.body}`)
     const firstBody = json(first)
     const rejections = await db.query('SELECT failure_reason FROM ops.ingest_rejections WHERE batch_id=$1', [payload.batchId])
-    assert(firstBody.insertedCount === 4 && firstBody.failedCount === 0 && firstBody.cursor.end === '1', `批次结果或游标错误: ${first.body} ${JSON.stringify(rejections.rows)}`)
+    assert(firstBody.insertedCount === 6 && firstBody.failedCount === 0 && firstBody.cursor.end === '1', `批次结果或游标错误: ${first.body} ${JSON.stringify(rejections.rows)}`)
     const repeat = await collectorApi.inject({ method: 'POST', url: '/v1/ingest', headers: auth(session.accessToken), payload })
     assert(repeat.statusCode === 200 && json(repeat).duplicate === true && json(repeat).retryCount === 1, '同设备重复批次未幂等或未记录重试')
     const secondPayload = { ...payload, batchId: randomUUID(), idempotencyKey: 'phase6-batch-2', batchSequence: 2 }
@@ -80,15 +82,17 @@ async function run() {
     const eventCount = await db.query("SELECT COUNT(*)::int AS total FROM market.item_event_dedup WHERE event_key='event-phase6-v1'")
     assert(Number(itemCount.rows[0].total) === 1 && Number(eventCount.rows[0].total) === 1, '规范化实体或事件重复写入')
     const marketRead = await userApi.inject({ method: 'GET', url: '/v1/market/items?limit=20&q=item-phase6', headers: auth(userAccess) })
+    const categoryRead = await userApi.inject({ method: 'GET', url: '/v1/market/categories?limit=20&platform=goofish', headers: auth(userAccess) })
+    const regionRead = await userApi.inject({ method: 'GET', url: '/v1/market/regions?limit=20&platform=goofish', headers: auth(userAccess) })
     const forbiddenUserUpload = await userApi.inject({ method: 'GET', url: '/v1/uploads', headers: auth(userAccess) })
-    assert(marketRead.statusCode === 200 && json(marketRead).items.some((item) => item.platformItemId === 'item-phase6') && forbiddenUserUpload.statusCode === 404, `User 未只读最终市场数据或暴露上传状态: market=${marketRead.statusCode} ${marketRead.body}; uploads=${forbiddenUserUpload.statusCode} ${forbiddenUserUpload.body}`)
+    assert(marketRead.statusCode === 200 && json(marketRead).items.some((item) => item.platformItemId === 'item-phase6') && categoryRead.statusCode === 200 && json(categoryRead).items.some((item) => item.path === '数码/手机') && regionRead.statusCode === 200 && json(regionRead).items.some((item) => item.region === '上海市') && forbiddenUserUpload.statusCode === 404, `User 未只读最终市场数据或暴露上传状态: market=${marketRead.statusCode} ${marketRead.body}; categories=${categoryRead.body}; regions=${regionRead.body}; uploads=${forbiddenUserUpload.statusCode} ${forbiddenUserUpload.body}`)
     await db.query(`INSERT INTO identity.admin_users (id,email_normalized,password_hash,role,status,mfa_state,created_at) VALUES ($1,'admin-phase6@example.test',$2,'owner','active','enrolled',now())`, [randomUUID(), await hashPassword('p6-admin-123456')])
     const adminLogin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin-phase6@example.test', password: 'p6-admin-123456' } })
     assert(adminLogin.statusCode === 200, 'Admin 登录失败')
     const sessionTtls = await db.query("SELECT subject_type,EXTRACT(EPOCH FROM (expires_at-created_at))::int AS ttl FROM identity.auth_refresh_sessions WHERE subject_type IN ('user','admin','collector')")
     assert(['user', 'admin', 'collector'].every((kind) => sessionTtls.rows.some((row) => row.subject_type === kind && Number(row.ttl) === 43_200)), '三端登录会话未统一为 12 小时')
     const uploads = await adminApi.inject({ method: 'GET', url: `/v1/admin/uploads?limit=20&user_id=${encodeURIComponent(userId)}&sort=received_at&order=desc`, headers: auth(json(adminLogin).accessToken) })
-    assert(uploads.statusCode === 200 && json(uploads).items.length >= 2 && json(uploads).items.some((item) => item.receivedCount === 4 && typeof item.userId === 'string' && typeof item.clientId === 'string'), `Admin 上传审计字段或用户筛选失败: ${uploads.body}`)
+    assert(uploads.statusCode === 200 && json(uploads).items.length >= 2 && json(uploads).items.some((item) => item.receivedCount === 6 && typeof item.userId === 'string' && typeof item.clientId === 'string'), `Admin 上传审计字段或用户筛选失败: ${uploads.body}`)
     const itemAudit = await adminApi.inject({ method: 'GET', url: '/v1/admin/uploads?limit=20&item_id=item-phase6&sort=received_at&order=desc', headers: auth(json(adminLogin).accessToken) })
     const eventAudit = await adminApi.inject({ method: 'GET', url: '/v1/admin/uploads?limit=20&event_key=event-phase6-v1&sort=received_at&order=desc', headers: auth(json(adminLogin).accessToken) })
     assert(itemAudit.statusCode === 200 && json(itemAudit).page.total >= 2 && eventAudit.statusCode === 200 && json(eventAudit).page.total >= 2, `Admin 商品或事件关联筛选失败: ${itemAudit.body} ${eventAudit.body}`)

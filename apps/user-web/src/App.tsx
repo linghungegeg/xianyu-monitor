@@ -4231,7 +4231,8 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
   const [shipping, setShipping] = useState(String(material.attributes.shipping ?? ''))
   const [postage, setPostage] = useState(String(material.attributes.postage ?? ''))
   const [region, setRegion] = useState(String(material.attributes.region ?? ''))
-  const [originalPrice] = useState(String(material.attributes.originalPrice ?? ''))
+  const [originalPrice, setOriginalPrice] = useState(String(material.attributes.originalPrice ?? ''))
+  const [remark, setRemark] = useState(String(material.attributes.remark ?? ''))
   const [skuGroups, setSkuGroups] = useState<SupplySkuGroup[]>(() => supplySkuConfig(material.sku, String(material.price)).groups)
   const [skuCombinations, setSkuCombinations] = useState<SupplySkuCombination[]>(() => supplySkuConfig(material.sku, String(material.price)).combinations)
   const [saving, setSaving] = useState(false)
@@ -4277,6 +4278,10 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
       setError('请输入有效价格')
       return
     }
+    if (originalPrice.trim() && (!Number.isFinite(Number(originalPrice)) || Number(originalPrice) < 0)) {
+      setError('请输入有效原价')
+      return
+    }
     try {
       const groups = skuGroups
         .map((group) => ({
@@ -4306,6 +4311,8 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
         shipping: shipping.trim(),
         postage: postage.trim(),
         region: region.trim(),
+        originalPrice: originalPrice.trim() ? Number(originalPrice) : null,
+        remark: remark.trim(),
         publishAddressStrategy: 'local_random_pool'
       }
       const patch: SupplyMaterialPatch = {
@@ -4313,7 +4320,7 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
         description: description.trim() || null,
         price: numericPrice,
         status: status as SupplyMaterial['status'],
-        mainImages: parseImageUrls(mainImages, '发布主图', 1, 5),
+        mainImages: parseImageUrls(mainImages, '发布主图', 1, 9),
         detailImages: parseImageUrls(detailImages, '详情图', 0, 120),
         sku,
         attributes
@@ -4417,7 +4424,7 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
           </label>
           <label className="modal-field">
             <span>商家原价（仅展示）</span>
-            <input value={originalPrice} disabled placeholder="暂无原价" />
+            <input type="number" min="0" step="0.01" value={originalPrice} onChange={(event) => setOriginalPrice(event.target.value)} placeholder="暂无原价" />
           </label>
           <label className="modal-field">
             <span>类目</span>
@@ -4446,6 +4453,10 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
           <label className="modal-field">
             <span>所在地</span>
             <input value={region} maxLength={64} onChange={(event) => setRegion(event.target.value)} />
+          </label>
+          <label className="modal-field">
+            <span>备注</span>
+            <input value={remark} maxLength={240} onChange={(event) => setRemark(event.target.value)} placeholder="仅自己可见" />
           </label>
           <label className="modal-field">
             <span>状态</span>
@@ -4543,7 +4554,7 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
             )}
           </section>
           <label className="modal-field supply-edit-wide">
-            <span>主图 URL（每行一条）</span>
+            <span>商品图片（最多 9 张）</span>
             <textarea value={mainImages} onChange={(event) => setMainImages(event.target.value)} placeholder="https://example.com/image.jpg" />
           </label>
           <label className="modal-field supply-edit-wide">

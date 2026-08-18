@@ -162,6 +162,11 @@ export class MonitorDatabase {
         depth INTEGER NOT NULL CHECK (depth BETWEEN 1 AND 3),
         observed_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS local_regions (
+        region TEXT PRIMARY KEY,
+        observed_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_regions_observed ON local_regions (observed_at DESC, region);
       CREATE TABLE IF NOT EXISTS local_items (
         platform TEXT NOT NULL CHECK (platform = 'goofish'),
         platform_item_id TEXT NOT NULL,
@@ -439,6 +444,16 @@ export class MonitorDatabase {
     const sellerCursor = this.getState('collector.upload-seller-cursor') ?? ''
     const versionCursor = this.getState('collector.upload-version-cursor') ?? ''
     const eventCursor = this.getState('collector.upload-event-cursor') ?? ''
+    const categoryCursor = this.getState('collector.upload-category-cursor') ?? ''
+    const regionCursor = this.getState('collector.upload-region-cursor') ?? ''
+    const categories = this.db.prepare(`SELECT path,name,depth,observed_at FROM local_categories WHERE path > ? ORDER BY path LIMIT 50`).all(categoryCursor) as Array<Record<string, unknown>>
+    for (const category of categories) {
+      const path = String(category.path)
+      const parts = path.split('/').filter(Boolean)
+      records.push({ type: 'category', idempotencyKey: `category:goofish:${path}`, platform: 'goofish', platformCategoryId: path, parentCategoryId: parts.length > 1 ? parts.slice(0, -1).join('/') : null, name: category.name, path, depth: category.depth, active: true, observedAt: category.observed_at })
+    }
+    const regions = this.db.prepare(`SELECT region,observed_at FROM local_regions WHERE region > ? ORDER BY region LIMIT 50`).all(regionCursor) as Array<Record<string, unknown>>
+    for (const region of regions) records.push({ type: 'region', idempotencyKey: `region:goofish:${region.region}`, platform: 'goofish', name: region.region, region: region.region, observedAt: region.observed_at })
     const sellers = this.db.prepare(`SELECT platform,platform_seller_id,profile_url,public_name,region,public_profile FROM local_sellers WHERE platform_seller_id > ? ORDER BY platform_seller_id LIMIT 50`).all(sellerCursor) as Array<Record<string, unknown>>
     for (const seller of sellers) records.push({ type: 'seller', idempotencyKey: `seller:${seller.platform}:${seller.platform_seller_id}`, platform: seller.platform, platformSellerId: seller.platform_seller_id, profileUrl: seller.profile_url, publicName: seller.public_name, region: seller.region, publicProfile: JSON.parse(String(seller.public_profile ?? '{}')) })
     const versions = this.db.prepare(`SELECT i.platform,i.platform_item_id,i.url,i.title,i.price,i.region,i.want_count,i.image_urls,i.tags,i.description,i.condition_text,v.content_hash,v.canonical_payload,v.observed_at,r.platform_seller_id,r.state
@@ -459,8 +474,10 @@ export class MonitorDatabase {
     const nextSellerCursor = sellers.length === 50 ? String(sellers[sellers.length - 1].platform_seller_id) : ''
     const nextVersionCursor = versions.length === 50 ? String(versions[versions.length - 1].content_hash) : ''
     const nextEventCursor = events.length === 50 ? String(events[events.length - 1].event_key) : ''
-    const cursorStart = JSON.stringify({ sellers: sellerCursor, versions: versionCursor, events: eventCursor })
-    const cursorEnd = JSON.stringify({ sellers: nextSellerCursor, versions: nextVersionCursor, events: nextEventCursor })
+    const nextCategoryCursor = categories.length === 50 ? String(categories[categories.length - 1].path) : ''
+    const nextRegionCursor = regions.length === 50 ? String(regions[regions.length - 1].region) : ''
+    const cursorStart = JSON.stringify({ sellers: sellerCursor, versions: versionCursor, events: eventCursor, categories: categoryCursor, regions: regionCursor })
+    const cursorEnd = JSON.stringify({ sellers: nextSellerCursor, versions: nextVersionCursor, events: nextEventCursor, categories: nextCategoryCursor, regions: nextRegionCursor })
     const batchId = randomUUID()
     const payload = { schemaVersion: 1, deviceId, batchId, idempotencyKey: `${deviceId}:${sequence}`, batchSequence: sequence, cursor: { start: cursorStart, end: cursorEnd }, records }
     this.db.prepare(`INSERT INTO outbox (id,kind,payload,attempts,next_attempt_at,created_at) VALUES (?,'market_batch',?,0,?,?)`).run(batchId, JSON.stringify(payload), now, now)
@@ -469,6 +486,8 @@ export class MonitorDatabase {
     this.setState('collector.upload-seller-cursor', nextSellerCursor)
     this.setState('collector.upload-version-cursor', nextVersionCursor)
     this.setState('collector.upload-event-cursor', nextEventCursor)
+    this.setState('collector.upload-category-cursor', nextCategoryCursor)
+    this.setState('collector.upload-region-cursor', nextRegionCursor)
     return batchId
   }
 
@@ -614,6 +633,16 @@ export class MonitorDatabase {
       ON CONFLICT(path) DO UPDATE SET observed_at = excluded.observed_at
     `)
     path.forEach((name, index) => insert.run(path.slice(0, index + 1).join('/'), name, index + 1, now))
+  }
+
+  upsertLocalRegions(regions: readonly string[]): void {
+    const now = new Date().toISOString()
+    const insert = this.db.prepare(`INSERT INTO local_regions (region, observed_at) VALUES (?, ?)
+      ON CONFLICT(region) DO UPDATE SET observed_at=excluded.observed_at`)
+    for (const value of regions) {
+      const region = String(value).replace(/\s+/g, ' ').trim().slice(0, 128)
+      if (region) insert.run(region, now)
+    }
   }
 
   saveCollectedItem(taskId: string, item: CollectedItem, contentHash: string, canonicalPayload: string): ItemSaveResult {

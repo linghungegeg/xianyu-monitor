@@ -95,7 +95,7 @@ async function run() {
     firstDesktop = await launchDesktop(userApiUrl, collectorApiUrl)
     await firstDesktop.page.getByLabel('账号').fill(email)
     await firstDesktop.page.getByLabel('密码').fill(password)
-    await firstDesktop.page.getByRole('button', { name: '登录并绑定' }).click()
+    await firstDesktop.page.getByRole('button', { name: '登录' }).click()
     await waitForText(firstDesktop.page, '设备已绑定，账号权益有效')
 
     await firstDesktop.page.getByRole('button', { name: '打开 Chrome' }).click()
@@ -154,7 +154,7 @@ async function run() {
     const revoked = await userApi.inject({ method: 'POST', url: `/v1/collector-devices/${clientId}/revoke`, headers: auth(userAccess) })
     assert(revoked.statusCode === 200, `运行态解绑失败：${revoked.statusCode} ${revoked.body}`)
     await secondDesktop.page.getByRole('button', { name: '启动采集' }).click()
-    await waitForText(secondDesktop.page, '本机设备授权已失效，采集已停止')
+    await secondDesktop.page.locator('.launcher-auth-card').waitFor({ state: 'visible', timeout: 15_000 })
     await secondDesktop.desktop.close()
     secondDesktop = undefined
 

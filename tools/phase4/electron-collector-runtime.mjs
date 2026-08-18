@@ -270,7 +270,7 @@ async function run() {
     await Promise.race([firstDelayedDetail, delay(20_000).then(() => { throw new Error('等待在途详情请求超时') })])
     const revoked = await userApi.inject({ method: 'POST', url: `/v1/collector-devices/${clientId}/revoke`, headers: auth(userAccess) })
     assert(revoked.statusCode === 200, `在途解绑失败：${revoked.statusCode} ${revoked.body}`)
-    await waitForText(desktop.page, '本机设备授权已失效，采集已停止')
+    await desktop.page.locator('.launcher-auth-card').waitFor({ state: 'visible', timeout: 20_000 })
     await delay(250)
     assert(delayedDetailRequests === 1, `设备解绑后仍继续打开详情：${delayedDetailRequests}`)
 

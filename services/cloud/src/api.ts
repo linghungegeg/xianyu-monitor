@@ -1291,16 +1291,12 @@ const userMarketRegionsListConfig: ListConfig = {
 }
 
 function userMarketRegionsPlan(context: ListContext, subjectId: string): ListPlan {
-  const sortExpression = 'v.region'
-  const idExpression = "(i.platform || ':' || v.region)"
+  const sortExpression = 'regions.name'
+  const idExpression = 'regions.cursor_id'
   const build = (includeCursor: boolean): ListQuerySpec & { where: string } => {
     const values: unknown[] = [context.snapshotAt, subjectId]
-    const conditions = [
-      'i.first_seen_at <= $1',
-      'NULLIF(BTRIM(v.region), \'\') IS NOT NULL',
-      `EXISTS (SELECT 1 FROM market.observations o JOIN ops.collection_runs r ON r.id = o.collection_run_id JOIN identity.collector_clients c ON c.id = r.client_id WHERE o.item_id = i.id AND c.user_id = $2)`
-    ]
-    if (context.filters.platform) { values.push(context.filters.platform); conditions.push(`i.platform = $${values.length}`) }
+    const conditions = ['regions.observed_at <= $1']
+    if (context.filters.platform) { values.push(context.filters.platform); conditions.push(`regions.platform = $${values.length}`) }
     if (includeCursor && context.cursorKey) conditions.push(keyset(values, sortExpression, idExpression, context.order, context.cursorKey))
     return { text: '', values, where: conditions.join(' AND ') }
   }
@@ -1309,11 +1305,22 @@ function userMarketRegionsPlan(context: ListContext, subjectId: string): ListPla
     page: () => {
       const query = build(true)
       return {
-        text: `SELECT v.region AS name, i.platform, v.region AS region, v.region AS cursor_sort_value, ${idExpression} AS cursor_id
-          FROM market.items i
-          JOIN LATERAL (SELECT region FROM market.item_versions WHERE item_id=i.id ORDER BY observed_at DESC,id DESC LIMIT 1) v ON TRUE
+        text: `WITH regions AS (
+            SELECT platform, region AS name, region, observed_at, (platform || ':' || region) AS cursor_id
+            FROM market.region_taxonomy
+            WHERE active = true
+            UNION
+            SELECT i.platform, v.region AS name, v.region, MAX(v.observed_at) AS observed_at, (i.platform || ':' || v.region) AS cursor_id
+            FROM market.items i
+            JOIN LATERAL (SELECT region, observed_at FROM market.item_versions WHERE item_id=i.id ORDER BY observed_at DESC,id DESC LIMIT 1) v ON TRUE
+            WHERE i.first_seen_at <= $1
+              AND NULLIF(BTRIM(v.region), '') IS NOT NULL
+              AND EXISTS (SELECT 1 FROM market.observations o JOIN ops.collection_runs r ON r.id = o.collection_run_id JOIN identity.collector_clients c ON c.id = r.client_id WHERE o.item_id = i.id AND c.user_id = $2)
+            GROUP BY i.platform, v.region
+          )
+          SELECT regions.name, regions.platform, regions.region, regions.name AS cursor_sort_value, regions.cursor_id
+          FROM regions
           WHERE ${query.where}
-          GROUP BY i.platform, v.region
           ORDER BY ${sortExpression} ${context.order.toUpperCase()}, ${idExpression} ${context.order.toUpperCase()}
           LIMIT ${context.limit + 1}`,
         values: query.values
@@ -1321,11 +1328,16 @@ function userMarketRegionsPlan(context: ListContext, subjectId: string): ListPla
     },
     count: () => {
       const query = build(false)
-      return { text: `SELECT COUNT(*)::int AS total FROM (SELECT i.platform, v.region
-        FROM market.items i
-        JOIN LATERAL (SELECT region FROM market.item_versions WHERE item_id=i.id ORDER BY observed_at DESC,id DESC LIMIT 1) v ON TRUE
-        WHERE ${query.where}
-        GROUP BY i.platform, v.region) regions`, values: query.values }
+      return { text: `WITH regions AS (
+          SELECT platform, region AS name, region, observed_at, (platform || ':' || region) AS cursor_id FROM market.region_taxonomy WHERE active = true
+          UNION
+          SELECT i.platform, v.region AS name, v.region, MAX(v.observed_at) AS observed_at, (i.platform || ':' || v.region) AS cursor_id
+          FROM market.items i
+          JOIN LATERAL (SELECT region, observed_at FROM market.item_versions WHERE item_id=i.id ORDER BY observed_at DESC,id DESC LIMIT 1) v ON TRUE
+          WHERE i.first_seen_at <= $1 AND NULLIF(BTRIM(v.region), '') IS NOT NULL
+            AND EXISTS (SELECT 1 FROM market.observations o JOIN ops.collection_runs r ON r.id = o.collection_run_id JOIN identity.collector_clients c ON c.id = r.client_id WHERE o.item_id = i.id AND c.user_id = $2)
+          GROUP BY i.platform, v.region
+        ) SELECT COUNT(*)::int AS total FROM regions WHERE ${query.where}`, values: query.values }
     }
   }
 }
@@ -2662,7 +2674,7 @@ function parsePhase6Batch(value: unknown): { schemaVersion: number; deviceId: st
     const record = phase6Record(entry, `records[${index}]`)
     const type = record.type ?? record.kind
     const key = record.idempotencyKey ?? record.eventKey ?? record.contentHash ?? record.platformItemId ?? record.platformSellerId
-    if (typeof type !== 'string' || !['seller', 'version', 'item', 'snapshot', 'event'].includes(type)) throw new Error(`records[${index}].type 无效`)
+    if (typeof type !== 'string' || !['seller', 'version', 'item', 'snapshot', 'event', 'category', 'region'].includes(type)) throw new Error(`records[${index}].type 无效`)
     return { ...record, type, idempotencyKey: phase6Text(key, `records[${index}].idempotencyKey`, 256) }
   })
   return { schemaVersion, deviceId, batchId, idempotencyKey, batchSequence: Number(batchSequence), cursorStart, cursorEnd, records }
@@ -2671,6 +2683,30 @@ function parsePhase6Batch(value: unknown): { schemaVersion: number; deviceId: st
 async function phase6IngestRecord(sql: Sql, record: Phase6IngestRecord, runId: string, batchId: string, recordIndex: number, userId: string): Promise<'inserted' | 'deduplicated'> {
   const now = new Date().toISOString()
   const type = record.type
+  if (type === 'category') {
+    const platform = phase6Text(record.platform ?? 'goofish', 'platform', 32)
+    const categoryId = phase6Text(record.platformCategoryId ?? record.path, 'platformCategoryId', 256)
+    const name = phase6Text(record.name, 'name', 256)
+    const path = phase6Text(record.path, 'path', 512)
+    const depth = Number(record.depth)
+    if (!Number.isInteger(depth) || depth < 1 || depth > 3) throw new Error('类目深度无效')
+    const parentKey = phase6OptionalText(record.parentCategoryId, 256)
+    const parent = parentKey ? await sql.query('SELECT id FROM market.category_taxonomy WHERE platform=$1 AND platform_category_id=$2', [platform, parentKey]) : { rows: [] }
+    const result = await sql.query(`INSERT INTO market.category_taxonomy (id,platform,platform_category_id,parent_id,name,path,depth,active,observed_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      ON CONFLICT (platform,platform_category_id) DO NOTHING
+      RETURNING id`, [randomUUID(), platform, categoryId, parent.rows[0]?.id ?? null, name, path, depth, record.active !== false, record.observedAt ?? now])
+    return result.rows[0] ? 'inserted' : 'deduplicated'
+  }
+  if (type === 'region') {
+    const platform = phase6Text(record.platform ?? 'goofish', 'platform', 32)
+    const region = phase6Text(record.region ?? record.name, 'region', 128)
+    const result = await sql.query(`INSERT INTO market.region_taxonomy (id,platform,region,active,observed_at)
+      VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (platform,region) DO NOTHING
+      RETURNING id`, [randomUUID(), platform, region, record.active !== false, record.observedAt ?? now])
+    return result.rows[0] ? 'inserted' : 'deduplicated'
+  }
   if (type === 'seller') {
     const platform = phase6Text(record.platform ?? 'goofish', 'platform', 32)
     const sellerKey = phase6Text(record.platformSellerId, 'platformSellerId', 256)

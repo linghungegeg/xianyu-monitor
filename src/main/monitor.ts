@@ -575,7 +575,7 @@ export class XianyuMonitor {
     const imageFiles = await this.downloadSupplyImages(material.mainImages, attemptId)
     try {
       const title = await this.firstVisible(page, ['[data-xianyu-publish-title]', 'input[name="title"]', 'input[placeholder*="标题"]'])
-      const description = await this.firstVisible(page, ['[data-xianyu-publish-description]', 'textarea[name="description"]', 'textarea[placeholder*="描述"]'])
+      const description = await this.firstVisible(page, ['[data-xianyu-publish-description]', 'textarea[name="description"]', 'textarea[placeholder*="描述"]', '[contenteditable="true"]'])
       const price = await this.firstVisible(page, ['[data-xianyu-publish-price]', 'input[name="price"]', 'input[placeholder*="价格"]'])
       const imageInput = await this.firstVisible(page, ['input[data-xianyu-publish-images][type="file"]', 'input[name="images"][type="file"]'])
       if (!title || !description || !price || !imageInput) throw new Error('发布页缺少必要素材输入项')
@@ -583,7 +583,41 @@ export class XianyuMonitor {
       await description.fill(material.description)
       await price.fill(String(material.price))
       await imageInput.setInputFiles(imageFiles.files)
+
+      // The publish page exposes these fields only after the image/category form has rendered.
+      // They are optional for older page variants, but when present each value is verified.
+      const fillOptional = async (selectors: string[], value: string): Promise<void> => {
+        if (!value) return
+        const control = await this.firstVisible(page, selectors)
+        if (!control) return
+        const tagName = await control.evaluate((node) => node.tagName.toLowerCase())
+        if (tagName === 'select') {
+          await control.selectOption({ label: value }).catch(() => control.selectOption(value)).catch(() => undefined)
+        } else {
+          await control.fill(value)
+        }
+        const written = tagName === 'select' ? await control.inputValue().catch(() => '') : await control.inputValue().catch(() => '')
+        if (written && written !== value && !written.includes(value)) throw new Error(`发布页字段“${value}”写入未确认`)
+      }
+      const attributes = material.attributes
+      await fillOptional(['[data-xianyu-publish-original-price]', 'input[name="originalPrice"]', 'input[name="original_price"]'], compact(String(attributes.originalPrice ?? '')))
+      await fillOptional(['[data-xianyu-publish-category]', 'select[name="category"]', '[name="category"]'], compact(String(attributes.categoryPath ?? attributes.category ?? '')))
+      await fillOptional(['[data-xianyu-publish-condition]', 'select[name="condition"]', '[name="condition"]'], compact(String(attributes.conditionText ?? attributes.condition ?? '')))
+      await fillOptional(['[data-xianyu-publish-brand]', 'input[name="brand"]', '[name="brand"]'], compact(String(attributes.brand ?? '')))
+      await fillOptional(['[data-xianyu-publish-delivery]', 'select[name="delivery"]', '[name="delivery"]'], compact(String(attributes.delivery ?? attributes.deliveryMethod ?? '')))
+      await fillOptional(['[data-xianyu-publish-postage]', 'input[name="postage"]', '[name="postage"]'], compact(String(attributes.postage ?? '')))
+      await fillOptional(['[data-xianyu-publish-region]', 'select[name="region"]', 'input[name="region"]', 'input[name="address"]'], compact(String(attributes.region ?? '')))
       await this.fillSupplySku(page, material.sku, material.price)
+      const shipTime = await this.firstVisible(page, ['[data-xianyu-publish-ship-time]', '[data-xianyu-publish-delivery-time]', 'button:has-text("48小时")', 'button:has-text("24小时")'])
+      if (shipTime) await shipTime.click()
+      const freeShipping = await this.firstVisible(page, ['[data-xianyu-publish-free-shipping]', 'label:has-text("包邮") input', 'button:has-text("包邮")'])
+      if (freeShipping) {
+        const tagName = await freeShipping.evaluate((node) => node.tagName.toLowerCase())
+        if (tagName === 'input') {
+          const checked = await freeShipping.isChecked().catch(() => false)
+          if (!checked) await freeShipping.check().catch(() => freeShipping.click())
+        } else await freeShipping.click()
+      }
       const address = this.localPublishAddress(material)
       if (address) {
         const addressInput = await this.firstVisible(page, ['[data-xianyu-publish-address]', 'select[name="address"]', 'input[name="address"]'])
@@ -595,9 +629,25 @@ export class XianyuMonitor {
       const submit = await this.firstVisible(page, ['[data-xianyu-publish-submit]', 'button[type="submit"]'])
       if (!submit) throw new Error('发布页缺少提交按钮')
       await submit.click()
-      const result = await this.firstVisible(page, ['[data-xianyu-publish-result-id]', '[data-xianyu-published-item-id]'])
-      if (!result) throw new Error('发布后未确认商品 ID，已停止自动重试')
-      const itemId = compact(await result.evaluate((node) => node.getAttribute('data-xianyu-publish-result-id') ?? node.getAttribute('data-xianyu-published-item-id') ?? node.textContent ?? ''))
+      let itemId = ''
+      for (let attempt = 0; attempt < 40 && !itemId; attempt += 1) {
+        const result = await this.firstVisible(page, ['[data-xianyu-publish-result-id]', '[data-xianyu-published-item-id]'])
+        if (result) itemId = compact(await result.evaluate((node) => node.getAttribute('data-xianyu-publish-result-id') ?? node.getAttribute('data-xianyu-published-item-id') ?? node.textContent ?? ''))
+        if (!itemId) {
+          const url = page.url()
+          const match = url.match(/\/item\/([A-Za-z0-9._-]{1,128})|[?&](?:itemId|id)=([A-Za-z0-9._-]{1,128})/i)
+          if (match) itemId = match[1] ?? match[2] ?? ''
+        }
+        if (!itemId) {
+          const text = compact(await page.locator('body').innerText().catch(() => ''))
+          if (/发布成功|已发布|发布完成/.test(text) && !/发布失败|提交失败/.test(text)) {
+            const bodyId = text.match(/商品(?:ID|编号)[：:]?\s*([A-Za-z0-9._-]{1,128})/i)
+            if (bodyId) itemId = bodyId[1]
+          }
+        }
+        if (!itemId) await page.waitForTimeout(250)
+      }
+      if (!itemId) throw new Error('发布后未确认商品 ID，已停止自动重试')
       if (!/^[A-Za-z0-9._-]{1,128}$/.test(itemId)) throw new Error('发布后商品 ID 无效，已停止自动重试')
       const url = new URL(page.url())
       const itemUrl = url.searchParams.get('itemId') || url.searchParams.get('id') ? url.toString() : `https://www.goofish.com/item/${encodeURIComponent(itemId)}`
@@ -769,6 +819,7 @@ export class XianyuMonitor {
         if (seenPages.has(pageKey)) throw new SearchPageError('structure', '闲鱼分页未前进，请检查页面结构后重试')
         seenPages.add(pageKey)
         await this.recordObservedCategories(page, task.rule)
+        await this.recordObservedRegions(page)
 
         for (const card of cards) {
           if (!this.running || seenItems.has(card.platformItemId)) continue
@@ -1058,6 +1109,14 @@ export class XianyuMonitor {
       for (const path of paths) this.db.upsertLocalCategories(path)
       return
     }
+    const options = await page.locator('[data-xianyu-category-option], [data-category-option], [data-xianyu-category]').evaluateAll((nodes) => nodes.map((node) => {
+      const raw = node.getAttribute('data-xianyu-category-path') ?? node.getAttribute('data-category-path') ?? node.getAttribute('data-xianyu-category-option') ?? node.getAttribute('data-category-option') ?? node.textContent ?? ''
+      return raw.split('/').map((part) => part.replace(/\s+/g, ' ').trim()).filter(Boolean)
+    }).filter((path) => path.length > 0 && path.length <= 3))
+    if (options.length) {
+      for (const path of options) this.db.upsertLocalCategories(path)
+      return
+    }
     if (rule.categoryPath?.length) {
       const selectedText = await page.locator('[aria-selected="true"], [data-selected="true"], .selected, .active').allTextContents()
       if (rule.categoryPath.every((part) => selectedText.some((value) => compact(value) === part))) {
@@ -1066,6 +1125,12 @@ export class XianyuMonitor {
       }
       throw new SearchPageError('structure', '页面未返回可解析的三级类目状态')
     }
+  }
+
+  private async recordObservedRegions(page: Page): Promise<void> {
+    const values = await page.locator('[data-xianyu-region-option], [data-region-option], [data-xianyu-region], [data-seller-region], [data-xianyu-seller-region]')
+      .evaluateAll((nodes) => nodes.map((node) => (node.getAttribute('data-xianyu-region-option') ?? node.getAttribute('data-region-option') ?? node.textContent ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean))
+    if (values.length) this.db.upsertLocalRegions([...new Set(values)])
   }
 
   private async readSearchCards(page: Page) {
