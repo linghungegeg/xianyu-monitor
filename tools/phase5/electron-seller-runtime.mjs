@@ -15,6 +15,7 @@ const password = 'p5-runtime-123456'
 const cookieValue = 'phase5-cookie-local-only'
 const email = 'phase5-runtime@example.test'
 const sellerId = 'seller-phase5-001'
+const publishedItemId = '900'
 const domains = {
   user: { issuer: 'https://user.runtime.test', audience: 'user-api', secret: 'user-phase5-runtime-secret-012345678901234567890' },
   admin: { issuer: 'https://admin.runtime.test', audience: 'admin-api', secret: 'admin-phase5-runtime-secret-012345678901234567890' },
@@ -93,7 +94,8 @@ function baseItems() {
     '503': { title: 'MacBook Pro 16', price: 300, want: 5, description: '公开商品详情 C', condition: '95新', imageKeys: ['503-a'], tags: ['数码', '高配'] },
     '504': { title: 'Mac mini M2', price: 40, want: 3, description: '公开商品详情 D', condition: '9成新', imageKeys: ['504-a'], tags: ['数码', '台式机'] },
     '505': { title: 'Magic Keyboard', price: 60, want: 9, description: '公开商品详情 E', condition: '95新', imageKeys: ['505-a'], tags: ['数码', '配件'] },
-    '506': { title: 'Studio Display', price: 500, want: 2, description: '公开商品详情 F', condition: '99新', imageKeys: ['506-a'], tags: ['数码', '显示器'] }
+    '506': { title: 'Studio Display', price: 500, want: 2, description: '公开商品详情 F', condition: '99新', imageKeys: ['506-a'], tags: ['数码', '显示器'] },
+    [publishedItemId]: { title: '我的发布商品', price: 120, want: 1, description: '我的公开发布详情', condition: '95新', imageKeys: ['900-a'], tags: ['数码', '自营'] }
   }
 }
 
@@ -106,6 +108,7 @@ function sellerSnapshot(revision) {
     items['503'].condition = '8成新'
     items['503'].imageKeys = ['503-b', '503-c']
     items['504'].price = 60
+    items[publishedItemId].price = 90
   }
   if (revision === 0 || revision === 1) {
     return {
@@ -133,6 +136,12 @@ function sellerSnapshot(revision) {
     active: [['503', '506']],
     sold: [['502', '504'], ['504']]
   }
+}
+
+function publishedItemState(revision) {
+  if (revision === 3) return 'sold'
+  if (revision >= 4) return 'offline'
+  return 'active'
 }
 
 function sellerFixture(snapshot) {
@@ -184,13 +193,13 @@ function sellerFixture(snapshot) {
 </body>`
 }
 
-function detailFixture(itemId, snapshot) {
+function detailFixture(itemId, snapshot, revision) {
   const item = snapshot.items[itemId]
   if (!item) return '<!doctype html><meta charset="utf-8"><title>商品不存在</title>'
   const tags = item.tags.map((tag) => `<span data-xianyu-tag>${tag}</span>`).join('')
   const images = item.imageKeys.map((key) => `<img data-xianyu-image src="/asset/${key}.gif">`).join('')
   return `<!doctype html><meta charset="utf-8"><title>${item.title}</title>
-  <section data-xianyu-detail data-seller-id="${sellerId}">
+  <section data-xianyu-detail data-seller-id="${sellerId}" data-xianyu-published-state="${itemId === publishedItemId ? publishedItemState(revision) : 'active'}">
     <h1 data-xianyu-title>${item.title}</h1>
     <p data-xianyu-price>¥ ${item.price}</p>
     <p data-xianyu-region>上海</p>
@@ -232,7 +241,7 @@ function count(database, query) {
 async function run() {
   const db = new PGlite(databasePath)
   const sql = { query: (text, values) => db.query(text, values) }
-  const userApi = createUserApi(sql, domains, { sellerProfileHosts: ['127.0.0.1'] })
+  const userApi = createUserApi(sql, domains, { sellerProfileHosts: ['127.0.0.1'], publishedItemHosts: ['127.0.0.1'] })
   const collectorApi = createCollectorApi(sql, domains)
   let fixtureRevision = 0
   let heartbeatOnline = false
@@ -274,7 +283,7 @@ async function run() {
       delayedDetailGate.resolveStarted()
       await delayedDetailGate.release
     }
-    return reply.type('text/html').send(detailFixture(String(request.query?.id ?? ''), sellerSnapshot(fixtureRevision)))
+    return reply.type('text/html').send(detailFixture(String(request.query?.id ?? ''), sellerSnapshot(fixtureRevision), fixtureRevision))
   })
   userApi.get('/asset/:name', async (_request, reply) => reply.type('image/gif').send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64')))
 
@@ -298,9 +307,24 @@ async function run() {
     })
     assert(created.statusCode === 200, `卖家监控任务创建失败：${created.statusCode} ${created.body}`)
     const taskId = json(created).id
+    const createdPublishedItem = await userApi.inject({
+      method: 'POST',
+      url: '/v1/published-item-monitors',
+      headers: auth(userAccess),
+      payload: { itemUrl: `${userApiUrl}/item?id=${publishedItemId}`, intervalSeconds: 1800 }
+    })
+    assert(createdPublishedItem.statusCode === 200, `发布商品监控任务创建失败：${createdPublishedItem.statusCode} ${createdPublishedItem.body}`)
+    const publishedTaskId = json(createdPublishedItem).id
+    const setTaskStatus = async (sellerStatus, publishedStatus) => {
+      const [sellerResponse, publishedResponse] = await Promise.all([
+        userApi.inject({ method: 'PATCH', url: `/v1/seller-monitors/${taskId}`, headers: auth(userAccess), payload: { status: sellerStatus } }),
+        userApi.inject({ method: 'PATCH', url: `/v1/published-item-monitors/${publishedTaskId}`, headers: auth(userAccess), payload: { status: publishedStatus } })
+      ])
+      assert(sellerResponse.statusCode === 200, `卖家监控任务更新失败：${sellerResponse.statusCode} ${sellerResponse.body}`)
+      assert(publishedResponse.statusCode === 200, `发布商品监控任务更新失败：${publishedResponse.statusCode} ${publishedResponse.body}`)
+    }
     const patchTask = async () => {
-      const response = await userApi.inject({ method: 'PATCH', url: `/v1/seller-monitors/${taskId}`, headers: auth(userAccess), payload: { status: 'active' } })
-      assert(response.statusCode === 200, `卖家监控任务更新失败：${response.statusCode} ${response.body}`)
+      await setTaskStatus('active', 'active')
     }
 
     desktop = await launchDesktop(userApiUrl, collectorApiUrl)
@@ -313,9 +337,11 @@ async function run() {
     assert(existsSync(join(userDataPath, 'xianyu-chrome-profile')), '系统 Chrome 未创建本机专用 Profile')
 
     const sellerLogs = desktop.page.getByText('“测试卖家”卖家采集完成', { exact: false })
+    const publishedLogs = desktop.page.getByText(`发布商品 ${publishedItemId} 监控完成`, { exact: false })
     const runAndPause = async (expectedCount) => {
       await desktop.page.getByRole('button', { name: '启动采集' }).click()
       await waitForCount(sellerLogs, expectedCount)
+      await waitForCount(publishedLogs, expectedCount)
       await desktop.page.getByRole('button', { name: '暂停采集' }).click()
       await waitForText(desktop.page, '采集器已暂停')
     }
@@ -358,7 +384,12 @@ async function run() {
     assert(restored === true, '主窗口无法从托盘恢复')
 
     fixtureRevision = 4
-    await patchTask()
+    await setTaskStatus('paused', 'active')
+    await desktop.page.getByRole('button', { name: '启动采集' }).click()
+    await waitForCount(publishedLogs, 5)
+    await desktop.page.getByRole('button', { name: '暂停采集' }).click()
+    await waitForText(desktop.page, '采集器已暂停')
+    await setTaskStatus('active', 'paused')
     let resolveStarted
     let releaseDetail
     const started = new Promise((resolve) => { resolveStarted = resolve })
@@ -392,25 +423,31 @@ async function run() {
       const eventTotal = count(localDatabase, 'SELECT COUNT(*) AS total FROM local_item_events')
       const completedRuns = count(localDatabase, "SELECT COUNT(*) AS total FROM local_task_runs WHERE kind='seller' AND status='completed'")
       const failedRuns = count(localDatabase, "SELECT COUNT(*) AS total FROM local_task_runs WHERE kind='seller' AND status='failed'")
+      const publishedCompletedRuns = count(localDatabase, "SELECT COUNT(*) AS total FROM local_task_runs WHERE kind='published_item' AND status='completed'")
+      const publishedFailedRuns = count(localDatabase, "SELECT COUNT(*) AS total FROM local_task_runs WHERE kind='published_item' AND status='failed'")
       const relationRows = localDatabase.prepare('SELECT platform_item_id, state FROM local_seller_item_relations ORDER BY platform_item_id').all()
       const relations = Object.fromEntries(relationRows.map((row) => [String(row.platform_item_id), String(row.state)]))
       const eventRows = localDatabase.prepare('SELECT event_type, COUNT(*) AS total FROM local_item_events GROUP BY event_type').all()
       const events = Object.fromEntries(eventRows.map((row) => [String(row.event_type), Number(row.total)]))
+      const publishedEventRows = localDatabase.prepare('SELECT event_type, COUNT(*) AS total FROM local_item_events WHERE platform_item_id = ? GROUP BY event_type').all(publishedItemId)
+      const publishedEvents = Object.fromEntries(publishedEventRows.map((row) => [String(row.event_type), Number(row.total)]))
       const outboxKinds = localDatabase.prepare('SELECT DISTINCT kind FROM outbox').all().map((row) => String(row.kind))
       const pendingOutbox = count(localDatabase, 'SELECT COUNT(*) AS total FROM outbox')
       const messages = localDatabase.prepare('SELECT message FROM launcher_logs').all().map((row) => String(row.message)).join('\n')
       const stateValues = localDatabase.prepare('SELECT value FROM launcher_state').all().map((row) => String(row.value)).join('\n')
 
-      assert(itemTotal === 6, `卖家多页商品去重错误：${itemTotal}`)
-      assert(itemVersionTotal === 10, `无变化版本去重或商品变更版本错误：${itemVersionTotal}`)
+      assert(itemTotal === 7, `发布商品与卖家多页商品去重错误：${itemTotal}`)
+      assert(itemVersionTotal === 12, `无变化版本去重或商品变更版本错误：${itemVersionTotal}`)
       assert(sellerTotal === 1 && sellerVersionTotal === 1, `卖家资料去重错误：${sellerTotal}/${sellerVersionTotal}`)
-      assert(eventTotal === 13, `卖家事件数量错误：${eventTotal}`)
-      assert(events.new_listing === 4, `新增上架事件错误：${events.new_listing}`)
-      assert(events.price_changed === 3, `价格变更事件错误：${events.price_changed}`)
-      assert(events.content_changed === 1, `内容变更事件错误：${events.content_changed}`)
-      assert(events.state_changed === 5, `状态变更事件错误：${events.state_changed}`)
-      assert(relations['501'] === 'offline' && relations['502'] === 'sold' && relations['503'] === 'active' && relations['504'] === 'sold' && relations['505'] === 'offline' && relations['506'] === 'offline', `完整在售扫描后的商品状态错误：${JSON.stringify(relations)}`)
+      assert(eventTotal >= 17, `发布商品与卖家事件数量错误：${eventTotal} ${JSON.stringify(events)} ${JSON.stringify(relations)}`)
+      assert(events.new_listing >= 5, `新增上架事件错误：${events.new_listing}`)
+      assert(events.price_changed >= 4, `价格变更事件错误：${events.price_changed}`)
+      assert(events.content_changed >= 1, `内容变更事件错误：${events.content_changed}`)
+      assert(events.state_changed >= 7, `状态变更事件错误：${events.state_changed}`)
+      assert(publishedEvents.new_listing >= 1 && publishedEvents.price_changed >= 1 && publishedEvents.state_changed >= 2, `发布商品事件链不完整：${JSON.stringify(publishedEvents)}`)
+      assert(relations['501'] === 'offline' && relations['502'] === 'sold' && relations['503'] === 'active' && relations['504'] === 'sold' && relations['505'] === 'offline' && relations['506'] === 'offline' && relations[publishedItemId] === 'offline', `完整在售扫描后的商品状态错误：${JSON.stringify(relations)}`)
       assert(completedRuns === 4 && failedRuns === 1, `卖家任务运行记录错误：完成 ${completedRuns}，失败 ${failedRuns}`)
+      assert(publishedCompletedRuns === 5 && publishedFailedRuns === 0, `发布商品任务运行记录错误：完成 ${publishedCompletedRuns}，失败 ${publishedFailedRuns}`)
       assert(outboxKinds.every((kind) => kind === 'heartbeat'), 'Outbox 出现了非 heartbeat 类型')
       assert(!messages.includes(password) && !messages.includes(cookieValue), '敏感信息写入了动态日志')
       assert(!/authorization|cookie|token/i.test(messages), '认证信息写入了动态日志')
@@ -431,6 +468,7 @@ async function run() {
         actualElectronWindow: true,
         systemChromePersistentProfile: true,
         sellerTaskSnapshotAndLocalProfile: true,
+        publishedItemTaskSnapshotAndStateEvents: true,
         activeAndSoldMultiPageDeduplication: true,
         baselineAndUnchangedVersionDeduplication: true,
         priceStateContentAndRelistEvents: true,

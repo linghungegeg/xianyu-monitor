@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import type { LauncherStatus } from '../shared/types'
-import { MonitorDatabase, type CachedMonitorTask, type CachedSearchMonitorTask, type CachedSellerMonitorTask } from './database'
+import { MonitorDatabase, type CachedMonitorTask, type CachedPublishedItemMonitorTask, type CachedSearchMonitorTask, type CachedSellerMonitorTask } from './database'
 import {
   canonicalItemPayload,
   canonicalSellerItemPayload,
@@ -146,7 +146,7 @@ function parseTask(value: unknown): CachedMonitorTask {
   if (!value || typeof value !== 'object') throw new Error('云端任务快照无效')
   const row = value as Record<string, unknown>
   const id = typeof row.id === 'string' ? row.id : ''
-  const kind = row.kind === 'seller' ? 'seller' : 'search'
+  const kind = row.kind === 'seller' ? 'seller' : row.kind === 'published_item' ? 'published_item' : 'search'
   const ruleVersion = typeof row.ruleVersion === 'number' ? row.ruleVersion : NaN
   const status = row.status === 'active' || row.status === 'paused' ? row.status : undefined
   const intervalSeconds = typeof row.intervalSeconds === 'number' ? row.intervalSeconds : NaN
@@ -161,6 +161,14 @@ function parseTask(value: unknown): CachedMonitorTask {
     if (platform !== 'goofish' || !platformSellerId || platformSellerId.length > 128 || !profileUrl) throw new Error('云端卖家任务快照无效')
     if (!sellerProfileUrlAllowed(profileUrl)) throw new Error('云端卖家任务快照包含不允许的主页地址')
     return { id, kind: 'seller', platform: 'goofish', platformSellerId, profileUrl, ruleVersion, status, intervalSeconds, nextRunAt, createdAt, updatedAt }
+  }
+  if (row.kind === 'published_item') {
+    const platform = row.platform === undefined ? 'goofish' : row.platform
+    const platformItemId = typeof row.platformItemId === 'string' ? row.platformItemId.trim() : ''
+    const itemUrl = typeof row.itemUrl === 'string' ? row.itemUrl.trim() : ''
+    const publishPlanId = typeof row.publishPlanId === 'string' ? row.publishPlanId.trim() : undefined
+    if (platform !== 'goofish' || !platformItemId || platformItemId.length > 128 || !itemUrl || !navigationUrlAllowed(itemUrl)) throw new Error('云端发布商品任务快照无效')
+    return { id, kind: 'published_item', platform: 'goofish', platformItemId, itemUrl, publishPlanId, ruleVersion, status, intervalSeconds, nextRunAt, createdAt, updatedAt }
   }
   const rule = row.rule && typeof row.rule === 'object' && !Array.isArray(row.rule) ? row.rule as SearchRule : undefined
   if (!rule) throw new Error('云端任务规则无效')
@@ -379,11 +387,59 @@ export class XianyuMonitor {
   }
 
   private async scanTask(task: CachedMonitorTask): Promise<void> {
+    if (task.kind === 'published_item') {
+      await this.scanPublishedItemTask(task)
+      return
+    }
     if (task.kind === 'seller') {
       await this.scanSellerTask(task)
       return
     }
     await this.scanSearchTask(task)
+  }
+
+  private async scanPublishedItemTask(task: CachedPublishedItemMonitorTask): Promise<void> {
+    const startedAt = new Date().toISOString()
+    let scannedCount = 0
+    let newItemCount = 0
+    let newVersionCount = 0
+    let eventCount = 0
+    try {
+      await this.ensureAuthorized()
+      const page = await this.openDetailPage()
+      await this.goto(page, task.itemUrl, '闲鱼发布商品详情加载失败，请检查网络后重试')
+      const item = await this.readItemDetail({ platformItemId: task.platformItemId, url: task.itemUrl, title: '', price: null, region: null, publishedText: null, wantCount: null, imageUrls: [], tags: [] })
+      if (item.platformItemId !== task.platformItemId) throw new SearchPageError('structure', '发布商品详情 ID 与监控目标不一致')
+      const detailSellerId = await page.locator('[data-xianyu-seller-id], [data-seller-id]').first().evaluate((node) => node.getAttribute('data-xianyu-seller-id') ?? node.getAttribute('data-seller-id')).catch(() => null)
+      if (!detailSellerId) throw new SearchPageError('structure', '发布商品详情缺少卖家 ID，已跳过以避免归属错误')
+      const seller = parseSellerProfile({ platformSellerId: detailSellerId, profileUrl: `https://www.goofish.com/user/${encodeURIComponent(detailSellerId)}`, publicName: null, region: item.region, publicProfile: {} })
+      if (!seller) throw new SearchPageError('structure', '发布商品详情卖家 ID 无效')
+      const state = await this.readPublishedItemState(page)
+      this.db.ensureSellerProfile(seller)
+      const payload = canonicalSellerItemPayload(item)
+      const saved = this.db.saveSellerItem({ taskId: task.id, scanId: randomUUID(), seller, state, item, contentHash: createHash('sha256').update(payload).digest('hex'), canonicalPayload: payload })
+      scannedCount = 1
+      newItemCount = saved.isNewItem ? 1 : 0
+      newVersionCount = saved.isNewVersion ? 1 : 0
+      eventCount = saved.eventCount
+      if (!this.running) return
+      this.db.markMonitorTaskRun(task.id)
+      this.db.recordMonitorTaskRun({ id: randomUUID(), taskId: task.id, kind: 'published_item', ruleVersion: task.ruleVersion, status: 'completed', scannedCount, newItemCount, newVersionCount, eventCount, startedAt, finishedAt: new Date().toISOString() })
+      this.db.addLog('success', `发布商品 ${task.platformItemId} 监控完成：${state}，新增事件 ${eventCount} 条`)
+      this.updateStatus('running', '采集器正在运行', true)
+    } catch (error) {
+      this.db.recordMonitorTaskRun({ id: randomUUID(), taskId: task.id, kind: 'published_item', ruleVersion: task.ruleVersion, status: 'failed', scannedCount, newItemCount, newVersionCount, eventCount, startedAt, finishedAt: new Date().toISOString() })
+      throw error
+    }
+  }
+
+  private async readPublishedItemState(page: Page): Promise<Extract<SellerItemState, 'active' | 'sold' | 'offline'>> {
+    const explicit = await page.locator('[data-xianyu-detail]').first().getAttribute('data-xianyu-published-state').catch(() => null)
+    if (explicit === 'sold' || explicit === 'offline' || explicit === 'active') return explicit
+    const text = compact(await page.locator('body').innerText().catch(() => ''))
+    if (/已下架|已失效|不存在/.test(text)) return 'offline'
+    if (/已售出|交易成功|卖掉了/.test(text)) return 'sold'
+    return 'active'
   }
 
   private async scanSearchTask(task: CachedSearchMonitorTask): Promise<void> {

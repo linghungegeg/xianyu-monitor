@@ -44,7 +44,15 @@ export type CachedSellerMonitorTask = CachedTaskBase & {
   profileUrl: string
 }
 
-export type CachedMonitorTask = CachedSearchMonitorTask | CachedSellerMonitorTask
+export type CachedPublishedItemMonitorTask = CachedTaskBase & {
+  kind: 'published_item'
+  platform: 'goofish'
+  platformItemId: string
+  itemUrl: string
+  publishPlanId?: string
+}
+
+export type CachedMonitorTask = CachedSearchMonitorTask | CachedSellerMonitorTask | CachedPublishedItemMonitorTask
 
 type CachedMonitorTaskRow = {
   id: string
@@ -69,7 +77,7 @@ type SellerItemSaveInput = {
   taskId: string
   scanId: string
   seller: SellerProfile
-  state: Extract<SellerItemState, 'active' | 'sold'>
+  state: Extract<SellerItemState, 'active' | 'sold' | 'offline'>
   item: CollectedItem
   contentHash: string
   canonicalPayload: string
@@ -136,7 +144,7 @@ export class MonitorDatabase {
       CREATE TABLE IF NOT EXISTS cached_monitor_tasks (
         id TEXT PRIMARY KEY,
         rule_json TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'search' CHECK (kind IN ('search', 'seller')),
+        kind TEXT NOT NULL DEFAULT 'search' CHECK (kind IN ('search', 'seller', 'published_item')),
         target_json TEXT,
         rule_version INTEGER NOT NULL CHECK (rule_version >= 1),
         status TEXT NOT NULL CHECK (status IN ('active', 'paused')),
@@ -195,7 +203,7 @@ export class MonitorDatabase {
       CREATE TABLE IF NOT EXISTS local_task_runs (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
-        kind TEXT NOT NULL DEFAULT 'search' CHECK (kind IN ('search', 'seller')),
+        kind TEXT NOT NULL DEFAULT 'search' CHECK (kind IN ('search', 'seller', 'published_item')),
         rule_version INTEGER NOT NULL,
         status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
         scanned_count INTEGER NOT NULL CHECK (scanned_count >= 0),
@@ -271,6 +279,7 @@ export class MonitorDatabase {
     this.ensureColumn('local_items', 'condition_text', 'TEXT')
     this.ensureColumn('local_task_runs', 'kind', "TEXT NOT NULL DEFAULT 'search'")
     this.ensureColumn('local_task_runs', 'event_count', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureMonitorTaskKinds()
   }
 
   private ensureColumn(table: 'cached_monitor_tasks' | 'local_items' | 'local_task_runs', column: string, definition: string): void {
@@ -297,6 +306,72 @@ export class MonitorDatabase {
       DROP TABLE outbox_legacy;
       CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox (next_attempt_at, created_at, id);
     `)
+  }
+
+  private ensureMonitorTaskKinds(): void {
+    const taskSchema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='cached_monitor_tasks'").get() as { sql?: string } | undefined
+    const runSchema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='local_task_runs'").get() as { sql?: string } | undefined
+    if (taskSchema?.sql?.includes("'published_item'") && runSchema?.sql?.includes("'published_item'")) return
+    this.db.exec('PRAGMA foreign_keys = OFF')
+    try {
+      this.db.exec('BEGIN')
+      this.db.exec(`
+        ALTER TABLE local_task_item_matches RENAME TO local_task_item_matches_legacy;
+        ALTER TABLE local_task_runs RENAME TO local_task_runs_legacy;
+        ALTER TABLE cached_monitor_tasks RENAME TO cached_monitor_tasks_legacy;
+        CREATE TABLE cached_monitor_tasks (
+          id TEXT PRIMARY KEY,
+          rule_json TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'search' CHECK (kind IN ('search', 'seller', 'published_item')),
+          target_json TEXT,
+          rule_version INTEGER NOT NULL CHECK (rule_version >= 1),
+          status TEXT NOT NULL CHECK (status IN ('active', 'paused')),
+          interval_seconds INTEGER NOT NULL CHECK (interval_seconds BETWEEN 60 AND 86400),
+          next_run_at TEXT NOT NULL,
+          last_run_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO cached_monitor_tasks SELECT id,rule_json,kind,target_json,rule_version,status,interval_seconds,next_run_at,last_run_at,created_at,updated_at FROM cached_monitor_tasks_legacy;
+        CREATE TABLE local_task_item_matches (
+          task_id TEXT NOT NULL,
+          platform TEXT NOT NULL CHECK (platform = 'goofish'),
+          platform_item_id TEXT NOT NULL,
+          first_matched_at TEXT NOT NULL,
+          last_matched_at TEXT NOT NULL,
+          PRIMARY KEY (task_id, platform, platform_item_id),
+          FOREIGN KEY (task_id) REFERENCES cached_monitor_tasks (id) ON DELETE CASCADE,
+          FOREIGN KEY (platform, platform_item_id) REFERENCES local_items (platform, platform_item_id)
+        );
+        INSERT INTO local_task_item_matches SELECT task_id,platform,platform_item_id,first_matched_at,last_matched_at FROM local_task_item_matches_legacy;
+        CREATE TABLE local_task_runs (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'search' CHECK (kind IN ('search', 'seller', 'published_item')),
+          rule_version INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+          scanned_count INTEGER NOT NULL CHECK (scanned_count >= 0),
+          new_item_count INTEGER NOT NULL CHECK (new_item_count >= 0),
+          new_version_count INTEGER NOT NULL CHECK (new_version_count >= 0),
+          event_count INTEGER NOT NULL DEFAULT 0 CHECK (event_count >= 0),
+          started_at TEXT NOT NULL,
+          finished_at TEXT NOT NULL,
+          FOREIGN KEY (task_id) REFERENCES cached_monitor_tasks (id) ON DELETE CASCADE
+        );
+        INSERT INTO local_task_runs SELECT id,task_id,kind,rule_version,status,scanned_count,new_item_count,new_version_count,event_count,started_at,finished_at FROM local_task_runs_legacy;
+        DROP TABLE local_task_item_matches_legacy;
+        DROP TABLE local_task_runs_legacy;
+        DROP TABLE cached_monitor_tasks_legacy;
+        CREATE INDEX idx_cached_monitor_tasks_due ON cached_monitor_tasks (status, next_run_at, last_run_at, id);
+        CREATE INDEX idx_local_task_runs_timeline ON local_task_runs (task_id, started_at DESC, id DESC);
+      `)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    } finally {
+      this.db.exec('PRAGMA foreign_keys = ON')
+    }
   }
 
   getState(key: string): string | null {
@@ -424,7 +499,9 @@ export class MonitorDatabase {
         const rule = task.kind === 'search' ? JSON.stringify(task.rule) : '{}'
         const target = task.kind === 'seller'
           ? JSON.stringify({ platform: task.platform, platformSellerId: task.platformSellerId, profileUrl: task.profileUrl })
-          : null
+          : task.kind === 'published_item'
+            ? JSON.stringify({ platform: task.platform, platformItemId: task.platformItemId, itemUrl: task.itemUrl, publishPlanId: task.publishPlanId ?? null })
+            : null
         insert.run(task.id, rule, task.kind, target, task.ruleVersion, task.status, task.intervalSeconds, task.nextRunAt, task.createdAt, task.updatedAt)
       }
       if (tasks.length) {
@@ -466,6 +543,14 @@ export class MonitorDatabase {
         const profileUrl = typeof target.profileUrl === 'string' ? target.profileUrl : ''
         if (target.platform !== 'goofish' || !platformSellerId || !profileUrl) throw new Error('本地卖家任务缓存无效')
         return { ...common, kind: 'seller' as const, platform: 'goofish' as const, platformSellerId, profileUrl }
+      }
+      if (row.kind === 'published_item') {
+        const target = payloadRecord(row.target_json ?? '')
+        const platformItemId = typeof target.platformItemId === 'string' ? target.platformItemId : ''
+        const itemUrl = typeof target.itemUrl === 'string' ? target.itemUrl : ''
+        const publishPlanId = typeof target.publishPlanId === 'string' && target.publishPlanId ? target.publishPlanId : undefined
+        if (target.platform !== 'goofish' || !platformItemId || !itemUrl) throw new Error('本地发布商品任务缓存无效')
+        return { ...common, kind: 'published_item' as const, platform: 'goofish' as const, platformItemId, itemUrl, publishPlanId }
       }
       return { ...common, kind: 'search' as const, rule: JSON.parse(row.rule_json) as SearchRule }
     })
@@ -551,6 +636,21 @@ export class MonitorDatabase {
       this.db.exec('ROLLBACK')
       throw error
     }
+  }
+
+  ensureSellerProfile(profile: SellerProfile): void {
+    const now = new Date().toISOString()
+    const existing = this.db.prepare('SELECT 1 FROM local_sellers WHERE platform=? AND platform_seller_id=?')
+      .get(profile.platform, profile.platformSellerId)
+    if (existing) {
+      this.db.prepare('UPDATE local_sellers SET last_seen_at=? WHERE platform=? AND platform_seller_id=?')
+        .run(now, profile.platform, profile.platformSellerId)
+      return
+    }
+    this.db.prepare(`
+      INSERT INTO local_sellers (platform, platform_seller_id, profile_url, public_name, region, public_profile, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(profile.platform, profile.platformSellerId, profile.profileUrl, profile.publicName, profile.region, JSON.stringify(profile.publicProfile), now, now)
   }
 
   saveSellerItem(input: SellerItemSaveInput): SellerItemSaveResult {
@@ -672,6 +772,12 @@ export class MonitorDatabase {
         SELECT platform_item_id FROM local_seller_item_relations
         WHERE platform='goofish' AND platform_seller_id=? AND state='active'
           AND COALESCE(last_active_scan_id, '') <> ?
+          AND NOT EXISTS (
+            SELECT 1 FROM local_task_item_matches m
+            JOIN cached_monitor_tasks t ON t.id = m.task_id
+            WHERE m.platform='goofish' AND m.platform_item_id = local_seller_item_relations.platform_item_id
+              AND t.kind='published_item'
+          )
       `).all(sellerId, scanId) as Array<{ platform_item_id: string }>
       let eventCount = 0
       for (const relation of relations) {

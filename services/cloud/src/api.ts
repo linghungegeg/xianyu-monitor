@@ -9,6 +9,7 @@ export type Domains = Record<SubjectKind, TokenDomain>
 export type ApiOptions = {
   allowedOrigins?: readonly string[]
   sellerProfileHosts?: readonly string[]
+  publishedItemHosts?: readonly string[]
   modelListProxy?: (input: { baseUrl: string; modelReference: string; apiKeyCiphertext: string | null }) => Promise<unknown>
 }
 
@@ -62,6 +63,14 @@ type SellerMonitorTaskInput = {
   profileUrl?: string
   intervalSeconds?: number
   status?: SellerMonitorTaskStatus
+}
+type PublishedItemMonitorTaskStatus = 'active' | 'paused'
+type PublishedItemMonitorTaskInput = {
+  publishPlanId?: string
+  platformItemId?: string
+  itemUrl?: string
+  intervalSeconds?: number
+  status?: PublishedItemMonitorTaskStatus
 }
 type SupplySourceType = 'xianyu' | 'general'
 type SupplyMaterial = {
@@ -121,6 +130,7 @@ const monitorTaskInputKeys = new Set(['rule', 'intervalSeconds', 'status'])
 const MAX_ACTIVE_SEARCH_TASKS = 20
 const MAX_ACTIVE_SELLER_TASKS = 5
 const sellerMonitorTaskInputKeys = new Set(['platform', 'platformSellerId', 'profileUrl', 'intervalSeconds', 'status'])
+const publishedItemMonitorTaskInputKeys = new Set(['publishPlanId', 'platformItemId', 'itemUrl', 'intervalSeconds', 'status'])
 const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com'] as const
 const supplyImportKeys = new Set(['schemaVersion', 'sourceType', 'sourceFormat', 'idempotencyKey', 'snapshots'])
 const supplyMaterialPatchKeys = new Set(['title', 'description', 'price', 'mainImages', 'detailImages', 'sku', 'attributes', 'status'])
@@ -521,6 +531,66 @@ function parseSellerMonitorTaskInput(value: unknown, creating: boolean, allowedH
   }
 }
 
+function publishedItemIdFromUrl(itemUrl: string | URL): string | undefined {
+  const url = typeof itemUrl === 'string' ? new URL(itemUrl) : itemUrl
+  for (const key of ['id', 'itemId', 'item_id', 'goodsId', 'goods_id']) {
+    const candidate = url.searchParams.get(key)?.trim()
+    if (candidate && /^[A-Za-z0-9._-]+$/.test(candidate)) return candidate
+  }
+  return /(?:item|detail)[\/_-]([A-Za-z0-9._-]+)/i.exec(url.pathname)?.[1]
+}
+
+function publishedItemUrl(value: unknown, allowedHosts: readonly string[]): string {
+  const raw = monitorTaskString(value, 'itemUrl', 2_048)
+  let url: URL
+  try { url = new URL(raw) } catch { throw new MonitorTaskRequestError('itemUrl 必须是有效公开商品地址') }
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+  const allowed = allowedHosts.some((pattern) => sellerProfileHostMatches(hostname, pattern))
+  const official = hostname === 'goofish.com' || hostname.endsWith('.goofish.com')
+  if (!allowed || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || (official && (url.protocol !== 'https:' || url.port))) {
+    throw new MonitorTaskRequestError('itemUrl 必须是允许的闲鱼公开商品地址')
+  }
+  const itemId = publishedItemIdFromUrl(url)
+  if (!itemId) throw new MonitorTaskRequestError('itemUrl 未包含可识别的闲鱼商品 ID')
+  if (official) return `https://www.goofish.com/item?id=${encodeURIComponent(itemId)}`
+  const sanitized = new URL(url.origin)
+  sanitized.pathname = url.pathname || '/item'
+  sanitized.searchParams.set('id', itemId)
+  return sanitized.toString()
+}
+
+function canonicalPublishedItemUrl(platformItemId: string): string {
+  return `https://www.goofish.com/item?id=${encodeURIComponent(platformItemId)}`
+}
+
+function parsePublishedItemMonitorTaskInput(value: unknown, creating: boolean, allowedHosts: readonly string[]): PublishedItemMonitorTaskInput {
+  const source = monitorTaskRecord(value, '请求体')
+  for (const key of Object.keys(source)) if (!publishedItemMonitorTaskInputKeys.has(key)) throw new MonitorTaskRequestError(`不支持字段 ${key}`)
+  if (creating && source.platformItemId === undefined && source.itemUrl === undefined) throw new MonitorTaskRequestError('platformItemId 或 itemUrl 至少填写一个')
+  if (creating && source.intervalSeconds === undefined) throw new MonitorTaskRequestError('intervalSeconds 必填')
+  if (!creating && (source.platformItemId !== undefined || source.publishPlanId !== undefined)) throw new MonitorTaskRequestError('发布商品目标创建后不可修改')
+  const explicitItemId = source.platformItemId === undefined ? undefined : monitorTaskString(source.platformItemId, 'platformItemId', 128)
+  if (explicitItemId !== undefined && !/^[A-Za-z0-9._-]+$/.test(explicitItemId)) throw new MonitorTaskRequestError('platformItemId 格式无效')
+  const suppliedUrl = source.itemUrl === undefined ? undefined : publishedItemUrl(source.itemUrl, allowedHosts)
+  const urlItemId = suppliedUrl ? publishedItemIdFromUrl(suppliedUrl) : undefined
+  if (explicitItemId && urlItemId && explicitItemId !== urlItemId) throw new MonitorTaskRequestError('platformItemId 与 itemUrl 不匹配')
+  const platformItemId = explicitItemId ?? urlItemId
+  if (creating && !platformItemId) throw new MonitorTaskRequestError('itemUrl 未包含可识别的闲鱼商品 ID，请补充 platformItemId')
+  const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 1_800 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 1800 到 86400 的整数')
+  const status = source.status === undefined ? undefined : source.status
+  if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
+  const publishPlanId = source.publishPlanId === undefined ? undefined : monitorTaskString(source.publishPlanId, 'publishPlanId', 64)
+  if (publishPlanId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(publishPlanId)) throw new MonitorTaskRequestError('publishPlanId 格式无效')
+  return {
+    ...(publishPlanId === undefined ? {} : { publishPlanId }),
+    ...(platformItemId === undefined ? {} : { platformItemId }),
+    ...(platformItemId === undefined ? {} : { itemUrl: suppliedUrl ?? canonicalPublishedItemUrl(platformItemId) }),
+    ...(intervalSeconds === undefined ? {} : { intervalSeconds }),
+    ...(status === undefined ? {} : { status: status as PublishedItemMonitorTaskStatus })
+  }
+}
+
 function monitorTaskResponse(row: Record<string, unknown>) {
   const rule = row.rule ?? row.rule_json
   const parsedRule = typeof rule === 'string' ? JSON.parse(rule) : rule
@@ -546,6 +616,24 @@ function sellerMonitorTaskResponse(row: Record<string, unknown>) {
     profileUrl: String(row.profileUrl ?? row.profile_url),
     ruleVersion: Number(row.ruleVersion ?? row.rule_version),
     status: String(row.status) as SellerMonitorTaskStatus,
+    intervalSeconds: Number(row.intervalSeconds ?? row.interval_seconds),
+    nextRunAt: timestamp(row.nextRunAt ?? row.next_run_at),
+    createdAt: timestamp(row.createdAt ?? row.created_at),
+    updatedAt: timestamp(row.updatedAt ?? row.updated_at)
+  }
+}
+
+function publishedItemMonitorTaskResponse(row: Record<string, unknown>) {
+  const publishPlanId = row.publishPlanId ?? row.publish_plan_id
+  return {
+    id: String(row.id),
+    kind: 'published_item' as const,
+    publishPlanId: publishPlanId ? String(publishPlanId) : null,
+    platform: String(row.platform),
+    platformItemId: String(row.platformItemId ?? row.platform_item_id),
+    itemUrl: String(row.itemUrl ?? row.item_url),
+    ruleVersion: Number(row.ruleVersion ?? row.rule_version ?? 1),
+    status: String(row.status) as PublishedItemMonitorTaskStatus,
     intervalSeconds: Number(row.intervalSeconds ?? row.interval_seconds),
     nextRunAt: timestamp(row.nextRunAt ?? row.next_run_at),
     createdAt: timestamp(row.createdAt ?? row.created_at),
@@ -792,6 +880,14 @@ const userSellerMonitorsListConfig: ListConfig = {
   sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', recent: 'updated_at', priority_desc: 'next_run_at', next_run_at: 'next_run_at', platform_seller_id: 'platform_seller_id', title_asc: 'platform_seller_id', id: 'id' },
   filterAliases: { search: 'q', sellerId: 'platform_seller_id' },
   allowedFilters: ['q', 'status', 'platform', 'platform_seller_id']
+}
+
+const userPublishedItemMonitorsListConfig: ListConfig = {
+  resource: 'user.published_item_monitors',
+  defaultSort: 'updated_at',
+  sortAliases: { created_at: 'created_at', updated_at: 'updated_at', updated_at_desc: 'updated_at', recent: 'updated_at', next_run_at: 'next_run_at', platform_item_id: 'platform_item_id', title_asc: 'platform_item_id', id: 'id' },
+  filterAliases: { search: 'q', itemId: 'platform_item_id', publishPlanId: 'publish_plan_id' },
+  allowedFilters: ['q', 'status', 'platform_item_id', 'publish_plan_id']
 }
 
 const userSupplyMaterialsListConfig: ListConfig = {
@@ -1047,6 +1143,23 @@ const userSellerMonitorsPlan = tablePlan({
     if (context.filters.status) { values.push(context.filters.status); conditions.push(`t.status = $${values.length}`) }
     if (context.filters.platform) { values.push(context.filters.platform); conditions.push(`s.platform = $${values.length}`) }
     if (context.filters.platform_seller_id) { values.push(context.filters.platform_seller_id); conditions.push(`s.platform_seller_id = $${values.length}`) }
+    return conditions
+  }
+})
+
+const userPublishedItemMonitorsPlan = tablePlan({
+  resource: userPublishedItemMonitorsListConfig.resource,
+  from: 'ops.published_item_monitor_tasks t',
+  select: 't.id, t.publish_plan_id AS "publishPlanId", t.platform, t.platform_item_id AS "platformItemId", t.item_url AS "itemUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"',
+  idExpression: 't.id::text',
+  sortExpressions: { created_at: 't.created_at', updated_at: 't.updated_at', next_run_at: 't.next_run_at', platform_item_id: 't.platform_item_id', id: 't.id::text' },
+  conditions: (context, values, subjectId) => {
+    values.push(subjectId)
+    const conditions = ['t.created_at <= $1', 't.user_id = $2']
+    if (context.filters.q) { values.push(`%${context.filters.q}%`); conditions.push(`LOWER(t.platform_item_id) LIKE LOWER($${values.length})`) }
+    if (context.filters.status) { values.push(context.filters.status); conditions.push(`t.status = $${values.length}`) }
+    if (context.filters.platform_item_id) { values.push(context.filters.platform_item_id); conditions.push(`t.platform_item_id = $${values.length}`) }
+    if (context.filters.publish_plan_id) { values.push(context.filters.publish_plan_id); conditions.push(`t.publish_plan_id = $${values.length}`) }
     return conditions
   }
 })
@@ -1419,6 +1532,7 @@ async function revokeCollector(sql: Sql, clientId: string, userId?: string): Pro
 
 const monitorTaskColumns = `id, rule_json AS rule, rule_version AS "ruleVersion", status, interval_seconds AS "intervalSeconds", next_run_at AS "nextRunAt", created_at AS "createdAt", updated_at AS "updatedAt"`
 const sellerMonitorTaskColumns = `t.id, t.seller_id AS "sellerId", s.platform, s.platform_seller_id AS "platformSellerId", s.public_name AS "publicName", s.region, t.profile_url AS "profileUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"`
+const publishedItemMonitorTaskColumns = `t.id, t.publish_plan_id AS "publishPlanId", t.platform, t.platform_item_id AS "platformItemId", t.item_url AS "itemUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"`
 
 async function ownedMonitorTask(sql: Sql, userId: string, taskId: string) {
   return (await sql.query(`SELECT ${monitorTaskColumns} FROM ops.monitor_tasks WHERE id=$1 AND user_id=$2`, [taskId, userId])).rows[0]
@@ -1429,6 +1543,30 @@ async function ownedSellerMonitorTask(sql: Sql, userId: string, taskId: string) 
     FROM ops.seller_monitor_tasks t
     JOIN market.seller_profiles s ON s.id = t.seller_id
     WHERE t.id=$1 AND t.user_id=$2`, [taskId, userId])).rows[0]
+}
+
+async function ownedPublishedItemMonitorTask(sql: Sql, userId: string, taskId: string) {
+  return (await sql.query(`SELECT ${publishedItemMonitorTaskColumns}
+    FROM ops.published_item_monitor_tasks t
+    WHERE t.id=$1 AND t.user_id=$2`, [taskId, userId])).rows[0]
+}
+
+async function createPublishedItemMonitor(sql: Sql, userId: string, input: { platformItemId: string; itemUrl: string; publishPlanId?: string; status?: PublishedItemMonitorTaskStatus; intervalSeconds?: number }, upsert = false) {
+  if (input.publishPlanId) {
+    const plan = await sql.query('SELECT id,xianyu_item_id FROM supply.publish_plans WHERE id=$1 AND user_id=$2', [input.publishPlanId, userId])
+    if (!plan.rows[0]) throw new MonitorTaskRequestError('发布计划不存在', 400)
+    if (plan.rows[0].xianyu_item_id && String(plan.rows[0].xianyu_item_id) !== input.platformItemId) throw new MonitorTaskRequestError('发布计划与闲鱼商品 ID 不匹配')
+  }
+  const values = [randomUUID(), userId, input.publishPlanId ?? null, 'goofish', input.platformItemId, input.itemUrl, input.status ?? 'active', input.intervalSeconds ?? 1800]
+  const query = upsert
+    ? `INSERT INTO ops.published_item_monitor_tasks (id,user_id,publish_plan_id,platform,platform_item_id,item_url,status,interval_seconds,next_run_at,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),now(),now())
+       ON CONFLICT (user_id,platform,platform_item_id) DO UPDATE SET publish_plan_id=COALESCE(ops.published_item_monitor_tasks.publish_plan_id,EXCLUDED.publish_plan_id), item_url=EXCLUDED.item_url, updated_at=now()
+       RETURNING id`
+    : `INSERT INTO ops.published_item_monitor_tasks (id,user_id,publish_plan_id,platform,platform_item_id,item_url,status,interval_seconds,next_run_at,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),now(),now()) RETURNING id`
+  const inserted = await sql.query(query, values)
+  return ownedPublishedItemMonitorTask(sql, userId, String(inserted.rows[0]?.id ?? ''))
 }
 
 async function findOrCreateSellerProfile(sql: Sql, platform: string, platformSellerId: string): Promise<string> {
@@ -1489,6 +1627,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   const app = Fastify({ logger: false })
   installCors(app, options.allowedOrigins ?? [])
   const sellerProfileHosts = [...DEFAULT_SELLER_PROFILE_HOSTS, ...(options.sellerProfileHosts ?? [])]
+  const publishedItemHosts = [...DEFAULT_SELLER_PROFILE_HOSTS, ...(options.publishedItemHosts ?? [])]
   app.get('/health', async () => ({ service: 'user-api', ok: true }))
   app.post('/v1/auth/register', async (request, reply) => {
     const input = body<{ email?: string; password?: string }>(request.body); const email = input.email?.trim().toLowerCase()
@@ -1913,11 +2052,64 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
     if (!deleted.rows[0]) return fail(reply, 404, '竞品商家任务不存在')
     return { deleted: true }
   })
+  app.post('/v1/published-item-monitors', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = parsePublishedItemMonitorTaskInput(request.body, true, publishedItemHosts)
+      if (!input.platformItemId || !input.itemUrl) throw new MonitorTaskRequestError('发布商品目标无效')
+      const task = await createPublishedItemMonitor(sql, String(claims.sub), { platformItemId: input.platformItemId, itemUrl: input.itemUrl, publishPlanId: input.publishPlanId, status: input.status, intervalSeconds: input.intervalSeconds })
+      if (!task) throw new Error('发布商品任务创建失败')
+      return publishedItemMonitorTaskResponse(task)
+    } catch (error) {
+      if (error instanceof MonitorTaskRequestError) return fail(reply, error.status, error.message)
+      if (isUniqueViolation(error)) return fail(reply, 409, '该闲鱼商品已在发布监控列表中')
+      throw error
+    }
+  })
+  app.get('/v1/published-item-monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const task = taskId ? await ownedPublishedItemMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!task) return fail(reply, 404, '发布商品任务不存在')
+    return publishedItemMonitorTaskResponse(task)
+  })
+  app.patch('/v1/published-item-monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const existing = taskId ? await ownedPublishedItemMonitorTask(sql, String(claims.sub), taskId) : undefined
+    if (!existing) return fail(reply, 404, '发布商品任务不存在')
+    try {
+      const input = parsePublishedItemMonitorTaskInput(request.body, false, publishedItemHosts)
+      if (input.intervalSeconds === undefined && input.status === undefined) throw new MonitorTaskRequestError('至少更新一个任务字段')
+      const status = input.status ?? String(existing.status) as PublishedItemMonitorTaskStatus
+      const updated = await sql.query(`UPDATE ops.published_item_monitor_tasks
+        SET interval_seconds=$1,status=$2,rule_version=rule_version+1,next_run_at=now(),updated_at=now()
+        WHERE id=$3 AND user_id=$4 RETURNING id`, [input.intervalSeconds ?? Number(existing.intervalSeconds), status, taskId, claims.sub])
+      if (!updated.rows[0]) return fail(reply, 404, '发布商品任务不存在')
+      const task = await ownedPublishedItemMonitorTask(sql, String(claims.sub), taskId)
+      return publishedItemMonitorTaskResponse(task as Record<string, unknown>)
+    } catch (error) {
+      if (error instanceof MonitorTaskRequestError) return fail(reply, error.status, error.message)
+      throw error
+    }
+  })
+  app.delete('/v1/published-item-monitors/:taskId', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    const taskId = String((request.params as { taskId?: string }).taskId ?? '')
+    const deleted = taskId ? await sql.query('DELETE FROM ops.published_item_monitor_tasks WHERE id=$1 AND user_id=$2 RETURNING id', [taskId, claims.sub]) : { rows: [] }
+    if (!deleted.rows[0]) return fail(reply, 404, '发布商品任务不存在')
+    return { deleted: true }
+  })
   registerListEndpoint(app, ['/v1/market/items'], sql, domains.user, 'user', marketItemsListConfig, marketItemsPlan(marketItemsListConfig.resource, true), 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/materials'], sql, domains.user, 'user', userSupplyMaterialsListConfig, userSupplyMaterialsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/supply/publish-plans'], sql, domains.user, 'user', userSupplyPublishPlansListConfig, userSupplyPublishPlansPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/monitors'], sql, domains.user, 'user', userMonitorsListConfig, userMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/seller-monitors'], sql, domains.user, 'user', userSellerMonitorsListConfig, userSellerMonitorsPlan, 401, '未授权')
+  registerListEndpoint(app, ['/v1/published-item-monitors'], sql, domains.user, 'user', userPublishedItemMonitorsListConfig, userPublishedItemMonitorsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/sellers', '/v1/market/sellers'], sql, domains.user, 'user', userSellersListConfig, userSellersPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/discoveries', '/v1/market/discoveries'], sql, domains.user, 'user', userDiscoveriesListConfig, userInsightPlan(userDiscoveriesListConfig.resource), 401, '未授权')
   registerListEndpoint(app, ['/v1/events', '/v1/market/events'], sql, domains.user, 'user', userEventsListConfig, userEventsPlan, 401, '未授权')
@@ -2376,6 +2568,16 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
         if (inserted.rows[0]) {
           const nextPlanStatus = status === 'succeeded' ? 'published' : status === 'failed' ? 'planned' : 'failed'
           await sql.query(`UPDATE supply.publish_plans SET status=$1,retry_count=retry_count+$2,last_error_code=$3,last_error_message=$4,xianyu_item_id=$5,xianyu_url=$6,claimed_by_client_id=NULL,claimed_at=NULL,updated_at=now() WHERE id=$7 AND user_id=$8`, [nextPlanStatus, status === 'failed' ? 1 : 0, result.errorCode ?? null, result.errorMessage ?? null, result.xianyuItemId ?? null, result.xianyuUrl ?? null, planId, client.user_id])
+          const publishedItemId = typeof result.xianyuItemId === 'string' ? result.xianyuItemId.trim().slice(0, 128) : ''
+          if (status === 'succeeded' && /^[A-Za-z0-9._-]+$/.test(publishedItemId)) {
+            await createPublishedItemMonitor(sql, client.user_id, {
+              platformItemId: publishedItemId,
+              itemUrl: canonicalPublishedItemUrl(publishedItemId),
+              publishPlanId: planId,
+              status: 'active',
+              intervalSeconds: 1_800
+            }, true)
+          }
         }
         accepted.push({ planId, attemptKey, duplicate: !inserted.rows[0] })
       }
@@ -2400,7 +2602,11 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
         WHERE t.user_id=$1 AND t.updated_at <= $2::timestamptz
           AND (t.status = 'paused' OR t.active_slot <= ${MAX_ACTIVE_SELLER_TASKS})
         ORDER BY CASE t.status WHEN 'active' THEN 0 ELSE 1 END ASC, t.next_run_at ASC, t.id ASC`, [client.user_id, snapshotAt])
-      return { items: [...searchTasks.rows, ...sellerTasks.rows], snapshotAt, taskLimit: entitlements.taskLimit, sellerTaskLimit: MAX_ACTIVE_SELLER_TASKS }
+      const publishedItemTasks = await sql.query(`SELECT t.id, 'published_item' AS kind, t.publish_plan_id AS "publishPlanId", t.platform, t.platform_item_id AS "platformItemId", t.item_url AS "itemUrl", t.rule_version AS "ruleVersion", t.status, t.interval_seconds AS "intervalSeconds", t.next_run_at AS "nextRunAt", t.created_at AS "createdAt", t.updated_at AS "updatedAt"
+        FROM ops.published_item_monitor_tasks t
+        WHERE t.user_id=$1 AND t.updated_at <= $2::timestamptz
+        ORDER BY CASE t.status WHEN 'active' THEN 0 ELSE 1 END ASC, t.next_run_at ASC, t.id ASC`, [client.user_id, snapshotAt])
+      return { items: [...searchTasks.rows, ...sellerTasks.rows, ...publishedItemTasks.rows], snapshotAt, taskLimit: entitlements.taskLimit, sellerTaskLimit: MAX_ACTIVE_SELLER_TASKS }
     } catch (error) {
       return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足')
     }

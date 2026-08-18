@@ -19,7 +19,7 @@
     "test:phase3:supply": "node --experimental-strip-types tools/phase3/supply-publish-claim-integration.mjs",
     "test:phase4:supply": "node --experimental-strip-types tools/phase3/supply-publish-claim-integration.mjs",
     "test:phase4:cloud": "node --experimental-strip-types tools/phase4/cloud-task-integration.mjs",
-    "test:phase5:cloud": "node --experimental-strip-types tools/phase5/cloud-seller-monitor-integration.mjs",
+    "test:phase5:cloud": "node --experimental-strip-types tools/phase5/cloud-seller-monitor-integration.mjs && node --experimental-strip-types tools/phase5/cloud-published-item-monitor-integration.mjs",
     "test:phase3:desktop": "npm run build && node --experimental-strip-types tools/phase3/electron-runtime-smoke.mjs",
     "test:phase4:desktop": "npm run build && node --experimental-strip-types tools/phase4/electron-collector-runtime.mjs",
     "test:phase5:desktop": "npm run build && node --experimental-strip-types tools/phase5/electron-seller-runtime.mjs",
