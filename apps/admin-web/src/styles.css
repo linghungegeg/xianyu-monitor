@@ -85,6 +85,7 @@ button:disabled { cursor: not-allowed; }
 .primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
 .heading i { display: none; }
 .remember-password { display: flex !important; grid-template-columns: auto 1fr; align-items: center; gap: 8px; color: #64748b !important; font-weight: 400 !important; }
+.auth-form .remember-password { justify-content: flex-end; }
 .remember-password input { width: 15px; height: 15px; accent-color: #2563eb; }
 .settings-panel { overflow: hidden; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; box-shadow: 0 1px 3px #0f172a0a; }
 .settings-tabs { display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid #e2e8f0; }

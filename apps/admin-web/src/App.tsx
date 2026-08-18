@@ -157,8 +157,28 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (account.trim().length < 6 || account.trim().length > 20 || password.length < 6 || password.length > 20) {
-      setMessage('账号和密码均需为 6-20 个字符')
+    if (!account.trim()) {
+      setMessage('请输入账号')
+      return
+    }
+    if (account.trim().length < 6) {
+      setMessage('账号不低于6位')
+      return
+    }
+    if (account.trim().length > 20) {
+      setMessage('账号不超过20位')
+      return
+    }
+    if (!password) {
+      setMessage('请输入密码')
+      return
+    }
+    if (password.length < 6) {
+      setMessage('密码不低于6位')
+      return
+    }
+    if (password.length > 20) {
+      setMessage('密码不超过20位')
       return
     }
     setSubmitting(true)
@@ -177,8 +197,8 @@ function LoginPage({ error, onAuthenticated, onEnterDemo }: { error: string | nu
 
   return <AuthFrame title="管理员登录" detail="使用管理账号继续。">
     <form className="auth-form" onSubmit={submit}>
-      <label>账号<input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} required minLength={6} maxLength={20} /></label>
-      <label>密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} maxLength={20} type="password" /></label>
+      <label>账号<input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} /></label>
+      <label>密码<input autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" required minLength={6} maxLength={20} type="password" /></label>
       <label className="remember-password"><input checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} type="checkbox" /><span>记住账号和密码</span></label>
       {message && <p className="auth-error" role="alert">{message}</p>}
       <button className="primary auth-submit" disabled={submitting} type="submit"><ShieldCheck size={16} />{submitting ? '正在登录' : '登录'}</button>

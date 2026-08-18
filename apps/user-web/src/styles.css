@@ -74,6 +74,7 @@ button:disabled { cursor: not-allowed; }
 .filter-bar { border-color: #e2e8f0; border-radius: 6px; }
 .primary { background: #2563eb; border-color: #2563eb; box-shadow: none; }
 .primary:hover { background: #1d4ed8; }
+.auth-panel .remember-password { justify-content: flex-end; }
 @media (max-width: 720px) { .topbar { padding: 0 15px; }.content { padding: 20px 15px 30px; } }
 
 /* Workspace chrome follows the reference product's header, tabs and dense page rhythm. */
