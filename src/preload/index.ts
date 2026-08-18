@@ -9,6 +9,7 @@ const api = {
     pause: () => ipcRenderer.invoke('launcher:pause'),
     openChrome: () => ipcRenderer.invoke('launcher:open-chrome'),
     unbind: () => ipcRenderer.invoke('launcher:unbind'),
+    logout: () => ipcRenderer.invoke('launcher:logout'),
     logs: () => ipcRenderer.invoke('launcher:logs'),
     onStatus: (listener: (status: LauncherStatus) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, status: LauncherStatus): void => listener(status)

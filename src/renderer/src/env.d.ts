@@ -10,6 +10,7 @@ declare global {
         pause: () => Promise<void>
         openChrome: () => Promise<void>
         unbind: () => Promise<void>
+        logout: () => Promise<void>
         logs: () => Promise<LauncherLog[]>
         onStatus: (listener: (status: LauncherStatus) => void) => () => void
       }

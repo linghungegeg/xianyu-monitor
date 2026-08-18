@@ -415,6 +415,11 @@ td strong { color: #2f3b43; }
 .announcement-body h3 { margin: 0 0 8px; color: #1e293b; font-size: 14px; }
 .announcement-body p { margin: 0; color: #64748b; white-space: pre-wrap; line-height: 1.7; font-size: 13px; }
 .announcement-modal footer { display: flex; align-items: center; justify-content: space-between; }
+.announcement-list { display: grid; gap: 8px; }
+.announcement-summary { display: grid; gap: 5px; width: 100%; padding: 12px; text-align: left; color: #334155; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; }
+.announcement-summary:hover { border-color: #bfdbfe; background: #f8fbff; }
+.announcement-summary strong { font-size: 13px; }
+.announcement-summary span { overflow: hidden; color: #64748b; font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .status.failed { color: #b42318; border-color: #fecdca; background: #fff1f0; }
 .supply-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .supply-edit-grid .modal-field { min-width: 0; }

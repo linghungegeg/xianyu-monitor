@@ -85,6 +85,8 @@ async function run() {
     await db.query(`INSERT INTO identity.admin_users (id,email_normalized,password_hash,role,status,mfa_state,created_at) VALUES ($1,'admin-phase6@example.test',$2,'owner','active','enrolled',now())`, [randomUUID(), await hashPassword('p6-admin-123456')])
     const adminLogin = await adminApi.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'admin-phase6@example.test', password: 'p6-admin-123456' } })
     assert(adminLogin.statusCode === 200, 'Admin 登录失败')
+    const sessionTtls = await db.query("SELECT subject_type,EXTRACT(EPOCH FROM (expires_at-created_at))::int AS ttl FROM identity.auth_refresh_sessions WHERE subject_type IN ('user','admin','collector')")
+    assert(['user', 'admin', 'collector'].every((kind) => sessionTtls.rows.some((row) => row.subject_type === kind && Number(row.ttl) === 43_200)), '三端登录会话未统一为 12 小时')
     const uploads = await adminApi.inject({ method: 'GET', url: `/v1/admin/uploads?limit=20&user_id=${encodeURIComponent(userId)}&sort=received_at&order=desc`, headers: auth(json(adminLogin).accessToken) })
     assert(uploads.statusCode === 200 && json(uploads).items.length >= 2 && json(uploads).items.some((item) => item.receivedCount === 4 && typeof item.userId === 'string' && typeof item.clientId === 'string'), `Admin 上传审计字段或用户筛选失败: ${uploads.body}`)
     const itemAudit = await adminApi.inject({ method: 'GET', url: '/v1/admin/uploads?limit=20&item_id=item-phase6&sort=received_at&order=desc', headers: auth(json(adminLogin).accessToken) })

@@ -372,6 +372,13 @@ export class XianyuMonitor {
     }
   }
 
+  logout(): void {
+    this.pause()
+    this.clearSession()
+    this.db.addLog('info', '已退出登录')
+    this.updateStatus('signed-out', '已退出登录', false)
+  }
+
   async shutdown(): Promise<void> {
     this.pause()
     if (this.context) await this.context.close().catch(() => undefined)

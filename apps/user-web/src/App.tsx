@@ -1112,6 +1112,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [announcementOpen, setAnnouncementOpen] = useState(false)
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
   const listKind: RowKind | null = active === 'market' ? 'pool' : active === 'dynamic' ? dynamicView : active === 'ai' ? 'ai' : null
@@ -1258,7 +1259,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
             <span>{activePage.label}</span>
           </div>
           <div className="header-tools">
-            <button className="icon-button notification" title="查看动态" onClick={() => switchPage('dynamic')}>
+            <button className="icon-button notification" title="查看公告" onClick={() => setAnnouncementOpen(true)}>
               <Bell size={18} />
             </button>
             <div className="header-profile">
@@ -1324,64 +1325,51 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
         </main>
       </section>
       {drawer && (drawer.market ? <MarketItemDetail api={api} mode={runtime.mode} row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} onOpenEvents={openItemEvents} /> : <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />)}
-      <AnnouncementModal api={api} mode={runtime.mode} />
+      <AnnouncementModal api={api} mode={runtime.mode} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} />
     </div>
   )
 }
 
-function AnnouncementModal({ api, mode }: { api: UserApiClient; mode: 'demo' | 'api' }): ReactNode {
-  const [items, setItems] = useState<UserAnnouncement[]>([])
-  const [open, setOpen] = useState(false)
-  const todayKey = `xianyu-user-web.announcement-dismissed.${new Date().toISOString().slice(0, 10)}`
+function AnnouncementModal({ api, mode, open, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; open: boolean; onClose: () => void }): ReactNode {
+  const [page, setPage] = useState<UserPage<UserAnnouncement>>({ items: [], total: 0, nextCursor: null, hasMore: false })
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [history, setHistory] = useState<Array<string | null>>([])
+  const [selected, setSelected] = useState<UserAnnouncement | null>(null)
+  const [loading, setLoading] = useState(false)
   useEffect(() => {
-    if (mode === 'demo' || localStorage.getItem(todayKey)) return
+    if (!open) return
+    if (mode === 'demo') {
+      setPage({ items: [], total: 0, nextCursor: null, hasMore: false })
+      return
+    }
     const controller = new AbortController()
-    void api
-      .listAnnouncements(controller.signal)
-      .then((result) => {
-        if (result.length) {
-          setItems(result)
-          setOpen(true)
-        }
-      })
-      .catch(() => undefined)
+    setLoading(true)
+    void api.listAnnouncements({ limit: 10, cursor, sort: 'starts_at', filters: {} }, controller.signal).then(setPage).catch(() => setPage({ items: [], total: 0, nextCursor: null, hasMore: false })).finally(() => setLoading(false))
     return () => controller.abort()
-  }, [api, mode, todayKey])
-  if (!open || !items.length) return null
+  }, [api, cursor, mode, open])
+  useEffect(() => {
+    if (!open) {
+      setCursor(null)
+      setHistory([])
+      setSelected(null)
+    }
+  }, [open])
+  if (!open) return null
   return (
     <div className="modal-layer announcement-layer">
-      <button className="modal-backdrop" aria-label="关闭公告" onClick={() => setOpen(false)} />
+      <button className="modal-backdrop" aria-label="关闭公告" onClick={onClose} />
       <section className="modal-shell announcement-modal" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
         <header>
           <div>
-            <p className="eyebrow">系统公告</p>
-            <h2 id="announcement-title">{items[0].title}</h2>
+            <h2 id="announcement-title">{selected?.title ?? '公告'}</h2>
           </div>
-          <button className="icon-button" title="关闭" onClick={() => setOpen(false)}>
+          <button className="icon-button" title="关闭" onClick={onClose}>
             <X size={18} />
           </button>
         </header>
-        <div className="modal-body announcement-body">
-          {items.map((item) => (
-            <article key={item.id}>
-              <h3>{item.title}</h3>
-              <p>{item.body}</p>
-            </article>
-          ))}
-        </div>
+        {selected ? <div className="modal-body announcement-body"><article><p>{selected.body}</p></article></div> : <div className="modal-body announcement-body announcement-list">{loading ? <p>正在加载</p> : page.items.length ? page.items.map((item) => <button className="announcement-summary" key={item.id} onClick={() => setSelected(item)}><strong>{item.title}</strong><span>{item.body.slice(0, 72)}{item.body.length > 72 ? '...' : ''}</span></button>) : <p>暂无公告</p>}</div>}
         <footer>
-          <label className="remember-password">
-            <input
-              type="checkbox"
-              onChange={(event) => {
-                if (event.target.checked) localStorage.setItem(todayKey, '1')
-              }}
-            />
-            <span>今日不再查看</span>
-          </label>
-          <button className="primary" onClick={() => setOpen(false)}>
-            我知道了
-          </button>
+          {selected ? <button className="secondary" onClick={() => setSelected(null)}>返回列表</button> : <><button className="secondary" disabled={!history.length} onClick={() => { setCursor(history[history.length - 1] ?? null); setHistory((items) => items.slice(0, -1)) }}><ChevronLeft size={16} />上一页</button><button className="secondary" disabled={!page.hasMore || !page.nextCursor} onClick={() => { if (!page.nextCursor) return; setHistory((items) => [...items, cursor]); setCursor(page.nextCursor) }}>下一页<ChevronRight size={16} /></button></>}
         </footer>
       </section>
     </div>

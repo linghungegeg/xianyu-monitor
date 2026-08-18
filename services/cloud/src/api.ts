@@ -16,9 +16,11 @@ export type ApiOptions = {
 type UserRow = { id: string; email_normalized: string; password_hash: string; status: string }
 type SessionRow = { id: string; subject_type: SubjectKind; subject_id: string; family_id: string | null; revoked_at: string | null; expires_at: string }
 
+const AUTH_SESSION_TTL = '12 hours'
+
 type ListOrder = 'asc' | 'desc'
 type ListFilters = Record<string, string>
-type ListConfig = { resource: string; defaultSort: string; sortAliases: Record<string, string>; filterAliases: Record<string, string>; allowedFilters: readonly string[] }
+type ListConfig = { resource: string; defaultSort: string; sortAliases: Record<string, string>; filterAliases: Record<string, string>; allowedFilters: readonly string[]; allowedLimits?: readonly number[] }
 type ParsedListQuery = { limit: number; cursor?: string; sort: string; order: ListOrder; filters: ListFilters; filterHash: string }
 type CursorPayload = { v: 1; resource: string; filterHash: string; sort: string; order: ListOrder; snapshot: string; key: [string, string] }
 type SnapshotPayload = { v: 1; resource: string; at: string }
@@ -833,8 +835,9 @@ function parseFilterObject(value: unknown): Record<string, unknown> {
 function parseListQuery(raw: unknown, config: ListConfig): ParsedListQuery {
   const query = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const limitValue = scalarQueryValue(query.limit, 'limit')
-  const limit = limitValue === undefined ? 50 : Number(limitValue)
-  if (!Number.isInteger(limit) || ![20, 50, 100].includes(limit)) throw new ListRequestError('INVALID_QUERY', 'limit 只允许 20、50 或 100')
+  const allowedLimits = config.allowedLimits ?? [20, 50, 100]
+  const limit = limitValue === undefined ? (config.allowedLimits ? allowedLimits[0] : 50) : Number(limitValue)
+  if (!Number.isInteger(limit) || !allowedLimits.includes(limit)) throw new ListRequestError('INVALID_QUERY', `limit 只允许 ${allowedLimits.join('、')}`)
 
   const sortValue = scalarQueryValue(query.sort, 'sort') ?? config.defaultSort
   const sort = config.sortAliases[sortValue]
@@ -1053,6 +1056,7 @@ const userAnnouncementsListConfig: ListConfig = {
   defaultSort: 'starts_at',
   sortAliases: { starts_at: 'starts_at', updated_at: 'updated_at', recent: 'starts_at', id: 'id' },
   filterAliases: {},
+  allowedLimits: [10],
   allowedFilters: []
 }
 
@@ -1723,7 +1727,7 @@ async function listAdminUsers(sql: Sql, context: ListContext, secret: string) {
 async function issue(sql: Sql, domain: TokenDomain, kind: SubjectKind, subjectId: string, clientId?: string, familyId: string = randomUUID(), rotatedFromId?: string) {
   const sessionId = randomUUID(); const refresh = createRefreshToken()
   await sql.query(`INSERT INTO identity.auth_refresh_sessions (id, subject_type, subject_id, token_hash, family_id, expires_at, created_at)
-    VALUES ($1,$2,$3,$4,$5,now() + interval '30 days',now())`, [sessionId, kind, subjectId, refresh.hash, familyId])
+    VALUES ($1,$2,$3,$4,$5,now() + interval '${AUTH_SESSION_TTL}',now())`, [sessionId, kind, subjectId, refresh.hash, familyId])
   if (rotatedFromId) await sql.query('UPDATE identity.auth_refresh_sessions SET rotated_from_id = $1 WHERE id = $2', [rotatedFromId, sessionId])
   return { accessToken: await signAccessToken(domain, kind, subjectId, sessionId, clientId), refreshToken: refresh.token }
 }
@@ -1734,10 +1738,10 @@ async function rotateRefresh(sql: Sql, domain: TokenDomain, kind: SubjectKind, s
       UPDATE identity.auth_refresh_sessions
       SET revoked_at = now(), last_used_at = now()
       WHERE id = $1 AND revoked_at IS NULL
-      RETURNING COALESCE(family_id, id) AS family_id
+      RETURNING COALESCE(family_id, id) AS family_id, expires_at
     )
     INSERT INTO identity.auth_refresh_sessions (id, subject_type, subject_id, token_hash, family_id, rotated_from_id, expires_at, created_at)
-    SELECT $2,$3,$4,$5,old_session.family_id,$1,now() + interval '30 days',now()
+    SELECT $2,$3,$4,$5,old_session.family_id,$1,old_session.expires_at,now()
     FROM old_session
     RETURNING id`, [session.id, sessionId, kind, session.subject_id, refresh.hash])
   if (!rotated.rows[0]) {

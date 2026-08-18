@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent, type JSX } from 'react'
-import { Chrome, CircleAlert, CircleCheck, KeyRound, LoaderCircle, LogIn, Pause, Play, ShieldCheck, Unplug } from 'lucide-react'
+import { Chrome, CircleAlert, CircleCheck, KeyRound, LoaderCircle, LogIn, LogOut, Pause, Play, ShieldCheck } from 'lucide-react'
 import type { LauncherLog, LauncherStatus } from '../../shared/types'
 
 const initialStatus: LauncherStatus = {
@@ -152,7 +152,7 @@ export default function App(): JSX.Element {
           {running
             ? <button className="primary-button" type="button" disabled={busy} onClick={() => void run(() => window.xianyu.launcher.pause())}><Pause size={17} />暂停采集</button>
             : <button className="primary-button" type="button" disabled={busy || !canStart} onClick={() => void run(() => window.xianyu.launcher.start())}>{busy ? <LoaderCircle className="spin" size={17} /> : <Play size={17} />}启动采集</button>}
-          <button className="icon-button danger" title="解绑本机设备" type="button" disabled={busy} onClick={() => void run(() => window.xianyu.launcher.unbind())}><Unplug size={18} /></button>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => void run(() => window.xianyu.launcher.logout())}><LogOut size={17} />退出登录</button>
         </div>
       </section></>
 

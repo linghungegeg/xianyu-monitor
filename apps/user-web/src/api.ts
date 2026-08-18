@@ -492,9 +492,8 @@ export class UserApiClient {
     return this.request<UserAiJob>('/v1/ai/jobs', { method: 'POST', body: JSON.stringify(input) })
   }
 
-  async listAnnouncements(signal?: AbortSignal): Promise<UserAnnouncement[]> {
-    const result = await this.request<{ items: UserAnnouncement[] }>('/v1/announcements?limit=20&sort=starts_at&order=desc', { method: 'GET', signal })
-    return result.items
+  async listAnnouncements(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<UserAnnouncement>> {
+    return this.listPath<UserAnnouncement>('/v1/announcements', input, signal)
   }
 
   async list<T>(resource: UserListResource, input: UserListRequest, signal?: AbortSignal): Promise<UserPage<T>> {

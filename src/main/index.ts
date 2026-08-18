@@ -92,6 +92,7 @@ function registerIpc(): void {
   ipcMain.handle('launcher:pause', () => monitor?.pause())
   ipcMain.handle('launcher:open-chrome', () => monitor?.openLogin())
   ipcMain.handle('launcher:unbind', () => monitor?.unbind())
+  ipcMain.handle('launcher:logout', () => monitor?.logout())
   ipcMain.handle('launcher:logs', () => database?.listLogs() ?? [])
 }
 

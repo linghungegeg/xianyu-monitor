@@ -142,8 +142,14 @@ async function run() {
     assert(announcement.statusCode === 200, `创建全局公告失败: ${announcement.body}`)
     const personalAnnouncement = await adminApi.inject({ method: 'POST', url: '/v1/admin/announcements', headers: auth(adminAccess), payload: { title: '个人公告', body: '仅当前用户可见', scope: 'personal', userId: user, enabled: true } })
     assert(personalAnnouncement.statusCode === 200, `创建个人公告失败: ${personalAnnouncement.body}`)
-    const announcements = await userApi.inject({ method: 'GET', url: '/v1/announcements?limit=20&sort=starts_at&order=desc', headers: auth(userAccess) })
+    const announcements = await userApi.inject({ method: 'GET', url: '/v1/announcements?limit=10&sort=starts_at&order=desc', headers: auth(userAccess) })
     assert(announcements.statusCode === 200 && json(announcements).items.length === 2 && json(announcements).page.total === 2 && json(announcements).page.nextCursor === null && !announcements.body.includes(user), `User 公告读取范围错误: ${announcements.body}`)
+    for (let index = 0; index < 9; index += 1) {
+      const extra = await adminApi.inject({ method: 'POST', url: '/v1/admin/announcements', headers: auth(adminAccess), payload: { title: `分页公告 ${index}`, body: `公告摘要 ${index}`, scope: 'global', enabled: true } })
+      assert(extra.statusCode === 200, `分页公告创建失败: ${extra.body}`)
+    }
+    const announcementPage = await userApi.inject({ method: 'GET', url: '/v1/announcements?limit=10&sort=starts_at&order=desc', headers: auth(userAccess) })
+    assert(announcementPage.statusCode === 200 && json(announcementPage).items.length === 10 && json(announcementPage).page.total === 11 && json(announcementPage).page.hasMore && typeof json(announcementPage).page.nextCursor === 'string', `User 公告分页合同错误: ${announcementPage.body}`)
 
     const userConfig = await userApi.inject({ method: 'GET', url: '/v1/admin/ai', headers: auth(userAccess) })
     const userAdminConfig = await adminApi.inject({ method: 'GET', url: '/v1/admin/ai', headers: auth(userAccess) })
@@ -205,7 +211,7 @@ async function run() {
     const adminUploads = await adminApi.inject({ method: 'GET', url: `/v1/admin/uploads?limit=20&user_id=${encodeURIComponent(user)}`, headers: auth(adminAccess) })
     assert(adminUploads.statusCode === 200 && json(adminUploads).items.some((item) => item.userAccount === 'phase7-user@example.test' && item.userId === user), `Admin 上传批次用户字段缺失: ${adminUploads.body}`)
     const adminAnnouncements = await adminApi.inject({ method: 'GET', url: '/v1/admin/announcements?limit=20&enabled=true', headers: auth(adminAccess) })
-    assert(adminAnnouncements.statusCode === 200 && json(adminAnnouncements).page.total === 2, `Admin 公告查询失败: ${adminAnnouncements.body}`)
+    assert(adminAnnouncements.statusCode === 200 && json(adminAnnouncements).page.total === 11, `Admin 公告查询失败: ${adminAnnouncements.body}`)
     const announcementUpdate = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/announcements/${json(announcement).id}`, headers: auth(adminAccess), payload: { title: '系统公告（已更新）' } })
     assert(announcementUpdate.statusCode === 200 && json(announcementUpdate).title === '系统公告（已更新）', `Admin 公告更新失败: ${announcementUpdate.body}`)
     const disabledUser = await adminApi.inject({ method: 'PATCH', url: `/v1/admin/users/${encodeURIComponent(user)}/status`, headers: auth(adminAccess), payload: { enabled: false } })
