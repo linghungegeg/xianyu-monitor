@@ -1,4 +1,4 @@
-import { argon2, createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose'
 
 export type SubjectKind = 'user' | 'admin' | 'collector'
@@ -35,10 +35,10 @@ export function decryptProviderKey(value: string | null, secret: string): string
 }
 
 const textEncoder = new TextEncoder()
-const argon2Memory = 65_536
-const argon2Passes = 3
-const argon2Parallelism = 1
-const argon2TagLength = 32
+const scryptCost = 16_384
+const scryptBlockSize = 8
+const scryptParallelism = 1
+const passwordKeyLength = 32
 
 function secretKey(secret: string): Uint8Array {
   if (Buffer.byteLength(secret) < 32) throw new Error('令牌密钥至少需要 32 字节')
@@ -57,19 +57,20 @@ export async function hashPassword(password: string): Promise<string> {
   if (password.length < 6 || password.length > 20) throw new Error('密码需要 6 到 20 个字符')
   const salt = randomBytes(16)
   const derived = await new Promise<Buffer>((resolve, reject) => {
-    argon2('argon2id', { message: password, nonce: salt, memory: argon2Memory, passes: argon2Passes, parallelism: argon2Parallelism, tagLength: argon2TagLength }, (error, key) => error ? reject(error) : resolve(Buffer.from(key)))
+    scrypt(password, salt, passwordKeyLength, { N: scryptCost, r: scryptBlockSize, p: scryptParallelism }, (error, key) => error ? reject(error) : resolve(Buffer.from(key)))
   })
-  return `argon2id$v=1$m=${argon2Memory},t=${argon2Passes},p=${argon2Parallelism}$${encode(salt)}$${encode(derived)}`
+  return `scrypt$v=1$N=${scryptCost},r=${scryptBlockSize},p=${scryptParallelism}$${encode(salt)}$${encode(derived)}`
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [algorithm, version, parameters, saltValue, hashValue] = stored.split('$')
-  if (algorithm !== 'argon2id' || version !== 'v=1' || !parameters || !saltValue || !hashValue) return false
-  const matches = /^m=(\d+),t=(\d+),p=(\d+)$/.exec(parameters)
+  if (algorithm !== 'scrypt' || version !== 'v=1' || !parameters || !saltValue || !hashValue) return false
+  const matches = /^N=(\d+),r=(\d+),p=(\d+)$/.exec(parameters)
   if (!matches) return false
+  if (Number(matches[1]) !== scryptCost || Number(matches[2]) !== scryptBlockSize || Number(matches[3]) !== scryptParallelism) return false
   const expected = decode(hashValue)
   const derived = await new Promise<Buffer>((resolve, reject) => {
-    argon2('argon2id', { message: password, nonce: decode(saltValue), memory: Number(matches[1]), passes: Number(matches[2]), parallelism: Number(matches[3]), tagLength: expected.length }, (error, key) => error ? reject(error) : resolve(Buffer.from(key)))
+    scrypt(password, decode(saltValue), expected.length, { N: Number(matches[1]), r: Number(matches[2]), p: Number(matches[3]) }, (error, key) => error ? reject(error) : resolve(Buffer.from(key)))
   })
   return derived.length === expected.length && timingSafeEqual(derived, expected)
 }
