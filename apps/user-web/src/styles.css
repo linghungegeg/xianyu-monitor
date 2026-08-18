@@ -320,7 +320,7 @@ td strong { color: #2f3b43; }
 .auth-shell { background: #f5f6f7; }
 .auth-panel { width: min(408px, 100%); padding: 36px; border: 1px solid #e1e5e7; border-radius: 8px; box-shadow: 0 12px 30px rgba(30, 39, 44, .08); }
 .auth-brand { margin-bottom: 42px; color: #27313b; }
-.auth-brand .brand-mark { color: #20282d; background: #f4bd43; }
+.auth-brand .brand-mark { color: #fff; background: #2563eb; }
 .auth-heading h1 { margin: 0; color: #222c34; font-size: 25px; }
 .auth-copy { margin: 9px 0 27px; color: #7b858c; }
 .auth-panel input { border-color: #d8dfe2; }
