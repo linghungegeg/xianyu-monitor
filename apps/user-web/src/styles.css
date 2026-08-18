@@ -267,3 +267,17 @@ td strong { color: #2f3b43; }
 .collapse-button { color: #94a3b8; }.collapse-button:hover { color: #fff; background: rgba(255,255,255,.08); }
 .primary { background: #3b82f6; border-color: #3b82f6; }.primary:hover { background: #2563eb; }
 .page-heading .eyebrow { color: #2563eb; }
+
+/* Match the reference light sidebar: compact, flat, and blue only for the active row. */
+.sidebar { width: 224px; background: #fff; color: #475569; border-right: 1px solid #e2e8f0; box-shadow: none; }
+.sidebar-collapsed .sidebar { width: 64px; }
+.brand { height: 56px; padding: 0 16px; color: #0f172a; border-bottom-color: #e2e8f0; }
+.brand-mark { color: #fff; background: #2563eb; }
+.sidebar nav { padding: 12px 8px; gap: 2px; }
+.nav-item { min-height: 40px; padding: 0 12px; color: #475569; border-radius: 6px; }
+.nav-item:hover { color: #0f172a; background: #f1f5f9; }
+.nav-item.active { color: #fff; background: #2563eb; }
+.sidebar-foot { padding: 8px; border-top-color: #e2e8f0; }
+.collapse-button { color: #64748b; }.collapse-button:hover { color: #0f172a; background: #f1f5f9; }
+.main-shell { margin-left: 224px; }.sidebar-collapsed .main-shell { margin-left: 64px; }
+@media (max-width: 720px) { .sidebar, .sidebar-collapsed .sidebar { width: 224px; }.main-shell, .sidebar-collapsed .main-shell { margin-left: 0; } }

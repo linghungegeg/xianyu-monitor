@@ -77,3 +77,17 @@ button:disabled { cursor: not-allowed; }
 .side-foot { border-top-color: rgba(255,255,255,.08); }.side-account { color: #fff; }.side-account > span { color: #dbeafe; background: #1d4ed8; }.side-account strong { color: #fff; }.side-account small { color: #94a3b8; }
 .collapse-button { color: #94a3b8; }.collapse-button:hover { color: #fff; background: rgba(255,255,255,.08); }
 .primary { background: #3b82f6; border-color: #3b82f6; }.primary:hover { background: #2563eb; border-color: #2563eb; }
+
+/* Match the reference light sidebar: compact, flat, and blue only for the active row. */
+.sidebar { width: 224px; background: #fff; color: #475569; border-right: 1px solid #e2e8f0; box-shadow: none; }
+.collapsed .sidebar { width: 64px; }
+.brand { height: 56px; padding: 0 16px; color: #0f172a; border-bottom-color: #e2e8f0; }
+.brand span { color: #fff; background: #2563eb; }
+.sidebar nav { padding: 12px 8px; gap: 2px; }
+.sidebar nav button { min-height: 40px; padding: 0 12px; color: #475569; border-radius: 6px; }
+.sidebar nav button:hover { color: #0f172a; background: #f1f5f9; }
+.sidebar nav button.active { color: #fff; background: #2563eb; }
+.side-foot { padding: 8px; border-top-color: #e2e8f0; }.side-account { color: #0f172a; }.side-account > span { color: #1d4ed8; background: #dbeafe; }.side-account strong { color: #0f172a; }
+.collapse-button { color: #64748b; }.collapse-button:hover { color: #0f172a; background: #f1f5f9; }
+.main { margin-left: 224px; }.collapsed .main { margin-left: 64px; }
+@media (max-width: 720px) { .sidebar, .collapsed .sidebar { width: 224px; }.main, .collapsed .main { margin-left: 0; } }
