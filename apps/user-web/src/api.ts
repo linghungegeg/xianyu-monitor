@@ -58,6 +58,20 @@ export type SupplyImportResult = {
   duplicate: boolean
 }
 
+export type SupplyMigrationRequest = {
+  id: string
+  sourceKind: 'market_item' | 'published_item' | 'public_url'
+  platform: 'goofish'
+  platformItemId: string
+  itemUrl: string
+  status: 'queued' | 'claimed' | 'succeeded' | 'failed'
+  materialId?: string | null
+  lastError?: string | null
+  createdAt: string
+  updatedAt: string
+  duplicate: boolean
+}
+
 export type SupplyPublishSchedule =
   | { mode: 'immediate' }
   | { mode: 'scheduled'; scheduledAt: string }
@@ -442,7 +456,7 @@ export class UserApiClient {
   }
 
   async listAnnouncements(signal?: AbortSignal): Promise<UserAnnouncement[]> {
-    const result = await this.request<{ items: UserAnnouncement[] }>('/v1/announcements', { method: 'GET', signal })
+    const result = await this.request<{ items: UserAnnouncement[] }>('/v1/announcements?limit=20&sort=starts_at&order=desc', { method: 'GET', signal })
     return result.items
   }
 
@@ -452,6 +466,10 @@ export class UserApiClient {
 
   async importSupplySnapshots(input: SupplyImportInput): Promise<SupplyImportResult> {
     return this.request<SupplyImportResult>('/v1/supply/imports', { method: 'POST', body: JSON.stringify(input) })
+  }
+
+  async createSupplyMigration(input: { schemaVersion: 1; idempotencyKey: string; source: { kind: 'market_item' | 'published_item'; sourceId: string } | { kind: 'public_url'; itemUrl: string } }): Promise<SupplyMigrationRequest> {
+    return this.request<SupplyMigrationRequest>('/v1/supply/migrations', { method: 'POST', body: JSON.stringify(input) })
   }
 
   async listSupplyMaterials(input: UserListRequest, signal?: AbortSignal): Promise<UserPage<SupplyMaterial>> {

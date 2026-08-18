@@ -108,6 +108,9 @@ async function run() {
     assert(invalidFilter.statusCode === 400, '页面筛选白名单未拒绝未知字段')
     const invalidInterval = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机' }, intervalSeconds: 59 } })
     assert(invalidInterval.statusCode === 400, '过短频率未被拒绝')
+    const minimumInterval = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '最小频率' }, intervalSeconds: 60, status: 'paused' } })
+    assert(minimumInterval.statusCode === 200 && json(minimumInterval).intervalSeconds === 60, '原有 60 秒最小采集频率未被接受')
+    await userApi.inject({ method: 'DELETE', url: `/v1/monitors/${json(minimumInterval).id}`, headers: auth(userAAccess) })
     const invalidPrice = await userApi.inject({ method: 'POST', url: '/v1/monitors', headers: auth(userAAccess), payload: { rule: { keyword: '相机', minPrice: 100, maxPrice: 99 }, intervalSeconds: 1800 } })
     assert(invalidPrice.statusCode === 400, '反向价格区间未被拒绝')
 

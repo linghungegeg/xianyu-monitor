@@ -137,6 +137,10 @@ const supplyMaterialPatchKeys = new Set(['title', 'description', 'price', 'mainI
 const supplyPublishPlanKeys = new Set(['schemaVersion', 'materialId', 'idempotencyKey', 'schedule'])
 const supplyPublishScheduleKeys = new Set(['mode', 'scheduledAt', 'windowStart', 'windowEnd'])
 const supplyPublishClaimKeys = new Set(['schemaVersion', 'deviceId', 'idempotencyKey', 'limit'])
+const supplyMigrationRequestKeys = new Set(['schemaVersion', 'idempotencyKey', 'source'])
+const supplyMigrationSourceKeys = new Set(['kind', 'sourceId', 'itemUrl'])
+const supplyMigrationClaimKeys = new Set(['schemaVersion', 'deviceId', 'idempotencyKey', 'limit'])
+const supplyMigrationResultKeys = new Set(['schemaVersion', 'deviceId', 'attemptKey', 'status', 'snapshot', 'errorMessage'])
 const supplySensitiveKey = /(?:cookie|token|authorization|password|session|profile(?:path)?|chrome|qr(?:code)?|credential|secret)/i
 const supplyCredentialQueryKey = /(?:cookie|token|authorization|password|session|profile|chrome|qr|credential|secret)/i
 const supplyPlatforms = new Set(['goofish', 'pdd', 'taobao', 'tmall', '1688', 'douyin', 'jd', 'amazon'])
@@ -264,6 +268,51 @@ function parseSupplyImport(value: unknown): { sourceType: SupplySourceType; sour
   return { sourceType: input.sourceType, sourceFormat: input.sourceFormat, idempotencyKey, snapshots: input.snapshots }
 }
 
+function parseSupplyMigrationRequest(value: unknown, allowedHosts: readonly string[]) {
+  const input = supplyRecord(value, '搬家请求')
+  for (const key of Object.keys(input)) if (!supplyMigrationRequestKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (input.schemaVersion !== 1) throw new SupplyImportRequestError('只支持 schemaVersion 1')
+  const idempotencyKey = supplyString(input.idempotencyKey, 'idempotencyKey', 256)!
+  const source = supplyRecord(input.source, 'source')
+  for (const key of Object.keys(source)) if (!supplyMigrationSourceKeys.has(key)) throw new SupplyImportRequestError(`source 不支持字段 ${key}`)
+  const kind = source.kind
+  if (kind !== 'market_item' && kind !== 'published_item' && kind !== 'public_url') throw new SupplyImportRequestError('source.kind 无效')
+  if (kind === 'public_url') {
+    const itemUrl = publishedItemUrl(source.itemUrl, allowedHosts)
+    const platformItemId = publishedItemIdFromUrl(itemUrl)
+    if (!platformItemId) throw new SupplyImportRequestError('itemUrl 未包含可识别的闲鱼商品 ID')
+    return { idempotencyKey, kind, sourceId: undefined, itemUrl, platformItemId }
+  }
+  const sourceId = supplyString(source.sourceId, 'source.sourceId', 64)!
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sourceId)) throw new SupplyImportRequestError('source.sourceId 格式无效')
+  return { idempotencyKey, kind, sourceId, itemUrl: undefined, platformItemId: undefined }
+}
+
+function parseSupplyMigrationClaim(value: unknown) {
+  const input = supplyRecord(value, '搬家领取请求')
+  for (const key of Object.keys(input)) if (!supplyMigrationClaimKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (input.schemaVersion !== 1) throw new SupplyImportRequestError('只支持 schemaVersion 1')
+  const deviceId = supplyString(input.deviceId, 'deviceId', 64)!
+  const idempotencyKey = supplyString(input.idempotencyKey, 'idempotencyKey', 256)!
+  if (!Number.isInteger(input.limit) || Number(input.limit) < 1 || Number(input.limit) > 10) throw new SupplyImportRequestError('limit 必须是 1 到 10 的整数')
+  return { deviceId, idempotencyKey, limit: Number(input.limit) }
+}
+
+function parseSupplyMigrationResult(value: unknown) {
+  const input = supplyRecord(value, '搬家结果')
+  for (const key of Object.keys(input)) if (!supplyMigrationResultKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
+  if (input.schemaVersion !== 1) throw new SupplyImportRequestError('只支持 schemaVersion 1')
+  const deviceId = supplyString(input.deviceId, 'deviceId', 64)!
+  const attemptKey = supplyString(input.attemptKey, 'attemptKey', 256)!
+  if (input.status !== 'succeeded' && input.status !== 'failed') throw new SupplyImportRequestError('status 只允许 succeeded 或 failed')
+  if (input.status === 'succeeded') {
+    if (input.errorMessage !== undefined) throw new SupplyImportRequestError('成功结果不接受 errorMessage')
+    return { deviceId, attemptKey, status: 'succeeded' as const, snapshot: input.snapshot, errorMessage: undefined }
+  }
+  if (input.snapshot !== undefined) throw new SupplyImportRequestError('失败结果不接受 snapshot')
+  return { deviceId, attemptKey, status: 'failed' as const, snapshot: undefined, errorMessage: supplyString(input.errorMessage, 'errorMessage', 1_000)! }
+}
+
 function parseSupplyMaterialPatch(value: unknown): SupplyMaterialPatch {
   const input = supplyRecord(value, '素材编辑请求')
   for (const key of Object.keys(input)) if (!supplyMaterialPatchKeys.has(key)) throw new SupplyImportRequestError(`不支持字段 ${key}`)
@@ -367,6 +416,46 @@ function supplyStableJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
+async function persistSupplyMigrationSnapshot(sql: Sql, userId: string, requestId: string, snapshotValue: unknown): Promise<{ materialId: string; duplicate: boolean }> {
+  const material = parseSupplySnapshot(snapshotValue)
+  if (material.sourceType !== 'xianyu' || material.sourcePlatform !== 'goofish') throw new SupplyImportRequestError('搬家结果必须是闲鱼公开商品快照')
+  const request = (await sql.query(`SELECT platform_item_id,item_url FROM supply.migration_requests WHERE id=$1 AND user_id=$2`, [requestId, userId])).rows[0]
+  if (!request || material.sourceItemId !== String(request.platform_item_id) || material.sourceUrl !== String(request.item_url)) throw new SupplyImportRequestError('搬家结果与请求商品不匹配')
+  const canonicalSnapshot = { schemaVersion: 1, ...material, sku: material.sku ?? null }
+  const contentHash = createHash('sha256').update(supplyStableJson(canonicalSnapshot)).digest('hex')
+  const batchId = randomUUID()
+  await sql.query(`INSERT INTO supply.import_batches (id,user_id,idempotency_key,source_type,source_format,payload_hash,received_count,inserted_count,deduplicated_count,failed_count,result,created_at,completed_at)
+    VALUES ($1,$2,$3,'xianyu','parsed_snapshot_json',$4,1,0,0,0,'{}'::jsonb,now(),now())`, [batchId, userId, `migration:${requestId}:${contentHash}`, contentHash])
+  const existing = (await sql.query('SELECT id,current_version FROM supply.materials WHERE user_id=$1 AND source_platform=$2 AND source_item_id=$3', [userId, material.sourcePlatform, material.sourceItemId])).rows[0]
+  if (!existing) {
+    const materialId = randomUUID()
+    await sql.query(`INSERT INTO supply.materials (id,user_id,source_type,source_platform,source_item_id,source_url,title,description,price,main_images,detail_images,sku,attributes,import_batch_id,current_version,status,created_at,updated_at)
+      VALUES ($1,$2,'xianyu',$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12::jsonb,$13,1,'draft',now(),now())`, [materialId, userId, material.sourcePlatform, material.sourceItemId, material.sourceUrl, material.title, material.description ?? null, material.price, JSON.stringify(material.mainImages), JSON.stringify(material.detailImages), JSON.stringify(material.sku ?? null), JSON.stringify(material.attributes), batchId])
+    await sql.query('INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at) VALUES ($1,$2,1,$3,$4::jsonb,$5,now())', [randomUUID(), materialId, contentHash, JSON.stringify(canonicalSnapshot), batchId])
+    await sql.query("UPDATE supply.import_batches SET inserted_count=1,result=jsonb_build_object('receivedCount',1,'insertedCount',1,'deduplicatedCount',0,'failedCount',0,'duplicate',false) WHERE id=$1", [batchId])
+    return { materialId, duplicate: false }
+  }
+  const materialId = String(existing.id)
+  const known = await sql.query('SELECT 1 FROM supply.material_versions WHERE material_id=$1 AND content_hash=$2', [materialId, contentHash])
+  if (known.rows[0]) {
+    await sql.query("UPDATE supply.import_batches SET deduplicated_count=1,result=jsonb_build_object('receivedCount',1,'insertedCount',0,'deduplicatedCount',1,'failedCount',0,'duplicate',true) WHERE id=$1", [batchId])
+    return { materialId, duplicate: true }
+  }
+  const nextVersion = Number(existing.current_version) + 1
+  await sql.query(`UPDATE supply.materials SET source_url=$1,title=$2,description=$3,price=$4,main_images=$5::jsonb,detail_images=$6::jsonb,sku=$7::jsonb,attributes=$8::jsonb,import_batch_id=$9,current_version=$10,updated_at=now() WHERE id=$11 AND user_id=$12`, [material.sourceUrl, material.title, material.description ?? null, material.price, JSON.stringify(material.mainImages), JSON.stringify(material.detailImages), JSON.stringify(material.sku ?? null), JSON.stringify(material.attributes), batchId, nextVersion, materialId, userId])
+  await sql.query('INSERT INTO supply.material_versions (id,material_id,version,content_hash,canonical_snapshot,import_batch_id,created_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,now())', [randomUUID(), materialId, nextVersion, contentHash, JSON.stringify(canonicalSnapshot), batchId])
+  await sql.query("UPDATE supply.import_batches SET inserted_count=1,result=jsonb_build_object('receivedCount',1,'insertedCount',1,'deduplicatedCount',0,'failedCount',0,'duplicate',false) WHERE id=$1", [batchId])
+  return { materialId, duplicate: false }
+}
+
+function supplyMigrationResponse(row: Record<string, unknown>) {
+  return { id: String(row.id), sourceKind: String(row.source_kind ?? row.sourceKind), platform: String(row.platform), platformItemId: String(row.platform_item_id ?? row.platformItemId), itemUrl: String(row.item_url ?? row.itemUrl), status: String(row.status), materialId: row.material_id ?? row.materialId ?? null, lastError: row.last_error ?? row.lastError ?? null, createdAt: timestamp(row.created_at ?? row.createdAt), updatedAt: timestamp(row.updated_at ?? row.updatedAt) }
+}
+
+function safeSupplyMigrationError(value: string): string {
+  return supplySensitiveKey.test(value) ? '本机读取失败，请检查公开商品页后重试' : value.slice(0, 1_000)
+}
+
 function monitorTaskString(value: unknown, name: string, maxLength: number): string {
   if (typeof value !== 'string') throw new MonitorTaskRequestError(`${name} 必须是字符串`)
   const normalized = value.trim()
@@ -441,7 +530,7 @@ function parseMonitorTaskInput(value: unknown, creating: boolean): MonitorTaskIn
   if (creating && source.rule === undefined) throw new MonitorTaskRequestError('rule 必填')
   if (creating && source.intervalSeconds === undefined) throw new MonitorTaskRequestError('intervalSeconds 必填')
   const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
-  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 1_800 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 1800 到 86400 的整数')
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 60 到 86400 的整数')
   const status = source.status === undefined ? undefined : source.status
   if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
   return {
@@ -518,7 +607,7 @@ function parseSellerMonitorTaskInput(value: unknown, creating: boolean, allowedH
     ? sanitizeSellerProfileUrl(suppliedProfileUrl, profileSellerId)
     : (platformSellerId ? canonicalSellerProfileUrl(platform ?? 'goofish', platformSellerId) : undefined)
   const intervalSeconds = source.intervalSeconds === undefined ? undefined : source.intervalSeconds
-  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 1_800 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 1800 到 86400 的整数')
+  if (intervalSeconds !== undefined && (typeof intervalSeconds !== 'number' || !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 86_400)) throw new MonitorTaskRequestError('intervalSeconds 必须是 60 到 86400 的整数')
   const status = source.status === undefined ? undefined : source.status
   if (status !== undefined && status !== 'active' && status !== 'paused') throw new MonitorTaskRequestError('status 只允许 active 或 paused')
 
@@ -906,6 +995,14 @@ const userSupplyPublishPlansListConfig: ListConfig = {
   allowedFilters: ['q', 'material_id', 'schedule_mode', 'status']
 }
 
+const userAnnouncementsListConfig: ListConfig = {
+  resource: 'user.announcements',
+  defaultSort: 'starts_at',
+  sortAliases: { starts_at: 'starts_at', updated_at: 'updated_at', recent: 'starts_at', id: 'id' },
+  filterAliases: {},
+  allowedFilters: []
+}
+
 const sellerItemsListConfig: ListConfig = { ...marketItemsListConfig, resource: 'user.seller_items' }
 
 const sellerEventsListConfig: ListConfig = {
@@ -954,6 +1051,14 @@ const adminAnnouncementsListConfig: ListConfig = {
   sortAliases: { updated_at: 'updated_at', created_at: 'created_at', recent: 'updated_at', status: 'enabled', title: 'title', id: 'id' },
   filterAliases: { userId: 'user_id' },
   allowedFilters: ['q', 'enabled', 'scope', 'user_id']
+}
+
+const adminProvidersListConfig: ListConfig = {
+  resource: 'admin.ai_providers',
+  defaultSort: 'updated_at',
+  sortAliases: { created_at: 'created_at', updated_at: 'updated_at', recent: 'updated_at', status: 'status', provider_code: 'provider_code', id: 'id' },
+  filterAliases: { providerCode: 'provider_code' },
+  allowedFilters: ['status', 'provider_code']
 }
 
 const adminCapacityListConfig: ListConfig = {
@@ -1164,6 +1269,18 @@ const userPublishedItemMonitorsPlan = tablePlan({
   }
 })
 
+const userAnnouncementsPlan = tablePlan({
+  resource: userAnnouncementsListConfig.resource,
+  from: 'ops.announcements a',
+  select: 'a.id,a.title,a.body,a.starts_at AS "startsAt",a.ends_at AS "endsAt",a.updated_at AS "updatedAt"',
+  idExpression: 'a.id::text',
+  sortExpressions: { starts_at: 'a.starts_at', updated_at: 'a.updated_at', id: 'a.id::text' },
+  conditions: (_context, values, subjectId) => {
+    values.push(subjectId)
+    return ['a.starts_at <= $1', '(a.ends_at IS NULL OR a.ends_at > $1)', 'a.enabled=true', "(a.scope='global' OR a.user_id=$2)"]
+  }
+})
+
 const sellerEventsPlan = tablePlan({
   resource: sellerEventsListConfig.resource,
   from: 'market.item_events e',
@@ -1274,6 +1391,20 @@ const adminAnnouncementsPlan = tablePlan({
   }
 })
 
+const adminProvidersPlan = tablePlan({
+  resource: adminProvidersListConfig.resource,
+  from: 'ai.provider_configs p',
+  select: 'p.id,p.provider_code AS "providerCode",p.model_reference AS "modelReference",p.base_url AS "baseUrl",p.stream_enabled AS stream,p.reasoning_enabled AS reasoning,p.settings,p.status,p.created_at AS "createdAt",p.updated_at AS "updatedAt"',
+  idExpression: 'p.id::text',
+  sortExpressions: { created_at: 'p.created_at', updated_at: 'p.updated_at', status: 'p.status', provider_code: 'p.provider_code', id: 'p.id::text' },
+  conditions: (context, values) => {
+    const conditions = ['p.updated_at <= $1']
+    if (context.filters.status) { values.push(context.filters.status); conditions.push(`p.status=$${values.length}`) }
+    if (context.filters.provider_code) { values.push(context.filters.provider_code); conditions.push(`p.provider_code=$${values.length}`) }
+    return conditions
+  }
+})
+
 const adminAuditPlan = tablePlan({
   resource: adminAuditListConfig.resource,
   from: 'ops.audit_logs a',
@@ -1361,7 +1492,19 @@ function marketItemsPlan(resource: string, userScoped = false): ListPlanBuilder 
       resource,
       page: () => {
         const query = build(true)
-        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id FROM market.items i LEFT JOIN market.seller_profiles s ON s.id = i.seller_id WHERE ${query.where} ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()} LIMIT ${context.limit + 1}`, values: query.values }
+        return { text: `SELECT i.id, i.seller_id AS "sellerId", s.platform_seller_id AS "platformSellerId", i.platform, i.platform_item_id AS "platformItemId", i.lifecycle_state AS state, i.first_seen_at AS "firstSeenAt", i.last_seen_at AS "lastSeenAt", v.title, v.price, v.region, v.condition_text AS "conditionText", v.want_count AS "wantCount", v.canonical_payload->'imageUrls' AS images, ${sortExpression} AS cursor_sort_value, i.id::text AS cursor_id
+          FROM market.items i
+          LEFT JOIN market.seller_profiles s ON s.id = i.seller_id
+          LEFT JOIN LATERAL (
+            SELECT title,price,region,condition_text,want_count,canonical_payload
+            FROM market.item_versions
+            WHERE item_id=i.id
+            ORDER BY observed_at DESC,id DESC
+            LIMIT 1
+          ) v ON TRUE
+          WHERE ${query.where}
+          ORDER BY ${sortExpression} ${context.order.toUpperCase()}, i.id ${context.order.toUpperCase()}
+          LIMIT ${context.limit + 1}`, values: query.values }
       },
       count: () => {
         const query = build(false)
@@ -1631,7 +1774,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   app.get('/health', async () => ({ service: 'user-api', ok: true }))
   app.post('/v1/auth/register', async (request, reply) => {
     const input = body<{ email?: string; password?: string }>(request.body); const email = input.email?.trim().toLowerCase()
-    if (!email || !credentialValid(input.password)) return fail(reply, 400, '账号和密码均需为 6 到 20 个字符')
+    if (!email || !credentialValid(input.password)) return fail(reply, 400, '账号必填，密码需要 6 到 20 个字符')
     try { const id = randomUUID(); await sql.query('INSERT INTO identity.users (id,email_normalized,password_hash,status,created_at) VALUES ($1,$2,$3,\'active\',now())', [id, email, await hashPassword(input.password)]); return issue(sql, domains.user, 'user', id) } catch { return fail(reply, 409, '用户已存在') }
   })
   app.post('/v1/auth/login', async (request, reply) => {
@@ -1643,16 +1786,6 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   app.post('/v1/auth/refresh', async (request, reply) => { try { return await refresh(sql, domains.user, 'user', body<{ refreshToken: string }>(request.body).refreshToken) } catch (error) { return fail(reply, 401, error instanceof Error ? error.message : '刷新失败') } })
   app.get('/v1/me', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); return { id: claims.sub } } catch { return fail(reply, 401, '未授权') } })
   app.get('/v1/me/entitlements', async (request, reply) => { try { const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization); const rows = await sql.query('SELECT capability,limit_value,effective_to FROM billing.entitlement_grants WHERE user_id=$1 AND effective_from<=now() AND (effective_to IS NULL OR effective_to>now())', [claims.sub]); return { items: rows.rows } } catch { return fail(reply, 401, '未授权') } })
-  app.get('/v1/announcements', async (request, reply) => {
-    try {
-      const claims = await authenticate(sql, domains.user, 'user', request.headers.authorization)
-      const result = await sql.query(`SELECT id,title,body,starts_at AS "startsAt",ends_at AS "endsAt",updated_at AS "updatedAt"
-        FROM ops.announcements
-        WHERE enabled=true AND starts_at<=now() AND (ends_at IS NULL OR ends_at>now()) AND (scope='global' OR user_id=$1)
-        ORDER BY starts_at DESC, id DESC`, [claims.sub])
-      return { items: result.rows }
-    } catch { return fail(reply, 401, '未授权') }
-  })
   app.post('/v1/ai/jobs', async (request, reply) => {
     let claims: Awaited<ReturnType<typeof authenticate>>
     try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
@@ -1695,6 +1828,41 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
     } catch {
       return fail(reply, 401, '未授权')
     }
+  })
+  app.post('/v1/supply/migrations', async (request, reply) => {
+    let claims
+    try { claims = await authenticate(sql, domains.user, 'user', request.headers.authorization) } catch { return fail(reply, 401, '未授权') }
+    try {
+      const input = parseSupplyMigrationRequest(request.body, publishedItemHosts)
+      const existing = (await sql.query('SELECT * FROM supply.migration_requests WHERE user_id=$1 AND idempotency_key=$2', [claims.sub, input.idempotencyKey])).rows[0]
+      if (existing) return { ...supplyMigrationResponse(existing), duplicate: true }
+      let platformItemId = input.platformItemId
+      let itemUrl = input.itemUrl
+      if (input.kind === 'market_item') {
+        const item = (await sql.query(`SELECT i.platform,i.platform_item_id
+          FROM market.items i
+          WHERE i.id=$1 AND i.platform='goofish' AND EXISTS (
+            SELECT 1 FROM market.observations o JOIN ops.collection_runs r ON r.id=o.collection_run_id
+            JOIN identity.collector_clients c ON c.id=r.client_id WHERE o.item_id=i.id AND c.user_id=$2
+          )`, [input.sourceId, claims.sub])).rows[0]
+        if (!item) return fail(reply, 404, '当前账户未找到该市场商品')
+        platformItemId = String(item.platform_item_id)
+        itemUrl = canonicalPublishedItemUrl(platformItemId)
+      }
+      if (input.kind === 'published_item') {
+        const item = (await sql.query(`SELECT platform_item_id,item_url FROM ops.published_item_monitor_tasks
+          WHERE id=$1 AND user_id=$2 AND platform='goofish'`, [input.sourceId, claims.sub])).rows[0]
+        if (!item) return fail(reply, 404, '当前账户未找到该已发布商品')
+        platformItemId = String(item.platform_item_id)
+        itemUrl = String(item.item_url)
+      }
+      if (!platformItemId || !itemUrl) throw new SupplyImportRequestError('搬家来源无效')
+      const id = randomUUID()
+      await sql.query(`INSERT INTO supply.migration_requests (id,user_id,idempotency_key,source_kind,source_reference,platform,platform_item_id,item_url,status,created_at,updated_at)
+        VALUES ($1,$2,$3,$4,$5,'goofish',$6,$7,'queued',now(),now())`, [id, claims.sub, input.idempotencyKey, input.kind, input.sourceId ?? null, platformItemId, itemUrl])
+      const created = (await sql.query('SELECT * FROM supply.migration_requests WHERE id=$1 AND user_id=$2', [id, claims.sub])).rows[0]
+      return { ...supplyMigrationResponse(created), duplicate: false }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '创建搬家请求失败') }
   })
   app.post('/v1/supply/imports', async (request, reply) => {
     let claims
@@ -2115,6 +2283,7 @@ export function createUserApi(sql: Sql, domains: Domains, options: ApiOptions = 
   registerListEndpoint(app, ['/v1/events', '/v1/market/events'], sql, domains.user, 'user', userEventsListConfig, userEventsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/logs', '/v1/dynamic-logs'], sql, domains.user, 'user', userLogsListConfig, userLogsPlan, 401, '未授权')
   registerListEndpoint(app, ['/v1/ai', '/v1/ai/insights'], sql, domains.user, 'user', { ...userDiscoveriesListConfig, resource: 'user.ai' }, userInsightPlan('user.ai'), 401, '未授权')
+  registerListEndpoint(app, ['/v1/announcements'], sql, domains.user, 'user', userAnnouncementsListConfig, userAnnouncementsPlan, 401, '未授权')
   return app
 }
 
@@ -2203,11 +2372,6 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
       return result.rows[0]
     } catch (error) { return fail(reply, isUniqueViolation(error) ? 409 : 400, isUniqueViolation(error) ? 'AI 提供方已存在' : (error instanceof Error ? error.message : 'AI 提供方创建失败')) }
   })
-  app.get('/v1/admin/ai/providers', async (request, reply) => {
-    try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
-    const result = await sql.query('SELECT id,provider_code AS "providerCode",model_reference AS "modelReference",base_url AS "baseUrl",stream_enabled AS stream,reasoning_enabled AS reasoning,settings,status,created_at AS "createdAt",updated_at AS "updatedAt" FROM ai.provider_configs ORDER BY created_at DESC, id DESC')
-    return { items: result.rows }
-  })
   app.get('/v1/admin/ai/providers/:id/models', async (request, reply) => {
     try { await authenticate(sql, domains.admin, 'admin', request.headers.authorization) } catch { return fail(reply, 403, '管理员权限不足') }
     const id = String((request.params as { id?: string }).id ?? '')
@@ -2291,12 +2455,13 @@ export function createAdminApi(sql: Sql, domains: Domains, options: ApiOptions =
   registerListEndpoint(app, ['/v1/uploads', '/v1/ingest/batches', '/v1/admin/uploads'], sql, domains.admin, 'admin', adminUploadsListConfig, adminUploadsPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/ai', '/v1/ai/jobs', '/v1/admin/ai', '/v1/admin/ai/jobs'], sql, domains.admin, 'admin', adminAiJobsListConfig, adminAiJobsPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/admin/announcements'], sql, domains.admin, 'admin', adminAnnouncementsListConfig, adminAnnouncementsPlan, 403, '管理员权限不足')
+  registerListEndpoint(app, ['/v1/admin/ai/providers'], sql, domains.admin, 'admin', adminProvidersListConfig, adminProvidersPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/capacity', '/v1/admin/capacity'], sql, domains.admin, 'admin', adminCapacityListConfig, adminCapacityPlan, 403, '管理员权限不足')
   registerListEndpoint(app, ['/v1/audit', '/v1/audit/logs', '/v1/admin/audit'], sql, domains.admin, 'admin', adminAuditListConfig, adminAuditPlan, 403, '管理员权限不足')
   return app
 }
 
-const phase6SensitiveKeys = ['cookie', 'token', 'authorization', 'profile', 'loginstate', 'accountstate']
+const phase6SensitiveKeys = ['cookie', 'token', 'authorization', 'password', 'session', 'credential', 'secret', 'qr', 'profile', 'loginstate', 'accountstate']
 
 function phase6ContainsSensitive(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(phase6ContainsSensitive)
@@ -2393,15 +2558,16 @@ async function phase6IngestRecord(sql: Sql, record: Phase6IngestRecord, runId: s
   if (type === 'snapshot') {
     const payload = record.payload && typeof record.payload === 'object' ? record.payload : record
     const hash = phase6Text(record.payloadHash ?? createHash('sha256').update(phase6Json(payload)).digest('hex'), 'payloadHash', 128)
+    const existing = await sql.query('SELECT 1 FROM market.observations WHERE item_id=$1 AND payload_hash=$2 LIMIT 1', [itemId, hash])
+    if (existing.rows[0]) return 'deduplicated'
     await sql.query(`INSERT INTO market.observations (id,collected_at,received_at,collection_run_id,item_id,platform_item_id,platform_seller_id,payload_hash) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [randomUUID(), record.observedAt ?? now, now, runId, itemId, itemKey, record.platformSellerId ?? null, hash])
     return 'inserted'
   }
   const eventKey = phase6Text(record.eventKey ?? record.idempotencyKey, 'eventKey', 256)
-  const existing = await sql.query('SELECT event_id FROM market.item_event_dedup WHERE event_key=$1', [eventKey])
-  if (existing.rows[0]) return 'deduplicated'
   const occurredAt = record.occurredAt ?? now
   const eventId = randomUUID()
-  await sql.query('INSERT INTO market.item_event_dedup (event_key,event_id,occurred_at) VALUES ($1,$2,$3)', [eventKey, eventId, occurredAt])
+  const claimed = await sql.query('INSERT INTO market.item_event_dedup (event_key,event_id,occurred_at) VALUES ($1,$2,$3) ON CONFLICT (event_key) DO NOTHING RETURNING event_id', [eventKey, eventId, occurredAt])
+  if (!claimed.rows[0]) return 'deduplicated'
   await sql.query(`INSERT INTO market.item_events (id,occurred_at,detected_at,item_id,seller_id,event_type,event_key) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [eventId, occurredAt, now, itemId, sellerId, phase6Text(record.eventType, 'eventType', 64), eventKey])
   return 'inserted'
 }
@@ -2584,6 +2750,64 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
       return { schemaVersion: 1, deviceId: String(claims.sub), accepted }
     } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '发布结果接收失败') }
   })
+  app.post('/v1/supply/migrations/claim', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
+    let client: { user_id: string }
+    try {
+      claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      client = await activeCollector(sql, String(claims.sub))
+      await requireCollectorEntitlement(sql, client.user_id)
+    } catch (error) { return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足') }
+    try {
+      const input = parseSupplyMigrationClaim(request.body)
+      if (input.deviceId !== String(claims.sub)) return fail(reply, 403, 'deviceId 与授权设备不匹配')
+      const claimed = await sql.query(`WITH candidates AS (
+          SELECT id FROM supply.migration_requests
+          WHERE user_id=$1 AND status='queued'
+          ORDER BY created_at ASC,id ASC LIMIT $2
+        )
+        UPDATE supply.migration_requests r SET status='claimed',claimed_by_client_id=$3,claimed_at=now(),attempt_count=attempt_count+1,updated_at=now()
+        FROM candidates c WHERE r.id=c.id AND r.status='queued'
+        RETURNING r.id,r.platform_item_id AS "platformItemId",r.item_url AS "itemUrl"`, [client.user_id, input.limit, claims.sub])
+      return { schemaVersion: 1, deviceId: String(claims.sub), idempotencyKey: input.idempotencyKey, items: claimed.rows }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '搬家请求领取失败') }
+  })
+  app.post('/v1/supply/migrations/:requestId/result', async (request, reply) => {
+    let claims: Awaited<ReturnType<typeof authenticate>>
+    let client: { user_id: string }
+    try {
+      claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
+      client = await activeCollector(sql, String(claims.sub))
+      await requireCollectorEntitlement(sql, client.user_id)
+    } catch (error) { return fail(reply, 403, error instanceof Error ? error.message : '采集器权限不足') }
+    try {
+      const requestId = String((request.params as { requestId?: string }).requestId ?? '')
+      const input = parseSupplyMigrationResult(request.body)
+      if (input.deviceId !== String(claims.sub)) return fail(reply, 403, 'deviceId 与授权设备不匹配')
+      const requestRow = (await sql.query(`SELECT * FROM supply.migration_requests
+        WHERE id=$1 AND user_id=$2 AND claimed_by_client_id=$3`, [requestId, client.user_id, claims.sub])).rows[0]
+      if (!requestRow) return fail(reply, 404, '搬家请求不存在或不属于当前设备')
+      const existing = (await sql.query('SELECT id FROM supply.migration_attempts WHERE client_id=$1 AND attempt_key=$2', [claims.sub, input.attemptKey])).rows[0]
+      if (existing) {
+        const current = (await sql.query('SELECT * FROM supply.migration_requests WHERE id=$1 AND user_id=$2', [requestId, client.user_id])).rows[0]
+        return { ...supplyMigrationResponse(current), attemptKey: input.attemptKey, duplicate: true }
+      }
+      if (String(requestRow.status) !== 'claimed') return fail(reply, 409, '搬家请求不是待处理状态')
+      let status: 'succeeded' | 'failed' = input.status
+      let materialId: string | null = null
+      let safeError: string | null = null
+      if (status === 'succeeded') {
+        try { materialId = (await persistSupplyMigrationSnapshot(sql, client.user_id, requestId, input.snapshot)).materialId }
+        catch (error) { status = 'failed'; safeError = error instanceof Error ? safeSupplyMigrationError(error.message) : '本机快照校验失败' }
+      } else safeError = safeSupplyMigrationError(input.errorMessage ?? '本机读取失败')
+      await sql.query(`INSERT INTO supply.migration_attempts (id,request_id,user_id,client_id,attempt_key,status,safe_error,created_at,completed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,now(),now())`, [randomUUID(), requestId, client.user_id, claims.sub, input.attemptKey, status, safeError])
+      await sql.query(`UPDATE supply.migration_requests SET status=$1,material_id=$2,last_error=$3,completed_at=now(),updated_at=now()
+        WHERE id=$4 AND user_id=$5 AND claimed_by_client_id=$6`, [status, materialId, safeError, requestId, client.user_id, claims.sub])
+      const current = (await sql.query('SELECT * FROM supply.migration_requests WHERE id=$1 AND user_id=$2', [requestId, client.user_id])).rows[0]
+      return { ...supplyMigrationResponse(current), attemptKey: input.attemptKey, duplicate: false }
+    } catch (error) { return fail(reply, 400, error instanceof Error ? error.message : '搬家结果接收失败') }
+  })
   app.get('/v1/tasks', async (request, reply) => {
     try {
       const claims = await authenticate(sql, domains.collector, 'collector', request.headers.authorization)
@@ -2632,8 +2856,14 @@ export function createCollectorApi(sql: Sql, domains: Domains) {
       }
       const batchId = input.batchId
       const runId = randomUUID()
-      await sql.query(`INSERT INTO ops.ingest_batches (id,client_id,idempotency_key,payload_hash,status,schema_version,device_id,batch_sequence,cursor_start,cursor_end,received_count,received_at)
-        VALUES ($1,$2,$3,$4,'processing',$5,$2,$6,$7,$8,$9,now())`, [batchId, claims.sub, input.idempotencyKey, payloadHash, input.schemaVersion, input.batchSequence, input.cursorStart, input.cursorEnd, input.records.length])
+      const created = await sql.query(`INSERT INTO ops.ingest_batches (id,client_id,idempotency_key,payload_hash,status,schema_version,device_id,batch_sequence,cursor_start,cursor_end,received_count,received_at)
+        VALUES ($1,$2,$3,$4,'processing',$5,$2,$6,$7,$8,$9,now()) ON CONFLICT (client_id,idempotency_key) DO NOTHING RETURNING id`, [batchId, claims.sub, input.idempotencyKey, payloadHash, input.schemaVersion, input.batchSequence, input.cursorStart, input.cursorEnd, input.records.length])
+      if (!created.rows[0]) {
+        const duplicate = (await sql.query('SELECT id,status,accepted_count,rejected_count,received_count,deduplicated_count,inserted_count,failed_count,retry_count,cursor_end FROM ops.ingest_batches WHERE client_id=$1 AND idempotency_key=$2', [claims.sub, input.idempotencyKey])).rows[0] as Record<string, unknown> | undefined
+        if (!duplicate) throw new Error('上传批次并发状态异常')
+        const retry = await sql.query('UPDATE ops.ingest_batches SET retry_count=retry_count+1 WHERE id=$1 RETURNING retry_count', [duplicate.id])
+        return { schemaVersion: 1, batchId: String(duplicate.id), status: duplicate.status, acceptedCount: Number(duplicate.accepted_count ?? 0), rejectedCount: Number(duplicate.rejected_count ?? 0), receivedCount: Number(duplicate.received_count ?? 0), deduplicatedCount: Number(duplicate.deduplicated_count ?? 0), insertedCount: Number(duplicate.inserted_count ?? 0), failedCount: Number(duplicate.failed_count ?? 0), retryCount: Number(retry.rows[0]?.retry_count ?? 0), cursor: { end: duplicate.cursor_end ?? input.cursorEnd }, duplicate: true }
+      }
       await sql.query(`INSERT INTO ops.collection_runs (id,client_id,client_run_id,task_reference,kind,status,started_at,result_counts) VALUES ($1,$2,$3,$4,'detail','started',now(),'{}'::jsonb) ON CONFLICT (client_id,client_run_id) DO NOTHING`, [runId, claims.sub, `ingest-${batchId}`, batchId])
       let insertedCount = 0; let deduplicatedCount = 0; let failedCount = 0
       for (const [index, record] of input.records.entries()) {

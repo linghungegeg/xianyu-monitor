@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, Bell, Bot, ChevronLeft, ChevronRight, ClipboardList,
+  Activity, Bell, Bot, ChevronLeft, ChevronRight,
   ExternalLink, FileSearch, Filter, Fish, Gauge, LayoutDashboard, LogOut, Menu, MoreHorizontal, PanelLeft, PanelLeftClose,
-  PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, SlidersHorizontal, Store, Trash2, X
+  PackageSearch, Pause, Pencil, Play, Plus, RefreshCw, Save, Search, Settings, Store, Trash2, X
 } from 'lucide-react'
 import {
   UserApiClient, UserApiError, readUserRuntimeConfig, type UserIdentity, type UserListRequest,
@@ -12,7 +12,7 @@ import {
   type SupplyImportResult, type SupplyMaterial, type SupplyMaterialPatch, type SupplyPublishPlan, type SupplyPublishSchedule, type SupplySourceType
 } from './api'
 
-type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai' | 'xianyuSupply' | 'generalSupply' | 'settings'
+type PageKey = 'dashboard' | 'monitors' | 'sellers' | 'market' | 'dynamic' | 'ai' | 'xianyuSupply' | 'generalSupply' | 'settings'
 type RowKind = 'monitors' | 'sellers' | 'pool' | 'discoveries' | 'events' | 'logs' | 'ai'
 type Status = '正常' | '关注' | '已暂停' | '已处理' | '待处理'
 type SortKey = 'updated_at_desc' | 'priority_desc' | 'title_asc'
@@ -46,6 +46,21 @@ type SellerTarget = {
   platformSellerId: string
 }
 
+type MarketItemInfo = {
+  platform: string
+  platformItemId: string
+  sellerId?: string
+  platformSellerId?: string
+  sourceUrl?: string
+  price?: string
+  region?: string
+  conditionText?: string
+  wantCount?: number
+  images: string[]
+  firstSeenAt?: string
+  lastSeenAt?: string
+}
+
 type TableRow = {
   id: string
   title: string
@@ -55,6 +70,7 @@ type TableRow = {
   status: Status
   tag: string
   sellerTarget?: SellerTarget
+  market?: MarketItemInfo
 }
 
 const runtime = readUserRuntimeConfig()
@@ -63,10 +79,8 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
   { key: 'dashboard', label: '仪表盘', icon: LayoutDashboard },
   { key: 'monitors', label: '我的监控', icon: Gauge },
   { key: 'sellers', label: '竞品商家', icon: Store },
-  { key: 'pool', label: '市场商品', icon: PackageSearch },
-  { key: 'discoveries', label: '市场发现', icon: FileSearch },
-  { key: 'events', label: '事件中心', icon: Bell },
-  { key: 'logs', label: '动态日志', icon: ClipboardList },
+  { key: 'market', label: '市场', icon: PackageSearch },
+  { key: 'dynamic', label: '动态', icon: Bell },
   { key: 'ai', label: 'AI 分析', icon: Bot },
   { key: 'xianyuSupply', label: '咸鱼搬家', icon: PackageSearch },
   { key: 'generalSupply', label: '通用铺货', icon: Store },
@@ -76,9 +90,9 @@ const pages: Array<{ key: PageKey; label: string; icon: typeof Gauge }> = [
 const pageCopy: Record<RowKind, { title: string; description: string; primary: string; columns: [string, string, string, string] }> = {
   monitors: { title: '我的监控', description: '查看关键词、分类和价格区间产生的市场变化。', primary: '新建监控', columns: ['监控条件', '最新命中', '本次变化', '状态'] },
   sellers: { title: '竞品商家', description: '跟踪已关注商家的公开商品与经营动态。', primary: '添加商家', columns: ['商家', '公开商品', '动态摘要', '状态'] },
-  pool: { title: '市场商品池', description: '按条件查询已进入公共市场范围的商品快照。', primary: '保存筛选', columns: ['商品', '当前价格', '市场信号', '状态'] },
-  discoveries: { title: '市场发现', description: '浏览按筛选条件整理出的近期市场机会。', primary: '新建筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
-  events: { title: '事件中心', description: '统一处理价格、上架、下架和卖家变化事件。', primary: '筛选事件', columns: ['事件', '关联对象', '变化内容', '状态'] },
+  pool: { title: '市场', description: '按条件查询已进入公共市场范围的商品快照。', primary: '保存筛选', columns: ['商品', '当前价格', '最近更新', '状态'] },
+  discoveries: { title: '市场', description: '浏览按筛选条件整理出的近期市场机会。', primary: '查看筛选', columns: ['发现主题', '样本范围', '信号摘要', '状态'] },
+  events: { title: '动态', description: '统一查看价格、上架、下架和卖家变化。', primary: '查看筛选', columns: ['事件', '关联对象', '变化内容', '状态'] },
   logs: { title: '动态日志', description: '按对象、类型和时间筛选工作台可见的业务动态。', primary: '导出当前页', columns: ['动态', '对象', '记录内容', '状态'] },
   ai: { title: 'AI 分析', description: '阅读已发布的市场解读与竞品分析结果。', primary: '创建分析请求', columns: ['分析主题', '数据范围', '结论摘要', '状态'] }
 }
@@ -111,9 +125,9 @@ const bases: Record<RowKind, Omit<TableRow, 'id' | 'updatedAt'>[]> = {
     { title: '北城潮玩仓', subtitle: '北京 · 775 个公开商品 · 95% 好评', metric: '上新 12 件，调价 0 件', status: '正常', tag: '潮玩' }
   ],
   pool: [
-    { title: 'MacBook Air 13 M2 16G 512G', subtitle: '杭州 · 个人闲置 · 2 小时前', metric: '¥4,280 · 26 人想要', status: '关注', tag: '笔记本', sellerTarget: { platformSellerId: 'demo-macbook-seller' } },
-    { title: 'Sony A7M4 全画幅微单机身', subtitle: '上海 · 验货宝 · 38 分钟前', metric: '¥12,480 · 8 人想要', status: '正常', tag: '相机', sellerTarget: { platformSellerId: 'demo-camera-seller' } },
-    { title: 'Switch OLED 白色国行', subtitle: '广州 · 包邮 · 1 小时前', metric: '¥1,365 · 17 人想要', status: '正常', tag: '游戏机', sellerTarget: { platformSellerId: 'demo-switch-seller' } }
+    { title: 'MacBook Air 13 M2 16G 512G', subtitle: '杭州 · 个人闲置 · 2 小时前', metric: '¥4,280 · 26 人想要', status: '关注', tag: '笔记本', sellerTarget: { platformSellerId: 'demo-macbook-seller' }, market: { platform: 'goofish', platformItemId: 'demo-macbook-1', platformSellerId: 'demo-macbook-seller', sourceUrl: 'https://www.goofish.com/item/demo-macbook-1', price: '4280', region: '杭州', conditionText: '个人闲置', wantCount: 26, images: ['https://images.unsplash.com/photo-1517336714731-489689fd1ca8?auto=format&fit=crop&w=960&q=80'], firstSeenAt: '2026-08-18T08:00:00.000Z', lastSeenAt: '2026-08-18T10:00:00.000Z' } },
+    { title: 'Sony A7M4 全画幅微单机身', subtitle: '上海 · 验货宝 · 38 分钟前', metric: '¥12,480 · 8 人想要', status: '正常', tag: '相机', sellerTarget: { platformSellerId: 'demo-camera-seller' }, market: { platform: 'goofish', platformItemId: 'demo-camera-1', platformSellerId: 'demo-camera-seller', sourceUrl: 'https://www.goofish.com/item/demo-camera-1', price: '12480', region: '上海', conditionText: '验货宝', wantCount: 8, images: ['https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=960&q=80'], firstSeenAt: '2026-08-18T09:00:00.000Z', lastSeenAt: '2026-08-18T11:22:00.000Z' } },
+    { title: 'Switch OLED 白色国行', subtitle: '广州 · 包邮 · 1 小时前', metric: '¥1,365 · 17 人想要', status: '正常', tag: '游戏机', sellerTarget: { platformSellerId: 'demo-switch-seller' }, market: { platform: 'goofish', platformItemId: 'demo-switch-1', platformSellerId: 'demo-switch-seller', sourceUrl: 'https://www.goofish.com/item/demo-switch-1', price: '1365', region: '广州', conditionText: '包邮', wantCount: 17, images: ['https://images.unsplash.com/photo-1578303512597-81e6cc155b3e?auto=format&fit=crop&w=960&q=80'], firstSeenAt: '2026-08-18T09:20:00.000Z', lastSeenAt: '2026-08-18T11:00:00.000Z' } }
   ],
   discoveries: [
     { title: '轻薄本周末价格带下移', subtitle: '笔记本电脑 · 全国 · 近 24 小时', metric: 'P50 下降 4.8%，样本 186', status: '待处理', tag: '价格' },
@@ -172,7 +186,24 @@ function demoPage(kind: RowKind, request: UserListRequest): Promise<UserPage<Tab
 
 function recordValue(record: Record<string, unknown>, keys: string[], fallback: string): string {
   for (const key of keys) if (typeof record[key] === 'string' && record[key]) return record[key] as string
+  for (const key of keys) if (typeof record[key] === 'number' && Number.isFinite(record[key])) return String(record[key])
   return fallback
+}
+
+function recordNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  }
+  return undefined
+}
+
+function recordImages(record: Record<string, unknown>): string[] {
+  const value = record.mainImages ?? record.main_images ?? record.images ?? record.imageUrls ?? record.image_urls
+  if (typeof value === 'string' && value) return [value]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0).slice(0, 10)
 }
 
 function normalizeStatus(value: string): Status {
@@ -188,15 +219,32 @@ function normalizeApiRow(value: unknown, kind: RowKind, index: number): TableRow
   const id = recordValue(record, ['id', 'key'], `${kind}-${index + 1}`)
   const platformSellerId = recordValue(record, ['platformSellerId', 'platform_seller_id'], '')
   const sellerId = recordValue(record, ['sellerId', 'seller_id'], '')
+  const platformItemId = recordValue(record, ['platformItemId', 'platform_item_id'], '')
+  const platform = recordValue(record, ['platform'], '')
+  const market = kind === 'pool' ? {
+    platform,
+    platformItemId,
+    ...(sellerId ? { sellerId } : {}),
+    ...(platformSellerId ? { platformSellerId } : {}),
+    ...(recordValue(record, ['sourceUrl', 'source_url', 'itemUrl', 'item_url', 'url'], '') ? { sourceUrl: recordValue(record, ['sourceUrl', 'source_url', 'itemUrl', 'item_url', 'url'], '') } : {}),
+    ...(recordValue(record, ['price'], '') ? { price: recordValue(record, ['price'], '') } : {}),
+    ...(recordValue(record, ['region'], '') ? { region: recordValue(record, ['region'], '') } : {}),
+    ...(recordValue(record, ['conditionText', 'condition_text'], '') ? { conditionText: recordValue(record, ['conditionText', 'condition_text'], '') } : {}),
+    ...(recordNumber(record, ['wantCount', 'want_count']) === undefined ? {} : { wantCount: recordNumber(record, ['wantCount', 'want_count']) }),
+    images: recordImages(record),
+    ...(recordValue(record, ['firstSeenAt', 'first_seen_at'], '') ? { firstSeenAt: recordValue(record, ['firstSeenAt', 'first_seen_at'], '') } : {}),
+    ...(recordValue(record, ['lastSeenAt', 'last_seen_at'], '') ? { lastSeenAt: recordValue(record, ['lastSeenAt', 'last_seen_at'], '') } : {})
+  } : undefined
   return {
     id,
-    title: recordValue(record, ['title', 'name', 'subject'], id),
+    title: recordValue(record, ['title', 'name', 'subject', 'platformItemId', 'platform_item_id'], id),
     subtitle: recordValue(record, ['subtitle', 'description', 'scope', 'region'], '暂无说明'),
     metric: recordValue(record, ['metric', 'summary', 'value', 'detail'], '暂无摘要'),
     updatedAt: recordValue(record, ['updatedAt', 'updated_at', 'occurredAt', 'occurred_at'], '最近更新未知'),
     status: normalizeStatus(recordValue(record, ['status', 'state'], '正常')),
     tag: recordValue(record, ['tag', 'type', 'eventType', 'event_type'], kind),
-    ...(kind === 'pool' && platformSellerId ? { sellerTarget: { platformSellerId, ...(sellerId ? { sellerId } : {}) } } : {})
+    ...(kind === 'pool' && platformSellerId ? { sellerTarget: { platformSellerId, ...(sellerId ? { sellerId } : {}) } } : {}),
+    ...(market ? { market } : {})
   }
 }
 
@@ -467,19 +515,20 @@ function AuthGate({ api, auth, onAuthenticated }: { api: UserApiClient; auth: Au
     if (email.trim().length < 6) { setError('账号不低于6位'); setSubmitting(false); return }
     if (email.trim().length > 20) { setError('账号不超过20位'); setSubmitting(false); return }
     if (!password) { setError('请输入密码'); setSubmitting(false); return }
-    if (password.length < 6) { setError('密码不低于6位'); setSubmitting(false); return }
-    if (password.length > 20) { setError('密码不超过20位'); setSubmitting(false); return }
+    if (password.length < 12) { setError('密码至少12位'); setSubmitting(false); return }
     try {
       onAuthenticated(await api.login(email.trim(), password))
       if (rememberPassword) localStorage.setItem(rememberedLoginKey, JSON.stringify({ account: email.trim(), password }))
       else localStorage.removeItem(rememberedLoginKey)
     } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '登录失败，请稍后重试') } finally { setSubmitting(false) }
   }
-  return <main className="auth-shell"><section className="auth-panel"><div className="auth-brand"><span className="brand-mark">鱼</span><strong>闲鱼数据台</strong></div><div className="auth-heading"><h1>登录工作台</h1></div>{!api.configured && <div className="auth-alert"><strong>暂时无法登录</strong><span>请稍后再试。</span></div>}<form onSubmit={(event) => void submit(event)}><label><span>账号</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" minLength={6} maxLength={20} required /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 6 ? '密码不低于6位' : '密码不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" minLength={6} maxLength={20} required /></label><label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} /><span>记住账号和密码</span></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>{submitting ? '正在登录…' : '登录'}</button></form></section></main>
+  return <main className="auth-shell"><section className="auth-panel"><div className="auth-brand"><span className="brand-mark">鱼</span><strong>闲鱼数据台</strong></div><div className="auth-heading"><h1>登录工作台</h1></div>{!api.configured && <div className="auth-alert"><strong>暂时无法登录</strong><span>请稍后再试。</span></div>}<form onSubmit={(event) => void submit(event)}><label><span>账号</span><input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" placeholder="请输入账号" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入账号' : input.value.length < 6 ? '账号不低于6位' : '账号不超过20位') }} onInput={(event) => event.currentTarget.setCustomValidity('')} pattern=".{6,20}" minLength={6} maxLength={20} required /></label><label><span>密码</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="请输入密码" onInvalid={(event) => { const input = event.currentTarget; input.setCustomValidity(!input.value ? '请输入密码' : input.value.length < 12 ? '密码至少12位' : '') }} onInput={(event) => event.currentTarget.setCustomValidity('')} minLength={12} required /></label><label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => setRememberPassword(event.target.checked)} /><span>记住账号和密码</span></label>{error && <p className="form-error" role="alert">{error}</p>}<button className="primary auth-submit" type="submit" disabled={submitting || !api.configured}>{submitting ? '正在登录…' : '登录'}</button></form></section></main>
 }
 
 function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIdentity; onLogout: () => void }): ReactNode {
   const [active, setActive] = useState<PageKey>('dashboard')
+  const [marketView, setMarketView] = useState<RowKind>('pool')
+  const [dynamicView, setDynamicView] = useState<RowKind>('events')
   const [menuOpen, setMenuOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [drawer, setDrawer] = useState<TableRow | null>(null)
@@ -496,7 +545,7 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   const [reloadKey, setReloadKey] = useState(0)
 
   const activePage = pages.find((pageItem) => pageItem.key === active)!
-  const listKind: RowKind | null = active === 'pool' || active === 'discoveries' || active === 'events' || active === 'logs' || active === 'ai' ? active : null
+  const listKind: RowKind | null = active === 'market' ? marketView : active === 'dynamic' ? dynamicView : active === 'ai' ? 'ai' : null
   const listRequest = useMemo<UserListRequest>(() => ({ limit: pageSize, cursor, sort, filters: { ...(query.trim() ? { q: query.trim() } : {}), ...(status ? { status } : {}) } }), [cursor, pageSize, query, sort, status])
 
   useEffect(() => {
@@ -509,7 +558,13 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
   }, [api, listKind, listRequest, reloadKey])
 
   const switchPage = (next: PageKey) => { setActive(next); setCursor(null); setCursorHistory([]); setQuery(''); setStatus(''); setSort('updated_at_desc'); setDrawer(null); setMenuOpen(false) }
+  const switchListView = (next: RowKind) => {
+    if (next === 'pool' || next === 'discoveries') setMarketView(next)
+    if (next === 'events' || next === 'logs') setDynamicView(next)
+    setCursor(null); setCursorHistory([]); setQuery(''); setStatus(''); setSort('updated_at_desc'); setDrawer(null)
+  }
   const openSellerFromItem = (target: SellerTarget) => { setSellerTarget(target); switchPage('sellers') }
+  const openItemEvents = () => { setDynamicView('events'); switchPage('dynamic') }
   const changeFilter = (callback: () => void) => { callback(); setCursor(null); setCursorHistory([]) }
   const nextPage = () => { if (!page.nextCursor) return; setCursorHistory((history) => [...history, cursor]); setCursor(page.nextCursor) }
   const previousPage = () => { if (!cursorHistory.length) return; setCursor(cursorHistory[cursorHistory.length - 1] ?? null); setCursorHistory(cursorHistory.slice(0, -1)) }
@@ -519,15 +574,14 @@ function Workbench({ api, user, onLogout }: { api: UserApiClient; user: UserIden
     <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><Fish size={18} /></span>{!collapsed && <span>闲鱼数据台</span>}</div>
       <nav>{pages.filter((pageItem) => pageItem.key !== 'xianyuSupply' && pageItem.key !== 'generalSupply').slice(0, -1).map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}
-        {!collapsed && <p className="nav-caption">无人货源</p>}
         {pages.filter((pageItem) => pageItem.key === 'xianyuSupply' || pageItem.key === 'generalSupply').map((pageItem) => <button key={pageItem.key} className={`nav-item supply-nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}
         {pages.filter((pageItem) => pageItem.key === 'settings').map((pageItem) => <button key={pageItem.key} className={`nav-item ${active === pageItem.key ? 'active' : ''}`} onClick={() => switchPage(pageItem.key)} title={collapsed ? pageItem.label : undefined}><pageItem.icon size={18} /><span>{pageItem.label}</span></button>)}</nav>
       <div className="sidebar-foot"><button className="collapse-button" onClick={() => setCollapsed(!collapsed)} title={collapsed ? '展开侧边栏' : '收起侧边栏'}>{collapsed ? <PanelLeft size={17} /> : <PanelLeftClose size={17} />}</button></div>
     </aside>
     {menuOpen && <button className="backdrop" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
-    <section className="main-shell"><header className="workspace-header"><div className="header-context"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{activePage.label}</span></div><div className="header-tools"><button className="icon-button notification" title="事件中心" onClick={() => switchPage('events')}><Bell size={18} /></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header>
-      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'xianyuSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="xianyu" />}{active === 'generalSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="general" />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} />}</main></section>
-    {drawer && <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />}
+    <section className="main-shell"><header className="workspace-header"><div className="header-context"><button className="mobile-menu" title="打开导航" onClick={() => setMenuOpen(true)}><Menu size={19} /></button><span>{activePage.label}</span></div><div className="header-tools"><button className="icon-button notification" title="查看动态" onClick={() => switchPage('dynamic')}><Bell size={18} /></button><div className="header-profile"><span className="header-avatar">{runtime.mode === 'demo' ? '预' : '用'}</span><span>{accountName}</span></div>{runtime.mode === 'api' && <button className="header-logout" title="退出登录" onClick={onLogout}><LogOut size={17} /></button>}</div></header>
+      <main className="content">{active === 'dashboard' && <Dashboard mode={runtime.mode} onNavigate={switchPage} />}{active === 'monitors' && <MonitorPage api={api} mode={runtime.mode} />}{active === 'sellers' && <SellerMonitorPage api={api} mode={runtime.mode} initialTarget={sellerTarget} onInitialTargetConsumed={() => setSellerTarget(null)} />}{active === 'xianyuSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="xianyu" />}{active === 'generalSupply' && <SupplyPage api={api} mode={runtime.mode} sourceType="general" />}{active === 'settings' && <SettingsPage />}{listKind && <ListPage api={api} mode={runtime.mode} resource={listKind} copy={pageCopy[listKind]} rows={page.items} total={page.total} pageIndex={cursorHistory.length + 1} pageSize={pageSize} query={query} status={status} sort={sort} loading={loading} error={error} canGoBack={cursorHistory.length > 0} canGoForward={page.hasMore && Boolean(page.nextCursor)} onQuery={(value) => changeFilter(() => setQuery(value))} onStatus={(value) => changeFilter(() => setStatus(value))} onSort={(value) => changeFilter(() => setSort(value as SortKey))} onPageSize={(value) => { setPageSize(value); setCursor(null); setCursorHistory([]) }} onPrev={previousPage} onNext={nextPage} onReload={() => setReloadKey((value) => value + 1)} onRetry={() => setReloadKey((value) => value + 1)} onOpen={setDrawer} tabs={active === 'market' ? [{ key: 'pool' as RowKind, label: '商品' }, { key: 'discoveries' as RowKind, label: '发现' }] : active === 'dynamic' ? [{ key: 'events' as RowKind, label: '变化事件' }, { key: 'logs' as RowKind, label: '系统日志' }] : undefined} onTabChange={switchListView} />}</main></section>
+    {drawer && (drawer.market ? <MarketItemDetail api={api} mode={runtime.mode} row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} onOpenEvents={openItemEvents} /> : <DetailDrawer row={drawer} onClose={() => setDrawer(null)} onAddSeller={openSellerFromItem} />)}
     <AnnouncementModal api={api} mode={runtime.mode} />
   </div>
 }
@@ -549,7 +603,7 @@ function AnnouncementModal({ api, mode }: { api: UserApiClient; mode: 'demo' | '
 function Dashboard({ mode, onNavigate }: { mode: 'demo' | 'api'; onNavigate: (key: PageKey) => void }): ReactNode {
   if (mode === 'api') return <ApiState title="暂无数据概览" description="数据概览准备完成后将在这里展示。" />
   const stats = [['生效监控', '18', '较昨日 +2', Gauge, 'blue'], ['关注商家', '36', '公开商品变化 14', Store, 'mint'], ['待处理事件', '7', '3 条价格变化', Bell, 'amber'], ['市场机会', '12', '过去 24 小时', FileSearch, 'rose']] as const
-  return <><div className="page-heading"><div><p className="eyebrow">数据概览</p><h1>数据总览</h1><p>查看近期监控、市场和分析动态。</p></div><button className="primary" onClick={() => onNavigate('monitors')}><Plus size={16} />新建监控</button></div><section className="stats-grid">{stats.map(([label, value, note, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={20} /></div><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div></article>)}</section><section className="dashboard-grid"><section className="panel wide"><div className="panel-head"><div><h2>重点动态</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('events')}>查看全部 <ChevronRight size={15} /></button></div><div className="feed-list">{['MacBook Air M2 16G 512G 价格下降 6.5%', '海风数码回收店新增 6 个公开商品', '轻薄本价格带的低价供给增加 18%'].map((item, index) => <button className="feed" key={item} onClick={() => onNavigate('events')}><span className={`feed-dot d${index}`} /><div><strong>{item}</strong><small>{index + 1} 小时前</small></div><ChevronRight size={16} /></button>)}</div></section><section className="panel"><div className="panel-head"><div><h2>市场信号</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('discoveries')}>全部</button></div><div className="signal"><div><span>价格下降商品</span><strong>42</strong></div><div><span>新增样本</span><strong>186</strong></div><div><span>商家上新</span><strong>29</strong></div></div></section><section className="panel"><div className="panel-head"><div><h2>最新 AI 解读</h2><p>已更新</p></div><button className="text-button" onClick={() => onNavigate('ai')}>打开</button></div><div className="ai-preview"><Bot size={22} /><div><strong>轻薄本价格带周报</strong><p>低价供给增加，成交热度保持平稳。</p></div></div></section></section></>
+  return <><div className="page-heading"><div><p className="eyebrow">数据概览</p><h1>数据总览</h1><p>查看近期监控、市场和分析动态。</p></div><button className="primary" onClick={() => onNavigate('monitors')}><Plus size={16} />新建监控</button></div><section className="stats-grid">{stats.map(([label, value, note, Icon, tone]) => <article className="stat-card" key={label}><div className={`stat-icon ${tone}`}><Icon size={20} /></div><div><span>{label}</span><strong>{value}</strong><small>{note}</small></div></article>)}</section><section className="dashboard-grid"><section className="panel wide"><div className="panel-head"><div><h2>重点动态</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('dynamic')}>查看全部 <ChevronRight size={15} /></button></div><div className="feed-list">{['MacBook Air M2 16G 512G 价格下降 6.5%', '海风数码回收店新增 6 个公开商品', '轻薄本价格带的低价供给增加 18%'].map((item, index) => <button className="feed" key={item} onClick={() => onNavigate('dynamic')}><span className={`feed-dot d${index}`} /><div><strong>{item}</strong><small>{index + 1} 小时前</small></div><ChevronRight size={16} /></button>)}</div></section><section className="panel"><div className="panel-head"><div><h2>市场信号</h2><p>最近 24 小时</p></div><button className="text-button" onClick={() => onNavigate('market')}>全部</button></div><div className="signal"><div><span>价格下降商品</span><strong>42</strong></div><div><span>新增样本</span><strong>186</strong></div><div><span>商家上新</span><strong>29</strong></div></div></section><section className="panel"><div className="panel-head"><div><h2>最新 AI 解读</h2><p>已更新</p></div><button className="text-button" onClick={() => onNavigate('ai')}>打开</button></div><div className="ai-preview"><Bot size={22} /><div><strong>轻薄本价格带周报</strong><p>低价供给增加，成交热度保持平稳。</p></div></div></section></section></>
 }
 
 function MonitorPage({ api, mode }: { api: UserApiClient; mode: 'demo' | 'api' }): ReactNode {
@@ -1052,9 +1106,8 @@ function ApiState({ title, description }: { title: string; description: string }
   return <div className="state-box api-state"><Activity size={27} /><strong>{title}</strong><p>{description}</p></div>
 }
 
-function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; copy: { title: string; description: string; primary: string; columns: [string, string, string, string] }; rows: TableRow[]; total: number; pageIndex: number; pageSize: number; query: string; status: string; sort: SortKey; loading: boolean; error: string | null; canGoBack: boolean; canGoForward: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onPageSize: (value: number) => void; onPrev: () => void; onNext: () => void; onReload: () => void; onRetry: () => void; onOpen: (row: TableRow) => void }): ReactNode {
+function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; copy: { title: string; description: string; primary: string; columns: [string, string, string, string] }; rows: TableRow[]; total: number; pageIndex: number; pageSize: number; query: string; status: string; sort: SortKey; loading: boolean; error: string | null; canGoBack: boolean; canGoForward: boolean; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onPageSize: (value: number) => void; onPrev: () => void; onNext: () => void; onReload: () => void; onRetry: () => void; onOpen: (row: TableRow) => void; tabs?: Array<{ key: RowKind; label: string }>; onTabChange: (next: RowKind) => void }): ReactNode {
   const { copy, rows, total, pageIndex, pageSize, query, status, sort, loading, error } = props
-  const [filterOpen, setFilterOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
   const exportCurrentPage = () => {
     const escape = (value: string) => `"${value.replace(/"/g, '""')}"`
@@ -1065,17 +1118,9 @@ function ListPage(props: { api: UserApiClient; mode: 'demo' | 'api'; resource: R
   const handlePrimary = () => {
     if (props.resource === 'logs') return exportCurrentPage()
     if (props.resource === 'ai') return setAiOpen(true)
-    setFilterOpen(true)
   }
-  return <><div className="page-heading"><div><p className="eyebrow">数据中心</p><h1>{copy.title}</h1><p>{copy.description}</p></div><button className="primary" onClick={handlePrimary}>{props.resource === 'logs' ? <ExternalLink size={16} /> : props.resource === 'ai' ? <Bot size={16} /> : <Plus size={16} />}{copy.primary}</button></div><section className="filter-bar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索名称、对象或变化内容" /></label><label><span>状态</span><select value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label><span>排序</span><select value={sort} onChange={(event) => props.onSort(event.target.value)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><button className="filter-button" title="更多筛选" onClick={() => setFilterOpen(true)}><SlidersHorizontal size={17} />更多筛选</button><div className="filter-spacer" /><button className="icon-button" title="刷新" onClick={props.onReload}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></section><section className="table-panel"><div className="table-summary"><span>共 <strong>{total}</strong> 条</span><span>已按当前筛选加载</span></div>{error ? <div className="state-box"><Activity size={27} /><strong>列表加载失败</strong><p>{error}</p><button className="primary small" onClick={props.onRetry}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载数据</strong><p>请稍候。</p></div> : rows.length === 0 ? <div className="state-box"><Filter size={27} /><strong>没有匹配的数据</strong><p>调整关键词或状态后重试。</p></div> : <div className="table-wrap"><table><thead><tr><th>{copy.columns[0]}</th><th>{copy.columns[1]}</th><th>{copy.columns[2]}</th><th>{copy.columns[3]}</th><th aria-label="操作" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><span className="row-tag">{row.tag}</span><strong>{row.title}</strong><small>{row.subtitle}</small></td><td>{row.metric}</td><td><span className="time">{row.updatedAt}</span></td><td><span className={`status ${statusClass[row.status]}`}>{row.status}</span></td><td><button className="row-action" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={19} /></button></td></tr>)}</tbody></table></div>}<CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={props.canGoBack} canGoForward={props.canGoForward} onPrev={props.onPrev} onNext={props.onNext} onPageSize={props.onPageSize} /></section>{filterOpen && <FilterPanel query={query} status={status} sort={sort} onQuery={props.onQuery} onStatus={props.onStatus} onSort={props.onSort} onClose={() => setFilterOpen(false)} />}{aiOpen && <AiRequestModal api={props.api} mode={props.mode} resource={props.resource} query={query} status={status} sort={sort} rows={rows} onClose={() => setAiOpen(false)} />}</>
-}
-
-function FilterPanel({ query, status, sort, onQuery, onStatus, onSort, onClose }: { query: string; status: string; sort: SortKey; onQuery: (value: string) => void; onStatus: (value: string) => void; onSort: (value: string) => void; onClose: () => void }): ReactNode {
-  const [draftQuery, setDraftQuery] = useState(query)
-  const [draftStatus, setDraftStatus] = useState(status)
-  const [draftSort, setDraftSort] = useState(sort)
-  const apply = () => { onQuery(draftQuery); onStatus(draftStatus); onSort(draftSort); onClose() }
-  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭筛选" onClick={onClose} /><section className="modal-shell filter-modal" role="dialog" aria-modal="true" aria-labelledby="filter-modal-title"><header><div><p className="eyebrow">筛选条件</p><h2 id="filter-modal-title">调整列表范围</h2></div><button className="icon-button" title="关闭" onClick={onClose}><X size={18} /></button></header><div className="modal-body"><label className="modal-field"><span>关键词</span><input value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} placeholder="名称、对象或变化内容" /></label><label className="modal-field"><span>状态</span><select value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label className="modal-field"><span>排序</span><select value={draftSort} onChange={(event) => setDraftSort(event.target.value as SortKey)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label></div><footer><button className="secondary" onClick={onClose}>取消</button><button className="primary" onClick={apply}>应用筛选</button></footer></section></div>
+  const hasPrimary = props.resource === 'logs' || props.resource === 'ai'
+  return <><div className="page-heading"><div><p className="eyebrow">数据中心</p><h1>{copy.title}</h1><p>{copy.description}</p></div>{hasPrimary && <button className="primary" onClick={handlePrimary}>{props.resource === 'logs' ? <ExternalLink size={16} /> : <Bot size={16} />}{copy.primary}</button>}</div>{props.tabs && <div className="content-tabs" role="tablist">{props.tabs.map((tab) => <button key={tab.key} className={props.resource === tab.key ? 'active' : ''} role="tab" aria-selected={props.resource === tab.key} onClick={() => props.onTabChange(tab.key)}>{tab.label}</button>)}</div>}<section className="filter-bar"><label className="search-field"><Search size={17} /><input value={query} onChange={(event) => props.onQuery(event.target.value)} placeholder="搜索名称、对象或变化内容" /></label><label><span>状态</span><select value={status} onChange={(event) => props.onStatus(event.target.value)}><option value="">全部状态</option><option value="正常">正常</option><option value="关注">关注</option><option value="待处理">待处理</option><option value="已处理">已处理</option></select></label><label><span>排序</span><select value={sort} onChange={(event) => props.onSort(event.target.value)}>{sortOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><div className="filter-spacer" /><button className="icon-button" title="刷新" onClick={props.onReload}><RefreshCw size={17} className={loading ? 'spin' : ''} /></button></section><section className="table-panel"><div className="table-summary"><span>共 <strong>{total}</strong> 条</span><span>已按当前筛选加载</span></div>{error ? <div className="state-box"><Activity size={27} /><strong>列表加载失败</strong><p>{error}</p><button className="primary small" onClick={props.onRetry}><RefreshCw size={15} />重试</button></div> : loading ? <div className="state-box"><RefreshCw className="spin" size={27} /><strong>正在加载数据</strong><p>请稍候。</p></div> : rows.length === 0 ? <div className="state-box"><Filter size={27} /><strong>没有匹配的数据</strong><p>调整关键词或状态后重试。</p></div> : <div className="table-wrap"><table><thead><tr><th>{copy.columns[0]}</th><th>{copy.columns[1]}</th><th>{copy.columns[2]}</th><th>{copy.columns[3]}</th><th aria-label="操作" /></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><span className="row-tag">{row.tag}</span><strong>{row.title}</strong><small>{row.subtitle}</small></td><td>{row.metric}</td><td><span className="time">{row.updatedAt}</span></td><td><span className={`status ${statusClass[row.status]}`}>{row.status}</span></td><td><button className="row-action" title="查看详情" onClick={() => props.onOpen(row)}><MoreHorizontal size={19} /></button></td></tr>)}</tbody></table></div>}<CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={props.canGoBack} canGoForward={props.canGoForward} onPrev={props.onPrev} onNext={props.onNext} onPageSize={props.onPageSize} /></section>{aiOpen && <AiRequestModal api={props.api} mode={props.mode} resource={props.resource} query={query} status={status} sort={sort} rows={rows} onClose={() => setAiOpen(false)} />}</>
 }
 
 function AiRequestModal({ api, mode, resource, query, status, sort, rows, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; resource: RowKind; query: string; status: string; sort: SortKey; rows: TableRow[]; onClose: () => void }): ReactNode {
@@ -1099,6 +1144,25 @@ function CursorPagination({ total, pageIndex, pageSize, canGoBack, canGoForward,
   const start = total === 0 ? 0 : (pageIndex - 1) * pageSize + 1
   const end = Math.min(pageIndex * pageSize, total)
   return <div className="pagination"><span>{start}-{end} / {total}</span><select aria-label="每页条数" value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}><option value={20}>20 / 页</option><option value={50}>50 / 页</option><option value={100}>100 / 页</option></select><button disabled={!canGoBack} onClick={onPrev} title="上一页"><ChevronLeft size={17} /></button><button disabled={!canGoForward} onClick={onNext} title="下一页"><ChevronRight size={17} /></button></div>
+}
+
+function MarketItemDetail({ api, mode, row, onClose, onAddSeller, onOpenEvents }: { api: UserApiClient; mode: 'demo' | 'api'; row: TableRow; onClose: () => void; onAddSeller: (target: SellerTarget) => void; onOpenEvents: () => void }): ReactNode {
+  const market = row.market!
+  const [migrating, setMigrating] = useState(false)
+  const [migrationResult, setMigrationResult] = useState<string | null>(null)
+  const [migrationError, setMigrationError] = useState<string | null>(null)
+  const price = market.price ? `¥${Number(market.price).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}` : '暂无价格'
+  const itemId = market.platformItemId || row.id
+  const sellerName = market.platformSellerId || market.sellerId || '暂无公开卖家标识'
+  const formatDate = (value?: string) => value ? supplyDate(value) : '暂无记录'
+  const migrate = async () => {
+    setMigrating(true); setMigrationError(null)
+    try {
+      const request = mode === 'demo' ? { status: 'queued', platformItemId: itemId } : await api.createSupplyMigration({ schemaVersion: 1, idempotencyKey: newSupplyKey(), source: { kind: 'market_item', sourceId: row.id } })
+      setMigrationResult(`商品 ${request.platformItemId} 已加入搬家队列${request.status === 'queued' ? '，等待本机采集器处理' : ''}`)
+    } catch (caught) { setMigrationError(caught instanceof UserApiError ? caught.message : '创建搬家请求失败') } finally { setMigrating(false) }
+  }
+  return <div className="modal-layer"><button className="modal-backdrop" aria-label="关闭商品详情" onClick={onClose} /><section className="modal-shell market-detail-modal" role="dialog" aria-modal="true" aria-labelledby="market-detail-title"><header><div><span className="eyebrow">市场商品</span><h2 id="market-detail-title">{row.title}</h2></div><button className="icon-button" onClick={onClose} title="关闭"><X size={19} /></button></header><div className="modal-body market-detail-body"><section className="market-detail-hero">{market.images[0] ? <img src={market.images[0]} alt="" /> : <div className="market-image-empty"><PackageSearch size={24} /></div>}<div><span className="row-tag">{row.tag}</span><strong>{price}</strong><p>{market.region || '地区未知'}{market.conditionText ? ` · ${market.conditionText}` : ''}{market.wantCount === undefined ? '' : ` · ${market.wantCount} 人想要`}</p></div></section><section className="market-detail-section"><h3>商品信息</h3><dl><div><dt>平台</dt><dd>{market.platform || '闲鱼'}</dd></div><div><dt>商品 ID</dt><dd>{itemId}</dd></div><div><dt>商品状态</dt><dd><span className={`status ${statusClass[row.status]}`}>{row.status}</span></dd></div>{market.sourceUrl && <div><dt>公开链接</dt><dd><a href={market.sourceUrl} target="_blank" rel="noreferrer">打开商品页 <ExternalLink size={13} /></a></dd></div>}</dl></section><section className="market-detail-section"><h3>卖家</h3><dl><div><dt>公开卖家 ID</dt><dd>{sellerName}</dd></div><div><dt>卖家记录</dt><dd>{market.sellerId || '尚未关联本地卖家记录'}</dd></div></dl>{row.sellerTarget && <button className="text-button market-detail-link" onClick={() => onAddSeller(row.sellerTarget!)}><Store size={15} />查看关联卖家</button>}</section><section className="market-detail-section"><h3>最近快照</h3><dl><div><dt>首次发现</dt><dd>{formatDate(market.firstSeenAt)}</dd></div><div><dt>最近发现</dt><dd>{formatDate(market.lastSeenAt)}</dd></div><div><dt>当前摘要</dt><dd>{row.metric}</dd></div></dl></section><section className="market-detail-section"><h3>变化事件</h3><p className="market-detail-note">价格、状态和卖家变化会归入动态中的变化事件。</p><button className="text-button market-detail-link" onClick={onOpenEvents}><Bell size={15} />查看关联事件</button></section>{migrationError && <p className="form-error">{migrationError}</p>}{migrationResult && <div className="supply-result"><strong>搬家请求已提交</strong><span>{migrationResult}</span></div>}</div><footer><button className="secondary" onClick={onClose}>关闭</button><button className="primary small" onClick={() => void migrate()} disabled={migrating || Boolean(migrationResult)}>{migrating ? '正在提交…' : '搬家'}</button>{market.sourceUrl && <a className="primary small" href={market.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />打开商品页</a>}</footer></section></div>
 }
 
 function DetailDrawer({ row, onClose, onAddSeller }: { row: TableRow; onClose: () => void; onAddSeller: (target: SellerTarget) => void }): ReactNode {
@@ -1137,6 +1201,8 @@ function SupplyPage({ api, mode, sourceType }: { api: UserApiClient; mode: 'demo
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [importOpen, setImportOpen] = useState(false)
+  const [migrationOpen, setMigrationOpen] = useState(false)
+  const [publishedMigrationOpen, setPublishedMigrationOpen] = useState(false)
   const [selected, setSelected] = useState<SupplyMaterial | null>(null)
   const [editing, setEditing] = useState<SupplyMaterial | null>(null)
   const [planning, setPlanning] = useState<SupplyMaterial | null>(null)
@@ -1167,12 +1233,14 @@ function SupplyPage({ api, mode, sourceType }: { api: UserApiClient; mode: 'demo
   }
   const pageIndex = history.length + 1
   const title = sourceType === 'xianyu' ? '咸鱼搬家' : '通用铺货'
-  const description = sourceType === 'xianyu' ? '导入已解析的闲鱼公开商品素材，编辑后创建发布计划。' : '导入已解析的平台商品快照，整理成适用于闲鱼发布的素材。'
-  return <><div className="page-heading supply-heading"><div><h1>{title}</h1><p>{description}</p></div><button className="primary" onClick={() => setImportOpen(true)}><Plus size={16} />导入素材</button></div>
+  const description = sourceType === 'xianyu' ? '粘贴公开闲鱼商品链接，由本机采集器读取详情后生成待编辑素材。' : '导入已解析的平台商品快照，整理成适用于闲鱼发布的素材。'
+  return <><div className="page-heading supply-heading"><div><h1>{title}</h1><p>{description}</p></div>{sourceType === 'xianyu' ? <div className="supply-actions"><button className="secondary" onClick={() => setPublishedMigrationOpen(true)}>已发布商品搬家</button><button className="primary" onClick={() => setMigrationOpen(true)}><Plus size={16} />搬家商品</button></div> : <button className="primary" onClick={() => setImportOpen(true)}><Plus size={16} />导入素材</button>}</div>
     <section className="filter-bar supply-filter"><label className="search-field"><Search size={16} /><input value={query} onChange={(event) => reset(() => setQuery(event.target.value))} placeholder="搜索标题或来源 ID" /></label><label><span>状态</span><select value={status} onChange={(event) => reset(() => setStatus(event.target.value))}><option value="">全部状态</option><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><button className="icon-button" title="刷新素材" onClick={() => setReloadKey((value) => value + 1)}><RefreshCw size={17} /></button></section>
     {error && <div className="monitor-alert">{error}</div>}
     <section className="table-panel supply-table-panel"><div className="table-summary"><span>素材列表</span><span>已解析快照，最多每页 100 条</span></div><div className="table-wrap"><table className="data-table supply-table"><thead><tr><th>素材</th><th>价格</th><th>来源</th><th>版本</th><th>状态</th><th>更新时间</th><th aria-label="操作" /></tr></thead><tbody>{loading ? <tr><td colSpan={7}><div className="state-box"><RefreshCw className="spin" size={18} />正在加载素材</div></td></tr> : materials.length === 0 ? <tr><td colSpan={7}><div className="state-box"><PackageSearch size={20} /><strong>暂无素材</strong><p>导入已解析的 JSON 或 JSONL 快照后会显示在这里。</p></div></td></tr> : materials.map((material) => <tr key={material.id}><td><div className="supply-material-title">{material.mainImages[0] && <img src={material.mainImages[0]} alt="" />}<div><strong>{material.title}</strong><small>{material.sourceItemId}</small></div></div></td><td>¥{Number(material.price).toFixed(2)}</td><td>{material.sourcePlatform}</td><td>v{material.currentVersion}</td><td><span className={`status ${material.status === 'ready' ? 'ok' : material.status === 'archived' ? 'muted' : 'pending'}`}>{supplyStatusLabel(material.status)}</span></td><td>{supplyDate(material.updatedAt)}</td><td><div className="supply-actions"><button className="icon-button" title="预览" onClick={() => setSelected(material)}><ExternalLink size={16} /></button><button className="icon-button" title="编辑" onClick={() => setEditing(material)}><Pencil size={16} /></button>{material.status !== 'archived' && <button className="icon-button" title="归档" onClick={() => void archive(material)}><Trash2 size={16} /></button>}<button className="primary small" disabled={material.status !== 'ready'} onClick={() => setPlanning(material)}>创建计划</button></div></td></tr>)}</tbody></table></div><CursorPagination total={total} pageIndex={pageIndex} pageSize={pageSize} canGoBack={history.length > 0} canGoForward={Boolean(nextCursor)} onPrev={() => { const previous = history[history.length - 1] ?? null; setHistory((items) => items.slice(0, -1)); setCursor(previous) }} onNext={() => { if (!nextCursor) return; setHistory((items) => [...items, cursor]); setCursor(nextCursor) }} onPageSize={(value) => { setPageSize(value); setCursor(null); setHistory([]) }} /></section>
     {importOpen && <SupplyImportModal api={api} mode={mode} sourceType={sourceType} onClose={() => setImportOpen(false)} onImported={() => setReloadKey((value) => value + 1)} />}
+    {migrationOpen && <SupplyMigrationModal api={api} mode={mode} sourceKind="public_url" onClose={() => setMigrationOpen(false)} />}
+    {publishedMigrationOpen && <SupplyMigrationModal api={api} mode={mode} sourceKind="published_item" onClose={() => setPublishedMigrationOpen(false)} />}
     {selected && <SupplyPreviewModal material={selected} onClose={() => setSelected(null)} />}
     {editing && <SupplyEditModal api={api} mode={mode} material={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); setReloadKey((value) => value + 1) }} />}
     {planning && <SupplyPlanModal api={api} mode={mode} material={planning} onClose={() => setPlanning(null)} />}
@@ -1195,7 +1263,26 @@ function SupplyImportModal({ api, mode, sourceType, onClose, onImported }: { api
       setResult(imported); onImported()
     } catch (caught) { setError(caught instanceof UserApiError ? caught.message : caught instanceof Error ? caught.message : '素材导入失败') } finally { setSaving(false) }
   }
-  return <Modal title="导入素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在导入…' : '开始导入'}</button></>}><label className="modal-field"><span>素材文件</span><input type="file" accept=".json,.jsonl,.txt,application/json,application/x-ndjson,text/plain" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label><p className="supply-hint">只接受已提取完成的 JSON、JSONL 或 JSON 内容 TXT 快照，不接受商品链接文本。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>导入完成</strong><span>接收 {result.receivedCount}，新增 {result.insertedCount}，去重 {result.deduplicatedCount}，失败 {result.failedCount}</span>{result.rejections.length > 0 && <small>失败记录：{result.rejections.map((item) => `${item.recordIndex + 1} (${item.reasonCode})`).join('，')}</small>}</div>}</Modal>
+  return <Modal title="导入素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在导入…' : '开始导入'}</button></>}><label className="modal-field"><input type="file" accept=".json,.jsonl,.txt,application/json,application/x-ndjson,text/plain" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label><p className="supply-hint">支持已解析商品快照导入：JSON、JSONL 或 JSON 内容 TXT。</p>{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>导入完成</strong><span>接收 {result.receivedCount}，新增 {result.insertedCount}，去重 {result.deduplicatedCount}，失败 {result.failedCount}</span>{result.rejections.length > 0 && <small>失败记录：{result.rejections.map((item) => `${item.recordIndex + 1} (${item.reasonCode})`).join('，')}</small>}</div>}</Modal>
+}
+
+function SupplyMigrationModal({ api, mode, sourceKind, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; sourceKind: 'public_url' | 'published_item'; onClose: () => void }): ReactNode {
+  const [sourceValue, setSourceValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [result, setResult] = useState<{ status: string; platformItemId: string } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const submit = async () => {
+    if (!sourceValue.trim()) { setError(sourceKind === 'public_url' ? '请输入公开闲鱼商品链接' : '请输入已发布商品记录 ID'); return }
+    setSaving(true); setError(null)
+    try {
+      const migration = mode === 'demo'
+        ? { status: 'queued', platformItemId: 'demo-migration-item' }
+        : await api.createSupplyMigration({ schemaVersion: 1, idempotencyKey: newSupplyKey(), source: sourceKind === 'public_url' ? { kind: 'public_url', itemUrl: sourceValue.trim() } : { kind: 'published_item', sourceId: sourceValue.trim() } })
+      setResult({ status: migration.status, platformItemId: migration.platformItemId })
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '创建搬家请求失败') } finally { setSaving(false) }
+  }
+  const published = sourceKind === 'published_item'
+  return <Modal title={published ? '搬家已发布商品' : '搬家闲鱼商品'} onClose={onClose} footer={<><button className="secondary" onClick={onClose}>关闭</button><button className="primary" disabled={saving || Boolean(result)} onClick={() => void submit()}>{saving ? '正在提交…' : '开始搬家'}</button></>}>{published ? <><label className="modal-field"><span>已发布商品记录 ID</span><input value={sourceValue} onChange={(event) => setSourceValue(event.target.value)} placeholder="粘贴已发布商品监控记录 ID" /></label><p className="supply-hint">仅支持当前账户的已发布商品监控记录；本机采集器会读取该闲鱼商品的公开详情后生成素材。</p></> : <><label className="modal-field"><span>公开商品链接</span><input value={sourceValue} onChange={(event) => setSourceValue(event.target.value)} placeholder="粘贴闲鱼公开商品链接" /></label><p className="supply-hint">已绑定的本机采集器会使用本机 Chrome 读取公开详情，完成后自动生成素材。</p></>}{error && <p className="form-error">{error}</p>}{result && <div className="supply-result"><strong>搬家请求已提交</strong><span>商品 {result.platformItemId} · {result.status === 'queued' ? '等待本机采集器处理' : result.status}</span></div>}</Modal>
 }
 
 function SupplyPreviewModal({ material, onClose }: { material: SupplyMaterial; onClose: () => void }): ReactNode {
@@ -1207,20 +1294,56 @@ function SupplyEditModal({ api, mode, material, onClose, onSaved }: { api: UserA
   const [description, setDescription] = useState(material.description ?? '')
   const [price, setPrice] = useState(String(material.price))
   const [status, setStatus] = useState(material.status)
+  const [mainImages, setMainImages] = useState(material.mainImages.join('\n'))
+  const [detailImages, setDetailImages] = useState(material.detailImages.join('\n'))
+  const [sku, setSku] = useState(JSON.stringify(material.sku ?? null, null, 2))
+  const [attributes, setAttributes] = useState(JSON.stringify(material.attributes, null, 2))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [aiNotice, setAiNotice] = useState<string | null>(null)
+  const [aiSubmitting, setAiSubmitting] = useState(false)
+  const parseImageUrls = (value: string, field: string, minimum: number, maximum: number): string[] => {
+    const urls = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)
+    if (urls.length < minimum || urls.length > maximum) throw new Error(`${field}数量需在 ${minimum}-${maximum} 张之间`)
+    const normalized = urls.map((item) => {
+      let url: URL
+      try { url = new URL(item) } catch { throw new Error(`${field}包含无效 URL`) }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error(`${field}仅支持公开 HTTP(S) URL`)
+      url.hash = ''
+      return url.toString()
+    })
+    if (new Set(normalized).size !== normalized.length) throw new Error(`${field}不能重复`)
+    return normalized
+  }
   const submit = async () => {
     const numericPrice = Number(price)
     if (!title.trim()) { setError('请输入标题'); return }
     if (!Number.isFinite(numericPrice) || numericPrice < 0) { setError('请输入有效价格'); return }
-    setSaving(true); setError(null)
     try {
-      const patch: SupplyMaterialPatch = { title: title.trim(), description: description.trim() || null, price: numericPrice, status: status as SupplyMaterial['status'] }
+      const parsedSku: unknown = JSON.parse(sku)
+      const parsedAttributes: unknown = JSON.parse(attributes)
+      if (!parsedAttributes || Array.isArray(parsedAttributes) || typeof parsedAttributes !== 'object') throw new Error('属性必须是 JSON 对象')
+      const patch: SupplyMaterialPatch = {
+        title: title.trim(), description: description.trim() || null, price: numericPrice, status: status as SupplyMaterial['status'],
+        mainImages: parseImageUrls(mainImages, '主图', 1, 10), detailImages: parseImageUrls(detailImages, '详情图', 0, 120),
+        sku: parsedSku, attributes: parsedAttributes as Record<string, unknown>
+      }
+      setSaving(true); setError(null)
       if (mode !== 'demo') await api.updateSupplyMaterial(material.id, patch)
       onSaved()
-    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : '素材保存失败') } finally { setSaving(false) }
+    } catch (caught) { setError(caught instanceof UserApiError ? caught.message : caught instanceof Error ? caught.message : '素材保存失败') } finally { setSaving(false) }
   }
-  return <Modal title="编辑素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '正在保存…' : '保存'}</button></>}><label className="modal-field"><span>标题</span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} /></label><label className="modal-field"><span>价格</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label><label className="modal-field"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value as SupplyMaterial['status'])}><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><label className="modal-field"><span>描述</span><textarea value={description} maxLength={10000} onChange={(event) => setDescription(event.target.value)} /></label>{error && <p className="form-error">{error}</p>}</Modal>
+  const requestAiRewrite = async () => {
+    setAiSubmitting(true); setError(null); setAiNotice(null)
+    try {
+      if (mode === 'demo') { setAiNotice('AI 二创请求已提交，完成后可在 AI 分析中查看标题和内容建议。'); return }
+      await api.createAiJob({ capabilityCode: 'supply_rewrite', scope: 'personal', idempotencyKey: `supply-rewrite:${material.id}:${newSupplyKey()}`, input: { materialId: material.id, title: title.trim(), description: description.trim(), price: Number(price), attributes: material.attributes } })
+      setAiNotice('AI 二创请求已提交，完成后可在 AI 分析中查看标题和内容建议。')
+    } catch (caught) {
+      setError(caught instanceof UserApiError ? caught.message : 'AI 二创请求失败')
+    } finally { setAiSubmitting(false) }
+  }
+  return <Modal title="编辑素材" onClose={onClose} footer={<><button className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={saving} onClick={() => void submit()}>{saving ? '正在保存…' : '保存'}</button></>}><label className="modal-field"><span>标题</span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} /></label><label className="modal-field"><span>价格</span><input type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label><label className="modal-field"><span>状态</span><select value={status} onChange={(event) => setStatus(event.target.value as SupplyMaterial['status'])}><option value="draft">待编辑</option><option value="ready">可发布</option><option value="archived">已归档</option></select></label><label className="modal-field"><span>描述</span><textarea value={description} maxLength={10000} onChange={(event) => setDescription(event.target.value)} /></label><label className="modal-field"><span>主图 URL（每行一条）</span><textarea value={mainImages} onChange={(event) => setMainImages(event.target.value)} placeholder="https://example.com/image.jpg" /></label><label className="modal-field"><span>详情图 URL（每行一条）</span><textarea value={detailImages} onChange={(event) => setDetailImages(event.target.value)} placeholder="可留空" /></label><label className="modal-field"><span>SKU JSON</span><textarea value={sku} onChange={(event) => setSku(event.target.value)} spellCheck={false} /></label><label className="modal-field"><span>属性 JSON</span><textarea value={attributes} onChange={(event) => setAttributes(event.target.value)} spellCheck={false} /></label><button className="secondary" disabled={aiSubmitting} onClick={() => void requestAiRewrite()}>{aiSubmitting ? '正在提交…' : 'AI 二创标题与内容'}</button>{aiNotice && <p className="supply-hint">{aiNotice}</p>}{error && <p className="form-error">{error}</p>}</Modal>
 }
 
 function SupplyPlanModal({ api, mode, material, onClose }: { api: UserApiClient; mode: 'demo' | 'api'; material: SupplyMaterial; onClose: () => void }): ReactNode {

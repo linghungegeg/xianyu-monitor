@@ -87,6 +87,15 @@ function readOutboxCount(databasePath) {
   }
 }
 
+function readOutboxState(databasePath) {
+  const database = new DatabaseSync(databasePath)
+  try {
+    return database.prepare('SELECT kind,attempts,next_attempt_at FROM outbox ORDER BY created_at,id').all()
+  } finally {
+    database.close()
+  }
+}
+
 function baseItems() {
   return {
     '501': { title: 'MacBook Air 13', price: 100, want: 8, description: '公开商品详情 A', condition: '95新', imageKeys: ['501-a', '501-b'], tags: ['数码', '原装'] },
@@ -315,6 +324,14 @@ async function run() {
     })
     assert(createdPublishedItem.statusCode === 200, `发布商品监控任务创建失败：${createdPublishedItem.statusCode} ${createdPublishedItem.body}`)
     const publishedTaskId = json(createdPublishedItem).id
+    const migration = await userApi.inject({
+      method: 'POST',
+      url: '/v1/supply/migrations',
+      headers: auth(userAccess),
+      payload: { schemaVersion: 1, idempotencyKey: 'phase6-electron-public-link', source: { kind: 'public_url', itemUrl: `${userApiUrl}/item?id=501` } }
+    })
+    assert(migration.statusCode === 200 && json(migration).status === 'queued', `公开链接搬家请求创建失败：${migration.statusCode} ${migration.body}`)
+    const migrationId = json(migration).id
     const setTaskStatus = async (sellerStatus, publishedStatus) => {
       const [sellerResponse, publishedResponse] = await Promise.all([
         userApi.inject({ method: 'PATCH', url: `/v1/seller-monitors/${taskId}`, headers: auth(userAccess), payload: { status: sellerStatus } }),
@@ -347,6 +364,10 @@ async function run() {
     }
 
     await runAndPause(1)
+    const migrated = (await db.query('SELECT status,material_id,last_error FROM supply.migration_requests WHERE id=$1', [migrationId])).rows[0]
+    assert(migrated?.status === 'succeeded' && migrated.material_id && migrated.last_error === null, `本机 Chrome 未完成公开链接搬家：${JSON.stringify(migrated)}`)
+    const migratedMaterial = (await db.query('SELECT source_type,source_platform,source_item_id,title,main_images FROM supply.materials WHERE id=$1', [migrated.material_id])).rows[0]
+    assert(migratedMaterial?.source_type === 'xianyu' && migratedMaterial.source_platform === 'goofish' && migratedMaterial.source_item_id === '501' && migratedMaterial.title === 'MacBook Air 13', `搬家素材内容错误：${JSON.stringify(migratedMaterial)}`)
     assert(heartbeatFailures > 0, '断网夹具没有让首次 heartbeat 进入 Outbox')
 
     heartbeatOnline = true
@@ -359,7 +380,7 @@ async function run() {
     await desktop.page.getByRole('button', { name: '暂停采集' }).click()
     await waitForText(desktop.page, '采集器已暂停')
     const recoveryDatabasePath = join(userDataPath, 'monitor-data', 'launcher.db')
-    assert(readOutboxCount(recoveryDatabasePath) === 0, '断网恢复后的 Outbox 未在解绑前清空')
+    assert(readOutboxCount(recoveryDatabasePath) === 0, `断网恢复后的 Outbox 未在解绑前清空: ${JSON.stringify(readOutboxState(recoveryDatabasePath))}`)
 
     fixtureRevision = 2
     await patchTask()
@@ -477,6 +498,7 @@ async function run() {
         trayHideRestoreAndExit: true,
         inFlightRevokeStopsNextDetail: true,
         localCredentialCookieAndProfileBoundary: true,
+        publicLinkMigrationUsesLocalChromeAndOutbox: true,
         noIngestUploadCall: true
       }
     }, null, 2))

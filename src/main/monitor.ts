@@ -1,8 +1,8 @@
 import { app, safeStorage } from 'electron'
 import { createHash, createPrivateKey, generateKeyPairSync, randomUUID, sign } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { chromium, type BrowserContext, type Page } from 'playwright-core'
+import { chromium, type BrowserContext, type Locator, type Page } from 'playwright-core'
 import type { LauncherStatus } from '../shared/types'
 import { MonitorDatabase, type CachedMonitorTask, type CachedPublishedItemMonitorTask, type CachedSearchMonitorTask, type CachedSellerMonitorTask } from './database'
 import {
@@ -41,7 +41,9 @@ const DEFAULT_SELLER_PROFILE_HOSTS = ['goofish.com', '*.goofish.com']
 type TokenResponse = { accessToken?: string; refreshToken?: string; clientId?: string }
 type EntitlementResponse = { allowed?: boolean }
 type TaskResponse = { items?: unknown[]; snapshotAt?: string }
+type SupplyPublishSnapshot = { title: string; description: string; price: number; mainImages: string[]; sku: unknown; address?: string }
 type SupplyClaimResponse = { claimBatchId?: string; items?: Array<{ id?: string; materialSnapshot?: unknown }> }
+type SupplyMigrationClaimResponse = { items?: Array<{ id?: string; platformItemId?: string; itemUrl?: string }> }
 type DeviceKey = { publicKey: string; privateKey: ReturnType<typeof createPrivateKey> }
 
 class CloudRequestError extends Error {
@@ -132,6 +134,23 @@ function tokenSubject(token: string): string {
 
 function compact(value: string | null | undefined): string {
   return (value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function supplySnapshot(value: unknown): SupplyPublishSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('发布计划素材快照无效')
+  const source = value as Record<string, unknown>
+  const title = compact(typeof source.title === 'string' ? source.title : '')
+  const description = compact(typeof source.description === 'string' ? source.description : '')
+  const price = typeof source.price === 'number' ? source.price : Number(source.price)
+  const images = Array.isArray(source.mainImages) ? source.mainImages.filter((item): item is string => typeof item === 'string') : []
+  if (!title || title.length > 240 || !Number.isFinite(price) || price < 0 || price > 100_000_000 || !images.length || images.length > 10) throw new Error('发布计划素材快照无效')
+  for (const image of images) {
+    const url = new URL(image)
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('发布计划包含非公开图片地址')
+  }
+  const attributes = source.attributes && typeof source.attributes === 'object' && !Array.isArray(source.attributes) ? source.attributes as Record<string, unknown> : {}
+  const address = compact(typeof attributes.publishAddress === 'string' ? attributes.publishAddress : typeof attributes.address === 'string' ? attributes.address : '')
+  return { title, description, price: Number(price.toFixed(2)), mainImages: images, sku: source.sku ?? null, ...(address ? { address } : {}) }
 }
 
 function escapedText(value: string): RegExp {
@@ -328,6 +347,7 @@ export class XianyuMonitor {
         await this.scanTask(task)
       }
       await this.prepareDueSupplyPlans()
+      await this.prepareSupplyMigrations()
       const clientId = PHASE6_UPLOAD_ENABLED ? this.db.getState(STATE_CLIENT_ID) : null
       if (clientId) this.db.enqueueMarketBatch(clientId)
       if (this.running) await this.flushOutbox()
@@ -362,14 +382,19 @@ export class XianyuMonitor {
       const attemptId = randomUUID()
       this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'claimed', message: '已领取发布计划，等待本机发布页处理' })
       try {
+        const material = supplySnapshot(plan.materialSnapshot)
         const page = await this.openPublishPage()
         await this.goto(page, GOOFISH_PUBLISH, '无法打开闲鱼发布页，请检查网络后重试')
-        const attention = await this.publishPageNeedsAttention(page)
-        this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message: attention })
-        this.db.enqueueSupplyPublishResult({ id: `supply-result:${attemptId}`, planId: plan.id, claimBatchId: claim.claimBatchId, attemptKey: `attempt:${attemptId}`, status: 'failed', errorMessage: attention })
-        this.db.addLog('info', `发布计划 ${plan.id} 已领取，${attention}`)
+        await this.assertPublishPageReady(page)
+        const published = await this.fillAndSubmitSupplyPlan(page, material, attemptId)
+        this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'succeeded', message: `已确认发布商品 ${published.itemId}` })
+        this.db.enqueueSupplyPublishResult({ id: `supply-result:${attemptId}`, planId: plan.id, claimBatchId: claim.claimBatchId, attemptKey: `attempt:${attemptId}`, status: 'succeeded', xianyuItemId: published.itemId, xianyuUrl: published.url })
+        this.db.addLog('success', `发布计划 ${plan.id} 已确认提交`)
       } catch (error) {
-        this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message: this.safeMessage(error, '发布页打开失败') })
+        const message = this.safeMessage(error, '发布页未能确认提交，请在本机 Chrome 检查后处理')
+        this.db.recordSupplyPublishAttempt({ id: attemptId, planId: plan.id, claimBatchId: claim.claimBatchId, status: 'needs_attention', message })
+        this.db.enqueueSupplyPublishResult({ id: `supply-result:${attemptId}`, planId: plan.id, claimBatchId: claim.claimBatchId, attemptKey: `attempt:${attemptId}`, status: 'needs_attention', errorMessage: message })
+        this.db.addLog('error', `发布计划 ${plan.id} 需要人工处理`)
       }
     }
   }
@@ -378,12 +403,131 @@ export class XianyuMonitor {
     return this.newProfilePage()
   }
 
-  private async publishPageNeedsAttention(page: Page): Promise<string> {
+  private async prepareSupplyMigrations(): Promise<void> {
+    const clientId = this.db.getState(STATE_CLIENT_ID)
+    if (!clientId) return
+    const claim = await this.request<SupplyMigrationClaimResponse>(this.collectorApiBase, '/v1/supply/migrations/claim', {
+      method: 'POST', token: this.accessToken, body: { schemaVersion: 1, deviceId: clientId, idempotencyKey: `migration:${clientId}:${new Date().toISOString().slice(0, 16)}`, limit: 1 }
+    })
+    if (!Array.isArray(claim.items)) return
+    for (const migration of claim.items) {
+      const requestId = typeof migration.id === 'string' ? migration.id : ''
+      const platformItemId = typeof migration.platformItemId === 'string' ? migration.platformItemId : ''
+      const itemUrl = typeof migration.itemUrl === 'string' ? migration.itemUrl : ''
+      if (!requestId || !platformItemId || !itemUrl) continue
+      const attemptKey = `migration:${requestId}:${randomUUID()}`
+      try {
+        const item = await this.readItemDetail({ platformItemId, url: itemUrl, title: platformItemId, price: null, region: null, publishedText: null, wantCount: null, imageUrls: [], tags: [] })
+        if (item.price === null || !item.imageUrls.length) throw new SearchPageError('structure', '公开商品详情缺少价格或主图')
+        this.db.enqueueSupplyMigrationResult({
+          requestId,
+          attemptKey,
+          status: 'succeeded',
+          snapshot: {
+            sourcePlatform: 'goofish', sourceItemId: item.platformItemId, sourceUrl: item.url, title: item.title, description: item.description,
+            price: item.price, mainImages: item.imageUrls, detailImages: [], sku: null,
+            attributes: { region: item.region, condition: item.conditionText, wantCount: item.wantCount, tags: item.tags }
+          }
+        })
+        this.db.addLog('success', `搬家商品 ${platformItemId} 已读取，等待同步素材库`)
+      } catch (error) {
+        this.db.enqueueSupplyMigrationResult({ requestId, attemptKey, status: 'failed', errorMessage: this.safeMessage(error, '本机读取公开商品失败') })
+        this.db.addLog('error', `搬家商品 ${platformItemId} 读取失败`)
+      }
+    }
+  }
+
+  private async assertPublishPageReady(page: Page): Promise<void> {
     const url = page.url()
-    if (!url.includes('goofish.com')) return '发布页地址未通过本机校验'
+    if (!navigationUrlAllowed(url)) throw new Error('发布页地址未通过本机校验')
     const text = compact(await page.locator('body').innerText().catch(() => ''))
-    if (/登录|扫码|验证|安全校验|人机/.test(text)) return '需要在本机 Chrome 完成登录或安全校验'
-    return '已打开本机闲鱼发布页，本阶段不自动提交商品'
+    if (/登录|扫码|验证|安全校验|人机/.test(text)) throw new Error('需要在本机 Chrome 完成登录或安全校验')
+  }
+
+  private async firstVisible(page: Page, selectors: string[]): Promise<Locator | undefined> {
+    for (const selector of selectors) {
+      const candidate = page.locator(selector).first()
+      if (await candidate.isVisible().catch(() => false)) return candidate
+    }
+    return undefined
+  }
+
+  private localPublishAddress(snapshot: SupplyPublishSnapshot): string | undefined {
+    if (snapshot.address) return snapshot.address
+    const configured = compact(process.env.XIANYU_PUBLISH_ADDRESSES ?? '')
+    if (!configured) return undefined
+    let addresses: unknown
+    try { addresses = JSON.parse(configured) } catch { throw new Error('本机发布地址配置无效') }
+    if (!Array.isArray(addresses)) throw new Error('本机发布地址配置无效')
+    const values = addresses.map((entry) => compact(typeof entry === 'string' ? entry : entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).value === 'string' ? String((entry as Record<string, unknown>).value) : '')).filter(Boolean)
+    if (!values.length) throw new Error('本机发布地址配置无有效地址')
+    return values[Math.floor(Math.random() * values.length)]
+  }
+
+  private async downloadSupplyImages(images: string[], attemptId: string): Promise<{ directory: string; files: string[] }> {
+    const directory = join(app.getPath('temp'), 'xianyu-monitor-publish', attemptId)
+    mkdirSync(directory, { recursive: true })
+    const files: string[] = []
+    try {
+      for (const [index, image] of images.entries()) {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+        try {
+          const response = await fetch(image, { signal: controller.signal })
+          const type = response.headers.get('content-type')?.toLowerCase() ?? ''
+          const bytes = Buffer.from(await response.arrayBuffer())
+          if (!response.ok || !type.startsWith('image/') || !bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error('公开图片下载失败')
+          const extension = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg'
+          const file = join(directory, `${index + 1}.${extension}`)
+          writeFileSync(file, bytes)
+          files.push(file)
+        } finally { clearTimeout(timeout) }
+      }
+      return { directory, files }
+    } catch (error) {
+      rmSync(directory, { recursive: true, force: true })
+      throw error
+    }
+  }
+
+  private async fillAndSubmitSupplyPlan(page: Page, material: SupplyPublishSnapshot, attemptId: string): Promise<{ itemId: string; url: string }> {
+    const imageFiles = await this.downloadSupplyImages(material.mainImages, attemptId)
+    try {
+      const title = await this.firstVisible(page, ['[data-xianyu-publish-title]', 'input[name="title"]', 'input[placeholder*="标题"]'])
+      const description = await this.firstVisible(page, ['[data-xianyu-publish-description]', 'textarea[name="description"]', 'textarea[placeholder*="描述"]'])
+      const price = await this.firstVisible(page, ['[data-xianyu-publish-price]', 'input[name="price"]', 'input[placeholder*="价格"]'])
+      const imageInput = await this.firstVisible(page, ['input[data-xianyu-publish-images][type="file"]', 'input[name="images"][type="file"]'])
+      if (!title || !description || !price || !imageInput) throw new Error('发布页缺少必要素材输入项')
+      await title.fill(material.title)
+      await description.fill(material.description)
+      await price.fill(String(material.price))
+      await imageInput.setInputFiles(imageFiles.files)
+      if (material.sku !== null) {
+        const sku = await this.firstVisible(page, ['[data-xianyu-publish-sku]', 'textarea[name="sku"]'])
+        if (!sku) throw new Error('发布页缺少 SKU 输入项')
+        await sku.fill(JSON.stringify(material.sku))
+      }
+      const address = this.localPublishAddress(material)
+      if (address) {
+        const addressInput = await this.firstVisible(page, ['[data-xianyu-publish-address]', 'select[name="address"]', 'input[name="address"]'])
+        if (!addressInput) throw new Error('发布页缺少本机地址输入项')
+        const tagName = await addressInput.evaluate((node) => node.tagName.toLowerCase())
+        if (tagName === 'select') await addressInput.selectOption({ label: address }).catch(() => addressInput.selectOption(address))
+        else await addressInput.fill(address)
+      }
+      const submit = await this.firstVisible(page, ['[data-xianyu-publish-submit]', 'button[type="submit"]'])
+      if (!submit) throw new Error('发布页缺少提交按钮')
+      await submit.click()
+      const result = await this.firstVisible(page, ['[data-xianyu-publish-result-id]', '[data-xianyu-published-item-id]'])
+      if (!result) throw new Error('发布后未确认商品 ID，已停止自动重试')
+      const itemId = compact(await result.evaluate((node) => node.getAttribute('data-xianyu-publish-result-id') ?? node.getAttribute('data-xianyu-published-item-id') ?? node.textContent ?? ''))
+      if (!/^[A-Za-z0-9._-]{1,128}$/.test(itemId)) throw new Error('发布后商品 ID 无效，已停止自动重试')
+      const url = new URL(page.url())
+      const itemUrl = url.searchParams.get('itemId') || url.searchParams.get('id') ? url.toString() : `https://www.goofish.com/item/${encodeURIComponent(itemId)}`
+      return { itemId, url: itemUrl }
+    } finally {
+      rmSync(imageFiles.directory, { recursive: true, force: true })
+    }
   }
 
   private async scanTask(task: CachedMonitorTask): Promise<void> {
@@ -951,13 +1095,15 @@ export class XianyuMonitor {
   private async flushOutbox(): Promise<void> {
     for (const entry of this.db.listDueOutbox()) {
       try {
-        const path = entry.kind === 'market_batch' ? '/v1/ingest' : entry.kind === 'supply_result' ? '/v1/supply/publish-results' : '/v1/heartbeat'
-        await this.request(this.collectorApiBase, path, { method: 'POST', token: this.accessToken, body: entry.payload })
+        const requestId = entry.kind === 'supply_migration_result' ? String(entry.payload.requestId ?? '') : ''
+        const path = entry.kind === 'market_batch' ? '/v1/ingest' : entry.kind === 'supply_result' ? '/v1/supply/publish-results' : entry.kind === 'supply_migration_result' && requestId ? `/v1/supply/migrations/${encodeURIComponent(requestId)}/result` : '/v1/heartbeat'
+        const payload = entry.kind === 'supply_migration_result' ? (() => { const { requestId: _requestId, ...result } = entry.payload; return result })() : entry.payload
+        await this.request(this.collectorApiBase, path, { method: 'POST', token: this.accessToken, body: payload })
         this.db.completeOutbox(entry.id)
       } catch (error) {
         this.db.deferOutbox(entry.id, entry.attempts + 1)
         if (!this.isRetryableOutboxError(error)) throw error
-        return
+        continue
       }
     }
   }

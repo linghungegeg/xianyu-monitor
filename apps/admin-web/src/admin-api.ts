@@ -99,7 +99,7 @@ export class AdminApi {
     return assertPage<T>(await this.request<unknown>(`${resources[resource]}?${params.toString()}`, { method: 'GET', authorized: true }))
   }
 
-  async providers(): Promise<AdminProvider[]> { return (await this.request<{ items: AdminProvider[] }>('/v1/admin/ai/providers', { method: 'GET', authorized: true })).items }
+  async providers(): Promise<AdminProvider[]> { return (await this.request<{ items: AdminProvider[] }>('/v1/admin/ai/providers?limit=20&sort=updated_at&order=desc', { method: 'GET', authorized: true })).items }
   async createProvider(input: { providerCode: string; modelReference: string; baseUrl: string; apiKey?: string; apiKeyCiphertext?: string; stream: boolean; reasoning: boolean; settings?: unknown; status: string }): Promise<AdminProvider> {
     return this.request<AdminProvider>('/v1/admin/ai/providers', { method: 'POST', authorized: true, body: JSON.stringify(input) })
   }

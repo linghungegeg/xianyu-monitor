@@ -124,7 +124,7 @@ export class MonitorDatabase {
       );
       CREATE TABLE IF NOT EXISTS outbox (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch', 'supply_result')),
+        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch', 'supply_result', 'supply_migration_result')),
         payload TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at TEXT NOT NULL,
@@ -274,6 +274,7 @@ export class MonitorDatabase {
         ON local_item_events (platform, platform_item_id, occurred_at DESC, id DESC);
     `)
     this.ensureOutboxKinds()
+    this.ensureSupplyPublishAttemptKinds()
     this.ensureColumn('cached_monitor_tasks', 'kind', "TEXT NOT NULL DEFAULT 'search'")
     this.ensureColumn('cached_monitor_tasks', 'target_json', 'TEXT')
     this.ensureColumn('local_items', 'condition_text', 'TEXT')
@@ -290,12 +291,12 @@ export class MonitorDatabase {
 
   private ensureOutboxKinds(): void {
     const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='outbox'").get() as { sql?: string } | undefined
-    if (!row?.sql || row.sql.includes("'supply_result'")) return
+    if (!row?.sql || row.sql.includes("'supply_migration_result'")) return
     this.db.exec(`
       ALTER TABLE outbox RENAME TO outbox_legacy;
       CREATE TABLE outbox (
         id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch', 'supply_result')),
+        kind TEXT NOT NULL CHECK (kind IN ('heartbeat', 'market_batch', 'supply_result', 'supply_migration_result')),
         payload TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at TEXT NOT NULL,
@@ -305,6 +306,27 @@ export class MonitorDatabase {
         SELECT id,kind,payload,attempts,next_attempt_at,created_at FROM outbox_legacy;
       DROP TABLE outbox_legacy;
       CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox (next_attempt_at, created_at, id);
+    `)
+  }
+
+  private ensureSupplyPublishAttemptKinds(): void {
+    const row = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='supply_publish_attempts'").get() as { sql?: string } | undefined
+    if (!row?.sql || row.sql.includes("'succeeded'")) return
+    this.db.exec(`
+      ALTER TABLE supply_publish_attempts RENAME TO supply_publish_attempts_legacy;
+      CREATE TABLE supply_publish_attempts (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        claim_batch_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('claimed', 'needs_attention', 'succeeded', 'failed')),
+        message TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO supply_publish_attempts (id,plan_id,claim_batch_id,status,message,created_at,updated_at)
+        SELECT id,plan_id,claim_batch_id,status,message,created_at,updated_at FROM supply_publish_attempts_legacy;
+      DROP TABLE supply_publish_attempts_legacy;
+      CREATE INDEX IF NOT EXISTS idx_supply_publish_attempts_plan ON supply_publish_attempts (plan_id, created_at DESC, id DESC);
     `)
   }
 
@@ -414,28 +436,39 @@ export class MonitorDatabase {
     const sequence = Number(this.getState('collector.upload-sequence') ?? '0') + 1
     const now = new Date().toISOString()
     const records: Array<Record<string, unknown>> = []
-    const sellers = this.db.prepare(`SELECT platform,platform_seller_id,profile_url,public_name,region,public_profile FROM local_sellers ORDER BY platform_seller_id LIMIT 50`).all() as Array<Record<string, unknown>>
+    const sellerCursor = this.getState('collector.upload-seller-cursor') ?? ''
+    const versionCursor = this.getState('collector.upload-version-cursor') ?? ''
+    const eventCursor = this.getState('collector.upload-event-cursor') ?? ''
+    const sellers = this.db.prepare(`SELECT platform,platform_seller_id,profile_url,public_name,region,public_profile FROM local_sellers WHERE platform_seller_id > ? ORDER BY platform_seller_id LIMIT 50`).all(sellerCursor) as Array<Record<string, unknown>>
     for (const seller of sellers) records.push({ type: 'seller', idempotencyKey: `seller:${seller.platform}:${seller.platform_seller_id}`, platform: seller.platform, platformSellerId: seller.platform_seller_id, profileUrl: seller.profile_url, publicName: seller.public_name, region: seller.region, publicProfile: JSON.parse(String(seller.public_profile ?? '{}')) })
     const versions = this.db.prepare(`SELECT i.platform,i.platform_item_id,i.url,i.title,i.price,i.region,i.want_count,i.image_urls,i.tags,i.description,i.condition_text,v.content_hash,v.canonical_payload,v.observed_at,r.platform_seller_id,r.state
       FROM local_items i JOIN local_item_versions v ON v.platform=i.platform AND v.platform_item_id=i.platform_item_id
       LEFT JOIN local_seller_item_relations r ON r.platform=i.platform AND r.platform_item_id=i.platform_item_id
-      ORDER BY v.observed_at DESC, i.platform_item_id LIMIT 50`).all() as Array<Record<string, unknown>>
+      WHERE v.content_hash > ? ORDER BY v.content_hash LIMIT 50`).all(versionCursor) as Array<Record<string, unknown>>
     for (const row of versions) {
       const payload = JSON.parse(String(row.canonical_payload ?? '{}'))
       const common = { platform: row.platform, platformItemId: row.platform_item_id, platformSellerId: row.platform_seller_id ?? undefined, state: row.state ?? 'unknown', title: row.title, price: row.price, region: row.region, wantCount: row.want_count, conditionText: row.condition_text, contentHash: row.content_hash, observedAt: row.observed_at, payload, imageUrls: JSON.parse(String(row.image_urls ?? '[]')), tags: JSON.parse(String(row.tags ?? '[]')), description: row.description, url: row.url }
       records.push({ type: 'version', idempotencyKey: `version:${row.platform}:${row.platform_item_id}:${row.content_hash}`, ...common })
       records.push({ type: 'snapshot', idempotencyKey: `snapshot:${row.platform}:${row.platform_item_id}:${row.content_hash}`, payloadHash: String(row.content_hash), ...common })
     }
-    const events = this.db.prepare(`SELECT event_key,platform_seller_id,platform_item_id,event_type,before_content_hash,after_content_hash,before_state,after_state,details_json,occurred_at FROM local_item_events ORDER BY occurred_at DESC,id DESC LIMIT 50`).all() as Array<Record<string, unknown>>
+    const events = this.db.prepare(`SELECT event_key,platform_seller_id,platform_item_id,event_type,before_content_hash,after_content_hash,before_state,after_state,details_json,occurred_at FROM local_item_events WHERE event_key > ? ORDER BY event_key LIMIT 50`).all(eventCursor) as Array<Record<string, unknown>>
     for (const event of events) records.push({ type: 'event', idempotencyKey: `event:${event.event_key}`, eventKey: event.event_key, platform: 'goofish', platformItemId: event.platform_item_id ?? undefined, platformSellerId: event.platform_seller_id, eventType: event.event_type, beforeHash: event.before_content_hash, afterHash: event.after_content_hash, beforeState: event.before_state, afterState: event.after_state, occurredAt: event.occurred_at })
     if (!records.length) return null
     const contentHash = createHash('sha256').update(JSON.stringify(records)).digest('hex')
     if (this.getState('collector.upload-content-hash') === contentHash) return null
+    const nextSellerCursor = sellers.length === 50 ? String(sellers[sellers.length - 1].platform_seller_id) : ''
+    const nextVersionCursor = versions.length === 50 ? String(versions[versions.length - 1].content_hash) : ''
+    const nextEventCursor = events.length === 50 ? String(events[events.length - 1].event_key) : ''
+    const cursorStart = JSON.stringify({ sellers: sellerCursor, versions: versionCursor, events: eventCursor })
+    const cursorEnd = JSON.stringify({ sellers: nextSellerCursor, versions: nextVersionCursor, events: nextEventCursor })
     const batchId = randomUUID()
-    const payload = { schemaVersion: 1, deviceId, batchId, idempotencyKey: `${deviceId}:${sequence}`, batchSequence: sequence, cursor: { start: String(sequence - 1), end: String(sequence) }, records }
+    const payload = { schemaVersion: 1, deviceId, batchId, idempotencyKey: `${deviceId}:${sequence}`, batchSequence: sequence, cursor: { start: cursorStart, end: cursorEnd }, records }
     this.db.prepare(`INSERT INTO outbox (id,kind,payload,attempts,next_attempt_at,created_at) VALUES (?,'market_batch',?,0,?,?)`).run(batchId, JSON.stringify(payload), now, now)
     this.setState('collector.upload-sequence', String(sequence))
     this.setState('collector.upload-content-hash', contentHash)
+    this.setState('collector.upload-seller-cursor', nextSellerCursor)
+    this.setState('collector.upload-version-cursor', nextVersionCursor)
+    this.setState('collector.upload-event-cursor', nextEventCursor)
     return batchId
   }
 
@@ -464,17 +497,24 @@ export class MonitorDatabase {
       .run(attempts, new Date(Date.now() + delayMs).toISOString(), id)
   }
 
-  recordSupplyPublishAttempt(input: { id: string; planId: string; claimBatchId: string; status: 'claimed' | 'needs_attention'; message: string }): void {
+  recordSupplyPublishAttempt(input: { id: string; planId: string; claimBatchId: string; status: 'claimed' | 'needs_attention' | 'succeeded' | 'failed'; message: string }): void {
     const now = new Date().toISOString()
     this.db.prepare(`INSERT INTO supply_publish_attempts (id,plan_id,claim_batch_id,status,message,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,message=excluded.message,updated_at=excluded.updated_at`)
       .run(input.id, input.planId, input.claimBatchId, input.status, input.message, now, now)
   }
 
-  enqueueSupplyPublishResult(input: { id: string; planId: string; claimBatchId: string; attemptKey: string; status: 'failed' | 'needs_attention'; errorMessage: string }): void {
+  enqueueSupplyPublishResult(input: { id: string; planId: string; claimBatchId: string; attemptKey: string; status: 'succeeded' | 'failed' | 'needs_attention'; errorMessage?: string; xianyuItemId?: string; xianyuUrl?: string }): void {
     const now = new Date().toISOString()
     this.db.prepare(`INSERT INTO outbox (id,kind,payload,attempts,next_attempt_at,created_at) VALUES (?,'supply_result',?,0,?,?)`)
-      .run(input.id, JSON.stringify({ schemaVersion: 1, deviceId: this.getState('collector.client-id'), results: [{ planId: input.planId, claimBatchId: input.claimBatchId, attemptKey: input.attemptKey, status: input.status, errorMessage: input.errorMessage }] }), now, now)
+      .run(input.id, JSON.stringify({ schemaVersion: 1, deviceId: this.getState('collector.client-id'), results: [{ planId: input.planId, claimBatchId: input.claimBatchId, attemptKey: input.attemptKey, status: input.status, ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}), ...(input.xianyuItemId ? { xianyuItemId: input.xianyuItemId } : {}), ...(input.xianyuUrl ? { xianyuUrl: input.xianyuUrl } : {}) }] }), now, now)
+  }
+
+  enqueueSupplyMigrationResult(input: { requestId: string; attemptKey: string; status: 'succeeded' | 'failed'; snapshot?: Record<string, unknown>; errorMessage?: string }): void {
+    const now = new Date().toISOString()
+    const payload = { schemaVersion: 1, requestId: input.requestId, deviceId: this.getState('collector.client-id'), attemptKey: input.attemptKey, status: input.status, ...(input.snapshot ? { snapshot: input.snapshot } : {}), ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}) }
+    this.db.prepare(`INSERT INTO outbox (id,kind,payload,attempts,next_attempt_at,created_at) VALUES (?,'supply_migration_result',?,0,?,?)`)
+      .run(`supply-migration-result:${input.requestId}:${input.attemptKey}`, JSON.stringify(payload), now, now)
   }
 
   syncMonitorTasks(tasks: readonly CachedMonitorTask[]): void {

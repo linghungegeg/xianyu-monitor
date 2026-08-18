@@ -106,6 +106,9 @@ async function run() {
     assert(invalidProfileId.statusCode === 400, '无法提取卖家 ID 的主页未被拒绝')
     const missingInterval = await userApi.inject({ method: 'POST', url: '/v1/seller-monitors', headers: auth(userAAccess), payload: { platformSellerId: 'seller-no-interval' } })
     assert(missingInterval.statusCode === 400, '缺少采集间隔的卖家任务未被拒绝')
+    const minimumIntervalTask = await createSellerTask(userApi, userAAccess, { platformSellerId: 'seller-minimum-interval', intervalSeconds: 60, status: 'paused' })
+    assert(minimumIntervalTask.intervalSeconds === 60, '原有卖家 60 秒最小采集频率未被接受')
+    await userApi.inject({ method: 'DELETE', url: `/v1/seller-monitors/${minimumIntervalTask.id}`, headers: auth(userAAccess) })
 
     const firstTask = await createSellerTask(userApi, userAAccess, { platformSellerId: 'seller-id-only' })
     const urlOnlyTask = await createSellerTask(userApi, userAAccess, { profileUrl: 'https://www.goofish.com/personal?userId=seller-url-only' })
